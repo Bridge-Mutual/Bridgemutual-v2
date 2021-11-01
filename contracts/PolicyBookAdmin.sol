@@ -31,6 +31,9 @@ contract PolicyBookAdmin is IPolicyBookAdmin, OwnableUpgradeable, AbstractDepend
     Upgrader internal upgrader;
     address private policyBookImplementationAddress;
 
+    // new state variables
+    address private policyBookFacadeImplementationAddress;
+
     IClaimingRegistry internal claimingRegistry;
     EnumerableSet.AddressSet private _whitelistedDistributors;
     mapping(address => uint256) public override distributorFees;
@@ -42,17 +45,20 @@ contract PolicyBookAdmin is IPolicyBookAdmin, OwnableUpgradeable, AbstractDepend
 
     uint256 public constant MAX_DISTRIBUTOR_FEE = 20 * PRECISION;
 
-    function __PolicyBookAdmin_init(address _policyBookImplementationAddress)
-        external
-        initializer
-    {
-        require(_policyBookImplementationAddress != address(0), "PolicyBookAdmin: Zero address");
+    /// TODO can't init contract after upgrade , workaround to set policyfacade impl
+    function __PolicyBookAdmin_init(
+        address _policyBookImplementationAddress,
+        address _policyBookFacadeImplementationAddress
+    ) external initializer {
+        require(_policyBookImplementationAddress != address(0), "PBA: PB Zero address");
+        require(_policyBookFacadeImplementationAddress != address(0), "PBA: PBF Zero address");
 
         __Ownable_init();
 
         upgrader = new Upgrader();
 
         policyBookImplementationAddress = _policyBookImplementationAddress;
+        policyBookFacadeImplementationAddress = _policyBookFacadeImplementationAddress;
     }
 
     function setDependencies(IContractsRegistry _contractsRegistry)
@@ -109,6 +115,10 @@ contract PolicyBookAdmin is IPolicyBookAdmin, OwnableUpgradeable, AbstractDepend
 
     function getCurrentPolicyBooksImplementation() external view override returns (address) {
         return policyBookImplementationAddress;
+    }
+
+    function getCurrentPolicyBooksFacadeImplementation() external view override returns (address) {
+        return policyBookFacadeImplementationAddress;
     }
 
     function _setPolicyBookImplementation(address policyBookImpl) internal {
@@ -271,5 +281,27 @@ contract PolicyBookAdmin is IPolicyBookAdmin, OwnableUpgradeable, AbstractDepend
         claimingRegistry.updateImageUriOfClaim(_claimIndex, _newEvidenceURI);
 
         emit UpdatedImageURI(_claimIndex, oldEvidenceURI, _newEvidenceURI);
+    }
+
+    /// @notice sets the policybookFacade mpls values
+    /// @param _facadeAddress address of the policybook facade
+    /// @param _userLeverageMPL uint256 value of the user leverage mpl;
+    /// @param _reinsuranceLeverageMPL uint256 value of the reinsurance leverage mpl
+    function setPolicyBookFacadeMPLs(
+        address _facadeAddress,
+        uint256 _userLeverageMPL,
+        uint256 _reinsuranceLeverageMPL
+    ) external override onlyOwner {
+        IPolicyBookFacade(_facadeAddress).setMPLs(_userLeverageMPL, _reinsuranceLeverageMPL);
+    }
+
+    /// @notice sets the policybookFacade mpls values
+    /// @param _facadeAddress address of the policybook facade
+    /// @param _newRebalancingThreshold uint256 value of the reinsurance leverage mpl
+    function setPolicyBookFacadeRebalancingThreshold(
+        address _facadeAddress,
+        uint256 _newRebalancingThreshold
+    ) external override onlyOwner {
+        IPolicyBookFacade(_facadeAddress).setRebalancingThreshold(_newRebalancingThreshold);
     }
 }

@@ -312,6 +312,7 @@ contract RewardsGenerator is IRewardsGenerator, OwnableUpgradeable, AbstractDepe
         external
         view
         override
+        onlyPolicyBooks
         returns (uint256)
     {
         return _policyBooksRewards[policyBookAddress].rewardMultiplier;

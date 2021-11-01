@@ -12,11 +12,12 @@ import "./libraries/DecimalsConverter.sol";
 import "./interfaces/ICapitalPool.sol";
 import "./interfaces/IClaimingRegistry.sol";
 import "./interfaces/IContractsRegistry.sol";
+import "./interfaces/ILeveragePortfolio.sol";
+import "./interfaces/ILiquidityRegistry.sol";
 import "./interfaces/IPolicyBook.sol";
 import "./interfaces/IPolicyBookFacade.sol";
 import "./interfaces/IPolicyBookRegistry.sol";
 import "./interfaces/IYieldGenerator.sol";
-import "./interfaces/ILeveragePortfolio.sol";
 
 import "./abstract/AbstractDependant.sol";
 
@@ -26,37 +27,46 @@ contract CapitalPool is ICapitalPool, OwnableUpgradeable, AbstractDependant {
     using SafeERC20 for ERC20;
     using SafeMath for uint256;
 
+    uint256 public constant EPOCH_DURATION_IN_DAYS = 7 days;
+
     IClaimingRegistry public claimingRegistry;
     IPolicyBookRegistry public policyBookRegistry;
     IYieldGenerator public yieldGenerator;
     ILeveragePortfolio public reinsurancePool;
     ILeveragePortfolio public userLeveragePool;
+    ILiquidityRegistry public liquidityRegistry;
     ERC20 public stblToken;
 
+    // reisnurance pool vStable balance updated by(premium, interest from defi)
     uint256 public reinsurancePoolBalance;
-    uint256 public rewardPoolBalance;
+    // user leverage pool vStable balance updated by(premium, addliq, withdraw liq)
     uint256 public leveragePoolBalance;
+    // policy books vStable balances updated by(premium, addliq, withdraw liq)
+    mapping(address => uint256) public regularCoverageBalance;
+    // all hStable capital balance , updated by (all pool transfer + deposit to dfi + liq cushion)
     uint256 public hardUsdtAccumulatedBalance;
-
+    // all vStable capital balance , updated by (all pool transfer + withdraw from liq cushion)
+    uint256 public override virtualUsdtAccumulatedBalance;
     // pool balances tracking
     uint256 public liquidityCushionBalance;
-    // virtualSTBL
-    uint256 public regularCoverageBalance;
-    // leverageSTBL
-    uint256 public leveragedCoverageBalance;
+    uint256 public liquidityCushionDuration;
 
     event PoolBalancesUpdated(
-        uint256 newLiquidityCushion,
-        uint256 newLeveragedCoverage,
-        uint256 newRegularCoverage
+        uint256 newhardUsdtAccumulatedBalance,
+        uint256 newvirtualUsdtAccumulatedBalance,
+        uint256 newliquidityCushionBalance,
+        uint256 newreinsurancePoolBalance,
+        uint256 newleveragePoolBalance
     );
 
     modifier broadcastBalancing() {
         _;
         emit PoolBalancesUpdated(
+            hardUsdtAccumulatedBalance,
+            virtualUsdtAccumulatedBalance,
             liquidityCushionBalance,
-            regularCoverageBalance,
-            leveragedCoverageBalance
+            reinsurancePoolBalance,
+            leveragePoolBalance
         );
     }
 
@@ -65,8 +75,33 @@ contract CapitalPool is ICapitalPool, OwnableUpgradeable, AbstractDependant {
         _;
     }
 
+    modifier onlyReinsurancePool() {
+        require(
+            address(reinsurancePool) == _msgSender(),
+            "RP: Caller is not a reinsurance pool contract"
+        );
+        _;
+    }
+
     function __CapitalPool_init() external initializer {
         __Ownable_init();
+        liquidityCushionDuration = 24 hours;
+    }
+
+    function setDependencies(IContractsRegistry _contractsRegistry)
+        external
+        override
+        onlyInjectorOrZero
+    {
+        claimingRegistry = IClaimingRegistry(_contractsRegistry.getClaimingRegistryContract());
+        policyBookRegistry = IPolicyBookRegistry(
+            _contractsRegistry.getPolicyBookRegistryContract()
+        );
+        stblToken = ERC20(_contractsRegistry.getUSDTContract());
+        yieldGenerator = IYieldGenerator(_contractsRegistry.getYieldGeneratorContract());
+        reinsurancePool = ILeveragePortfolio(_contractsRegistry.getReinsurancePoolContract());
+        userLeveragePool = ILeveragePortfolio(_contractsRegistry.getUserLeveragePoolContract());
+        liquidityRegistry = ILiquidityRegistry(_contractsRegistry.getLiquidityRegistryContract());
     }
 
     /// @notice sets the tether allowance between another contract
@@ -87,87 +122,100 @@ contract CapitalPool is ICapitalPool, OwnableUpgradeable, AbstractDependant {
         }
     }
 
-    function setDependencies(IContractsRegistry _contractsRegistry)
-        external
-        override
-        onlyInjectorOrZero
-    {
-        claimingRegistry = IClaimingRegistry(_contractsRegistry.getClaimingRegistryContract());
-        policyBookRegistry = IPolicyBookRegistry(
-            _contractsRegistry.getPolicyBookRegistryContract()
-        );
-        stblToken = ERC20(_contractsRegistry.getUSDTContract());
-        yieldGenerator = IYieldGenerator(_contractsRegistry.getYieldGeneratorContract());
-        reinsurancePool = ILeveragePortfolio(_contractsRegistry.getReinsurancePoolContract());
-        userLeveragePool = ILeveragePortfolio(_contractsRegistry.getUserLeveragePoolContract());
-    }
-
-    /// @notice distributes the the policybook premiums into pools
+    /// @notice distributes the policybook premiums into pools (CP, ULP , RP)
     /// @dev distributes the balances acording to the established percentages
-    /// emits PoolBalancedUpdated event
     /// @param _stblAmount amount hardSTBL ingressed into the system
     /// @param _epochsNumber uint256 the number of epochs which the policy holder will pay a premium for
-    function addPolicyHoldersHardSTBL(uint256 _stblAmount, uint256 _epochsNumber)
-        external
-        override
-        onlyPolicyBook
-        broadcastBalancing
-    {
-        // 20% of the policy premiums
-        uint256 _reinsuranceShare = _stblAmount.mul(PROTOCOL_PERCENTAGE).div(PERCENTAGE_100);
-        // 80% to be used for rewards
-        uint256 _rewardPoolShare = _stblAmount.sub(_reinsuranceShare);
+    /// @param _protocolFee uint256 the amount of protocol fee earned by premium
+    function addPolicyHoldersHardSTBL(
+        uint256 _stblAmount,
+        uint256 _epochsNumber,
+        uint256 _protocolFee
+    ) external override onlyPolicyBook broadcastBalancing returns (uint256) {
+        uint256 reinsurancePoolPermium;
+        uint256 userLeveragePoolPermium;
+        uint256 coveragePoolPermium;
+        uint256 _lStblDeployedByLP;
+        uint256 _vStblDeployedByRP;
+        uint256 _vStblOfCP = regularCoverageBalance[_msgSender()];
 
-        // TODO add portion of the portion of 80% of premium participation
-        // _reinsuranceShare =
+        (_vStblDeployedByRP, , _lStblDeployedByLP) = (
+            IPolicyBookFacade(IPolicyBook(msg.sender).policyBookFacade())
+        )
+            .getPoolsData();
+        (
+            reinsurancePoolPermium,
+            userLeveragePoolPermium,
+            coveragePoolPermium
+        ) = _calcPermiumForAllPools(
+            PermiumFactors(
+                _stblAmount,
+                _epochsNumber.mul(EPOCH_DURATION_IN_DAYS),
+                _protocolFee,
+                _lStblDeployedByLP,
+                _vStblDeployedByRP,
+                _vStblOfCP
+            )
+        );
 
-        reinsurancePoolBalance += _reinsuranceShare;
-        rewardPoolBalance += _rewardPoolShare;
+        // update the pools with the new balance
+        reinsurancePoolBalance += reinsurancePoolPermium;
+        leveragePoolBalance += userLeveragePoolPermium;
+        regularCoverageBalance[_msgSender()] += coveragePoolPermium;
         hardUsdtAccumulatedBalance += _stblAmount;
-        leveragePoolBalance += _stblAmount;
+        virtualUsdtAccumulatedBalance += _stblAmount;
 
-        uint256 _totalLiquidity = IPolicyBook(msg.sender).totalLiquidity();
-        IPolicyBookFacade facade = IPolicyBookFacade(IPolicyBook(msg.sender).policyBookFacade());
-        uint256 _reinsurancePoolMPL = facade.reinsurancePoolMPL();
-        uint256 _userLeverageMPL = facade.userleveragedMPL();
+        // added the premium to the pools
+        reinsurancePool.addPolicyPremium(_epochsNumber, reinsurancePoolPermium);
+        userLeveragePool.addPolicyPremium(_epochsNumber, userLeveragePoolPermium);
+        return coveragePoolPermium;
+    }
 
-        reinsurancePool.addPolicyPremium(_epochsNumber, _reinsuranceShare);
-
-        uint256 _vStblDeployedByRP =
-            reinsurancePool.deployVirtualStableToCoveragePools(_reinsurancePoolMPL);
-        (, uint256 _lStblDeployedByUP) =
-            userLeveragePool.deployLeverageStableToCoveragePools(
-                _reinsurancePoolMPL,
-                _userLeverageMPL
+    function _calcPermiumForAllPools(PermiumFactors memory factors)
+        internal
+        returns (
+            uint256 reinsurancePoolPermium,
+            uint256 userLeveragePoolPermium,
+            uint256 coveragePoolPermium
+        )
+    {
+        uint256 _poolUR =
+            (IPolicyBook(_msgSender())).totalCoverTokens().mul(PERCENTAGE_100).div(
+                factors.vStblOfCP
             );
 
-        uint256 totalLiqforPremium = _totalLiquidity.add(_vStblDeployedByRP);
-        totalLiqforPremium = totalLiqforPremium.add(_lStblDeployedByUP);
+        uint256 _participatedlStblDeployedByLP =
+            factors.lStblDeployedByLP.mul(userLeveragePool.calcM(_poolUR));
+
+        // pool liq + part of pool leverage + reinsurance pool virtual deployed
+        uint256 totalLiqforPremium =
+            factors.vStblOfCP.add(factors.vStblDeployedByRP).add(_participatedlStblDeployedByLP);
 
         uint256 _premiumPerDay =
-            (_rewardPoolShare.mul(PRECISION).div(_epochsNumber)).div(PRECISION);
+            (
+                (factors.stblAmount.sub(factors.protocolFee)).mul(PRECISION).div(
+                    factors.permiumDurationInDays
+                )
+            )
+                .div(PRECISION);
+
         uint256 _premiumEach =
             (totalLiqforPremium.mul(PRECISION).div(_premiumPerDay)).div(PRECISION);
 
-        reinsurancePool.addPolicyPremium(
-            _epochsNumber,
-            (_premiumEach.mul(_vStblDeployedByRP)).add(_rewardPoolShare)
+        reinsurancePoolPermium = (
+            _premiumEach.mul(factors.vStblDeployedByRP).mul(factors.permiumDurationInDays)
+        )
+            .add(factors.protocolFee);
+        userLeveragePoolPermium = _premiumEach.mul(_participatedlStblDeployedByLP).mul(
+            factors.permiumDurationInDays
         );
-        userLeveragePool.addPolicyPremium(_epochsNumber, _premiumEach.mul(_lStblDeployedByUP));
-        // IPolicyBook(msg.sender).addPolicyPremium(_epochsNumber, _premiumEach.mul(_totalLiquidity));
-
-        // uint256 _totalCover = IPolicyBook(msg.sender).totalCoverTokens();
-        // uint256 _uitilizationRatio = _totalCover.mul(PERCENTAGE_100).div(_totalLiquidity);
-        // uint256 _m = reinsurancePool.calcM(_uitilizationRatio);
-        // uint256 _participationPortion =  _rewardPoolShare.mul(_m).div(PERCENTAGE_100);
-        //# 80% to user leverage
-        // userLeveragePool.addPolicyPremium(_epochsNumber , _participationPortion);
+        coveragePoolPermium = _premiumEach.mul(factors.vStblOfCP).mul(
+            factors.permiumDurationInDays
+        );
     }
 
-    /// @notice distributes the hardSTBL from the coverage providers does not specify
-    /// a policyBook
-    /// @dev sender cannot be a policyBook
-    /// emits PoolBalancedUpdated event
+    /// @notice distributes the hardSTBL from the coverage providers
+    /// @dev emits PoolBalancedUpdated event
     /// @param _stblAmount amount hardSTBL ingressed into the system
     function addCoverageProvidersHardSTBL(uint256 _stblAmount)
         external
@@ -175,68 +223,133 @@ contract CapitalPool is ICapitalPool, OwnableUpgradeable, AbstractDependant {
         onlyPolicyBook
         broadcastBalancing
     {
-        regularCoverageBalance += _stblAmount;
+        regularCoverageBalance[_msgSender()] += _stblAmount;
         hardUsdtAccumulatedBalance += _stblAmount;
-        _increasePools(msg.sender, _stblAmount, _stblAmount, _stblAmount);
+        virtualUsdtAccumulatedBalance += _stblAmount;
     }
 
-    /// @notice increases the values of the differnt pools
-    /// @dev send 0 to keep a value un changed
-    /// @param _policyBookAddress address of the policybook
-    /// @param _vReinsurancdePool uint256 amount of virtual stbl to add to the reinsurancePool
-    /// @param _lReinsurancePool uint amount of the leverage stbl to add to the reinsurancePool
-    /// @param _lLeveragePool uint256 amount of of stbl to add to the leverage pool description
-    function _increasePools(
-        address _policyBookAddress,
-        uint256 _vReinsurancdePool,
-        uint256 _lReinsurancePool,
-        uint256 _lLeveragePool
-    ) internal {
-        address _coverageFacade = address(IPolicyBook(_policyBookAddress).policyBookFacade());
-        (
-            uint256 _virtaulReinsurancePool,
-            uint256 _leverageReinsurancePool,
-            uint256 _leveragePool
-        ) = IPolicyBookFacade(_coverageFacade).getPoolsData();
-
-        IPolicyBookFacade(_coverageFacade).updatePoolsData(
-            _virtaulReinsurancePool.add(_vReinsurancdePool),
-            _leverageReinsurancePool.add(_lReinsurancePool),
-            _leveragePool.add(_lLeveragePool)
-        );
-    }
-
-    /// @notice rebalances pools acording to v2 specification and dao enforced policies
-    /// @dev  emits PoolBalancesUpdated
-    function rebalanceLiquidityCushion() public override broadcastBalancing {
-        // TODO add missing code
-        (uint256[] memory _claimIndexes, uint256 _lenght) = claimingRegistry.getClaimableIndexes();
-        uint256 pendingClaimAmount = claimingRegistry.getClaimableAmounts(_claimIndexes);
-    }
-
-    /// @notice deploys liquidity from the reinsurance pool to the yieldGenerator
-    /// @dev the amount being transfer must not be greater than the reinsurance pool
-    /// @param _stblAmount uint256, amount of tokens to transfer to the defiGenerator
-    function deployFundsToDefi(uint256 _stblAmount) public override {
-        require(_stblAmount <= regularCoverageBalance, "CAPL: insufficient funds");
-
-        regularCoverageBalance = regularCoverageBalance.sub(_stblAmount);
-        hardUsdtAccumulatedBalance = hardUsdtAccumulatedBalance.sub(_stblAmount);
-
-        _setOrIncreaseTetherAllowance(address(yieldGenerator), _stblAmount);
-
-        yieldGenerator.deposit(_stblAmount);
-    }
-
-    /// @notice fullfuls policybook claims being commited
-    /// @param _claimer, address of the claimer recieving the withdraw
-    /// @param _stblAmount uint256 amount to be withdrawn
-    function fundClaim(address _claimer, uint256 _stblAmount)
+    //// @notice distributes the hardSTBL from the leverage providers
+    /// @dev emits PoolBalancedUpdated event
+    /// @param _stblAmount amount hardSTBL ingressed into the system
+    function addLeverageProvidersHardSTBL(uint256 _stblAmount)
         external
         override
         onlyPolicyBook
         broadcastBalancing
     {
-        stblToken.safeTransfer(_claimer, _stblAmount);
+        leveragePoolBalance += _stblAmount;
+        hardUsdtAccumulatedBalance += _stblAmount;
+        virtualUsdtAccumulatedBalance += _stblAmount;
+    }
+
+    /// @notice distributes the hardSTBL from the reinsurance pool
+    /// @dev emits PoolBalancedUpdated event
+    /// @param _stblAmount amount hardSTBL ingressed into the system
+    function addReinsurancePoolHardSTBL(uint256 _stblAmount)
+        external
+        override
+        onlyReinsurancePool
+        broadcastBalancing
+    {
+        reinsurancePoolBalance += _stblAmount;
+        hardUsdtAccumulatedBalance += _stblAmount;
+        virtualUsdtAccumulatedBalance += _stblAmount;
+    }
+
+    /// TODO if user not withdraw the amount after request withdraw , should the amount returned back to capital pool
+    /// @notice rebalances pools acording to v2 specification and dao enforced policies
+    /// @dev  emits PoolBalancesUpdated
+    function rebalanceLiquidityCushion() public override broadcastBalancing onlyOwner {
+        (uint256[] memory _claimIndexes, uint256 _lenght) = claimingRegistry.getClaimableIndexes();
+
+        uint256[] memory _pendingClaimsIndexes = new uint256[](_lenght);
+
+        for (uint256 i = 0; i < _lenght; i++) {
+            if (claimingRegistry.isClaimPending(_claimIndexes[i])) {
+                _pendingClaimsIndexes[_pendingClaimsIndexes.length] = _claimIndexes[i];
+            }
+        }
+
+        uint256 _pendingClaimAmount = claimingRegistry.getClaimableAmounts(_pendingClaimsIndexes);
+
+        uint256 lastCompletedDay =
+            (block.timestamp.mul(PRECISION).div(1 days).mul(PRECISION)).sub(8);
+
+        uint256 _startTime = lastCompletedDay.mul(1 days);
+        uint256 _endTime = lastCompletedDay.mul(1 days).add(liquidityCushionDuration);
+
+        /// TODO include user leverage pool withrawal request
+        (, , uint256 _requiredLiquidity, ) =
+            liquidityRegistry.getWithdrawalRequestsInWindowTime(_startTime, _endTime);
+
+        _requiredLiquidity = _requiredLiquidity.add(_pendingClaimAmount);
+
+        if (_requiredLiquidity <= hardUsdtAccumulatedBalance) {
+            liquidityCushionBalance += _requiredLiquidity;
+            hardUsdtAccumulatedBalance -= _requiredLiquidity;
+            deployFundsToDefi(hardUsdtAccumulatedBalance);
+        } else {
+            /// TODO fixing  if the withdraw amount from defi is less than the reuqired amount by a small portion
+            yieldGenerator.withdraw(_requiredLiquidity.sub(hardUsdtAccumulatedBalance));
+            hardUsdtAccumulatedBalance = 0;
+            liquidityCushionBalance += _requiredLiquidity;
+        }
+    }
+
+    /// @notice deploys liquidity from the reinsurance pool to the yieldGenerator
+    /// @dev the amount being transfer must not be greater than the reinsurance pool
+    /// @param _stblAmount uint256, amount of tokens to transfer to the defiGenerator
+    function deployFundsToDefi(uint256 _stblAmount) internal {
+        if (_stblAmount == 0) return;
+
+        uint256 _currentApproval = stblToken.allowance(address(this), address(yieldGenerator));
+        uint256 _newApproval = _currentApproval.add(_stblAmount);
+        _setOrIncreaseTetherAllowance(address(yieldGenerator), _newApproval);
+
+        yieldGenerator.deposit(_stblAmount);
+    }
+
+    /// @notice Fullfils policybook claims by transfering the balance to claimer
+    /// @param _claimer, address of the claimer recieving the withdraw
+    /// @param _stblAmount uint256 amount to be withdrawn
+    function fundClaim(address _claimer, uint256 _stblAmount) external override onlyPolicyBook {
+        _withdrawFromLiquidityCushion(_claimer, _stblAmount);
+        regularCoverageBalance[_msgSender()] -= _stblAmount;
+    }
+
+    /// @notice Withdraws liquidity from a specific policbybook to the user
+    /// @param _sender, address of the user beneficiary of the withdraw
+    /// @param _stblAmount uint256 amount to be withdrawn
+    function withdrawLiquidity(
+        address _sender,
+        uint256 _stblAmount,
+        bool _isLeveragePool
+    ) external override onlyPolicyBook broadcastBalancing {
+        _withdrawFromLiquidityCushion(_sender, _stblAmount);
+
+        if (_isLeveragePool) {
+            leveragePoolBalance -= _stblAmount;
+        } else {
+            regularCoverageBalance[_msgSender()] -= _stblAmount;
+        }
+    }
+
+    /// @notice Sets the duration in time the capital pool reserves liquidity
+    /// @param _newDuration uint256 amount in seconds for the new period
+    function setLiquidityCushionDuration(uint256 _newDuration) external override onlyOwner {
+        require(_newDuration > 0, "CP: duration is too small");
+        liquidityCushionDuration = _newDuration;
+    }
+
+    function _withdrawFromLiquidityCushion(address _sender, uint256 _stblAmount)
+        internal
+        broadcastBalancing
+    {
+        require(liquidityCushionBalance >= _stblAmount, "LC: insuficient liquidity");
+
+        liquidityCushionBalance = liquidityCushionBalance.sub(_stblAmount);
+        virtualUsdtAccumulatedBalance -= _stblAmount;
+
+        stblToken.safeTransfer(_sender, _stblAmount);
     }
 }

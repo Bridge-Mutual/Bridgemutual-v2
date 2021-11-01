@@ -52,10 +52,9 @@ contract UserLeveragePool is AbstractLeveragePortfolio, IUserLeveragePool, ERC20
     mapping(uint256 => int256) public premiumDistributionDeltas;
 
     uint256 public stblDecimals;
+    uint256 public maxCapacities;
     bool public override whitelisted;
-    
-    uint256 public capacity; 
-    
+
     event LiquidityAdded(
         address _liquidityHolder,
         uint256 _liquidityAmount,
@@ -97,6 +96,8 @@ contract UserLeveragePool is AbstractLeveragePortfolio, IUserLeveragePool, ERC20
         string calldata _description,
         string calldata _projectSymbol
     ) external override initializer {
+        __LeveragePortfolio_init();
+
         string memory fullSymbol =
             string(abi.encodePacked("bmi", _projectSymbol, "LeveragePortfolio"));
         __ERC20Permit_init(fullSymbol);
@@ -107,7 +108,7 @@ contract UserLeveragePool is AbstractLeveragePortfolio, IUserLeveragePool, ERC20
         lastDistributionEpoch = 1;
 
         lastPremiumDistributionEpoch = _getPremiumDistributionEpoch();
-        capacity = 3500000 * PRECISION;
+        maxCapacities = 3500000 * PRECISION;
     }
 
     function setDependencies(IContractsRegistry _contractsRegistry)
@@ -123,7 +124,7 @@ contract UserLeveragePool is AbstractLeveragePortfolio, IUserLeveragePool, ERC20
         rewardsGenerator = IRewardsGenerator(_contractsRegistry.getRewardsGeneratorContract());
         policyBookAdmin = _contractsRegistry.getPolicyBookAdminContract();
         liquidityMining = ILiquidityMining(_contractsRegistry.getLiquidityMiningContract());
-        capitalPoolAddress = _contractsRegistry.getCapitalPoolContract();
+        capitalPool = ICapitalPool(_contractsRegistry.getCapitalPoolContract());
         liquidityRegistry = ILiquidityRegistry(_contractsRegistry.getLiquidityRegistryContract());
         policyBookRegistry = IPolicyBookRegistry(
             _contractsRegistry.getPolicyBookRegistryContract()
@@ -204,6 +205,13 @@ contract UserLeveragePool is AbstractLeveragePortfolio, IUserLeveragePool, ERC20
         updateBMICoverStakingReward
     {
         whitelisted = _whitelisted;
+    }
+
+    /// @notice set max total liquidity for the pool
+    /// @param _maxCapacities uint256 the max total liquidity
+    function setMaxCapacities(uint256 _maxCapacities) external override onlyOwner {
+        require(_maxCapacities > 0, "LP: max capacities can't be zero");
+        maxCapacities = _maxCapacities;
     }
 
     function forceUpdateBMICoverStakingRewardMultiplier() public override {
@@ -342,15 +350,19 @@ contract UserLeveragePool is AbstractLeveragePortfolio, IUserLeveragePool, ERC20
         withPremiumsDistribution
         updateBMICoverStakingReward
     {
-        require(capacity.add(_liquidityAmount) <= capacity, "LP: amount exceed the capacity");
+        require(
+            vStableTotalLiquidity.add(_liquidityAmount) <= maxCapacities,
+            "LP: amount exceed the max capacities"
+        );
 
         uint256 stblLiquidity = DecimalsConverter.convertFrom18(_liquidityAmount, stblDecimals);
         require(stblLiquidity > 0, "LP: Liquidity amount is zero");
 
         updateEpochsInfo();
 
-        stblToken.safeTransferFrom(_liquidityHolderAddr, capitalPoolAddress, stblLiquidity);
-        ///TODO call a function in capitalpool contract to add the new balance of user leverage pool
+        stblToken.safeTransferFrom(_liquidityHolderAddr, address(capitalPool), stblLiquidity);
+
+        capitalPool.addLeverageProvidersHardSTBL(stblLiquidity);
 
         /// @dev have to add to LM liquidity
         if (_msgSender() == address(liquidityMining)) {
@@ -362,7 +374,6 @@ contract UserLeveragePool is AbstractLeveragePortfolio, IUserLeveragePool, ERC20
         _mint(_liquidityHolderAddr, convertSTBLToBMIX(_liquidityAmount));
         uint256 liquidity = vStableTotalLiquidity.add(_liquidityAmount);
         vStableTotalLiquidity = liquidity;
-        capacity+= liquidity;
 
         liquidityRegistry.tryToAddPolicyBook(_liquidityHolderAddr, address(this));
 
@@ -506,17 +517,14 @@ contract UserLeveragePool is AbstractLeveragePortfolio, IUserLeveragePool, ERC20
 
         uint256 _stblTokensToWithdraw = convertBMIXToSTBL(_tokensToWithdraw);
 
-        // should approve user leverage pool to transfer from the capital pool
-        stblToken.safeTransferFrom(
-            capitalPoolAddress,
+        capitalPool.withdrawLiquidity(
             _msgSender(),
-            DecimalsConverter.convertFrom18(_stblTokensToWithdraw, stblDecimals)
+            DecimalsConverter.convertFrom18(_stblTokensToWithdraw, stblDecimals),
+            true
         );
-        ///TODO call a function in capitalpool contract to subtract the withdraw amount from user leverage pool
 
         _burn(address(this), _tokensToWithdraw);
         liquidity = liquidity.sub(_stblTokensToWithdraw);
-        capacity -= _stblTokensToWithdraw;
 
         _currentWithdrawalAmount = _currentWithdrawalAmount.sub(_tokensToWithdraw);
 
@@ -560,34 +568,50 @@ contract UserLeveragePool is AbstractLeveragePortfolio, IUserLeveragePool, ERC20
             );
     }
 
-    /// @notice _annualProfitYields is multiplied by 10**5
-    /// @notice _annualInsuranceCost is calculated for 1000 STBL cover (or _maxCapacities if it is less)
-    /// @notice _bmiXRatio is multiplied by 10**18. To get STBL representation,
-    ///     multiply BMIX tokens by this value and then divide by 10**18
+    /// @notice Getting number stats, access: ANY
+    /// @return _maxCapacities is a max liquidity of the pool
+    /// @return _totalSTBLLiquidity is PolicyBook's liquidity
+    /// @return _stakedSTBL is how much stable coin are staked on this PolicyBook
+    /// @return _annualProfitYields is its APY
+    /// @return _annualInsuranceCost is becuase to follow the same function in policy book
+    /// @return  _bmiXRatio is multiplied by 10**18. To get STBL representation
     function numberStats()
         external
         view
         override
         returns (
+            uint256 _maxCapacities,
             uint256 _totalSTBLLiquidity,
             uint256 _stakedSTBL,
             uint256 _annualProfitYields,
+            uint256 _annualInsuranceCost,
             uint256 _bmiXRatio
         )
     {
         _totalSTBLLiquidity = getNewLiquidity();
+        _maxCapacities = maxCapacities;
         _stakedSTBL = rewardsGenerator.getStakedPolicyBookSTBL(address(this));
         _annualProfitYields = getAPY().add(bmiCoverStakingView.getPolicyBookAPY(address(this)));
-
+        _annualInsuranceCost = 0;
         _bmiXRatio = convertBMIXToSTBL(10**18);
     }
 
+    /// @notice Getting info, access: ANY
+    /// @return _symbol is the symbol of PolicyBook (bmiXCover)
+    /// @return _insuredContract is an addres of insured contract
+    /// @return _contractType is becuase to follow the same function in policy book
+    /// @return _whitelisted is a state of whitelisting
     function info()
         external
         view
         override
-        returns (string memory _symbol, IPolicyBookFabric.ContractType _contractType)
+        returns (
+            string memory _symbol,
+            address _insuredContract,
+            IPolicyBookFabric.ContractType _contractType,
+            bool _whitelisted
+        )
     {
-        return (symbol(), contractType);
+        return (symbol(), address(0), contractType, whitelisted);
     }
 }

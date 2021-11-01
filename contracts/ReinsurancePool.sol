@@ -53,7 +53,7 @@ contract ReinsurancePool is AbstractLeveragePortfolio, IReinsurancePool {
         bmiToken = IERC20(_contractsRegistry.getBMIContract());
         stblToken = ERC20(_contractsRegistry.getUSDTContract());
         bmiStaking = IBMIStaking(_contractsRegistry.getBMIStakingContract());
-        capitalPoolAddress = _contractsRegistry.getCapitalPoolContract();
+        capitalPool = ICapitalPool(_contractsRegistry.getCapitalPoolContract());
         claimVotingAddress = _contractsRegistry.getClaimVotingContract();
         aaveProtocol = _contractsRegistry.getAaveProtocolContract();
         compoundProtocol = _contractsRegistry.getCompoundProtocolContract();
@@ -62,7 +62,6 @@ contract ReinsurancePool is AbstractLeveragePortfolio, IReinsurancePool {
             _contractsRegistry.getPolicyBookRegistryContract()
         );
         leveragePortfolio = ILeveragePortfolio(_contractsRegistry.getUserLeveragePoolContract());
-        capitalPoolAddress = _contractsRegistry.getCapitalPoolContract();
         stblDecimals = stblToken.decimals();
     }
 
@@ -99,6 +98,7 @@ contract ReinsurancePool is AbstractLeveragePortfolio, IReinsurancePool {
         onlyDefiProtocols
     {
         vStableTotalLiquidity += interestAmount;
+        capitalPool.addReinsurancePoolHardSTBL(interestAmount);
         _reevaluateProvidedLeverageStable(LeveragePortfolio.REINSURANCEPOOL, interestAmount);
         emit DefiInterestAdded(interestAmount);
     }

@@ -5,8 +5,6 @@ pragma experimental ABIEncoderV2;
 import "../PolicyBook.sol";
 
 contract PolicyBookMock is PolicyBook {
-    uint256 public dummy;
-
     function __PolicyBookMock_init(
         address _insuranceContract,
         IPolicyBookFabric.ContractType _contractType
@@ -41,28 +39,4 @@ contract PolicyBookMock is PolicyBook {
     function burn(uint256 _amountToBurn) external {
         _burn(_msgSender(), _amountToBurn);
     }
-
-    function deployLeverageFundsByLP() external returns (bool, uint256) {
-        // return
-        //     userLeveragePool.deployLeverageStableToCoveragePools(
-        //         userleveragedMPL,
-        //         reinsurancePoolMPL
-        //     );
-    }
-
-    function deployLeverageFundsByRP() external returns (bool, uint256) {
-        // return
-        //     reinsurancePool.deployLeverageStableToCoveragePools(
-        //         reinsurancePoolMPL,
-        //         userleveragedMPL
-        //     );
-    }
-
-    function deployVirtualFundsByPR() external returns (uint256) {
-        //  return reinsurancePool.deployVirtualStableToCoveragePools(reinsurancePoolMPL);
-    }
-
-    // function callOnUpgrade() external {
-    //     dummy = 1337;
-    // }
 }

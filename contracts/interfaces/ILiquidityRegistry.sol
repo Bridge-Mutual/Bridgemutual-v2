@@ -54,4 +54,15 @@ interface ILiquidityRegistry {
         uint256 _offset,
         uint256 _limit
     ) external view returns (uint256 _arrLength, WithdrawalSetInfo[] memory _resultArr);
+
+    function registerWithdrawl(address _policyBook, address _users) external;
+
+    function getWithdrawalRequestsInWindowTime(uint256 _startTime, uint256 _endTime)
+        external
+        returns (
+            address[] memory _pbooks,
+            address[] memory _users,
+            uint256 _acumulatedAmount,
+            uint256 _count
+        );
 }

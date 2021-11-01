@@ -120,7 +120,6 @@ contract YearnProtocol is IDefiProtocol, OwnableUpgradeable, AbstractDependant {
             // withdraw the reward and send it to the reinsurancePool
             uint256 _amountInUnderlying = vault.withdraw(rewardsInShares, capitalPoolAddress);
 
-            /// TODO call a function in capital pool to update the balance of reinsurance pool
             reinsurancePool.addInterestFromDefiProtocols(_amountInUnderlying);
 
             totalRewards = totalRewards.add(_amountInUnderlying);

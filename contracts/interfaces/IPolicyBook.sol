@@ -6,8 +6,6 @@ import "./IPolicyBookFabric.sol";
 import "./IClaimingRegistry.sol";
 import "./IPolicyBookFacade.sol";
 
-import "../abstract/shield_mining/AbstractShieldMiningModel.sol";
-
 interface IPolicyBook {
     enum WithdrawalStatus {NONE, PENDING, READY, EXPIRED}
 
@@ -25,13 +23,28 @@ interface IPolicyBook {
         bool withdrawalAllowed;
     }
 
+    struct BuyPolicyParameters {
+        address buyer;
+        uint256 epochsNumber;
+        uint256 coverTokens;
+        uint256 distributorFee;
+        address distributor;
+    }
+
+    function policyHolders(address _holder)
+        external
+        view
+        returns (
+            uint256,
+            uint256,
+            uint256,
+            uint256,
+            uint256
+        );
+
     function policyBookFacade() external view returns (IPolicyBookFacade);
 
     function setPolicyBookFacade(address _policyBookFacade) external;
-
-    function shieldMiningModel() external view returns (AbstractShieldMiningModel);
-
-    function setShieldMiningModel(address _shieldMiningModel) external;
 
     function EPOCH_DURATION() external view returns (uint256);
 
@@ -88,9 +101,6 @@ interface IPolicyBook {
     /// @notice get BMIX equivalent
     function convertSTBLToBMIX(uint256 _amount) external view returns (uint256);
 
-    /// @notice returns how many BMI tokens needs to approve in order to submit a claim
-    function getClaimApprovalAmount(address user) external view returns (uint256);
-
     /// @notice submits new claim of the policy book
     function submitClaimAndInitializeVoting(string calldata evidenceURI) external;
 
@@ -138,45 +148,49 @@ interface IPolicyBook {
         uint256 _coverTokens,
         uint256 _distributorFee,
         address _distributor
-    ) external;
+    ) external returns (uint256);
 
     function updateEpochsInfo() external;
 
     function secondsToEndCurrentEpoch() external view returns (uint256);
-
-    /// @notice Let user to add liquidity by supplying stable coin, access: ANY
-    /// @param _liqudityAmount is amount of stable coin tokens to secure
-    /// @param _liquidityAmount, uint256 amount to be added on behalf the sender
-    function addLiquidity(address _liquidityAmount, uint256 _liqudityAmount) external;
 
     /// @notice Let eligible contracts add liqiudity for another user by supplying stable coin
     /// @param _liquidityHolderAddr is address of address to assign cover
     /// @param _liqudityAmount is amount of stable coin tokens to secure
     function addLiquidityFor(address _liquidityHolderAddr, uint256 _liqudityAmount) external;
 
-    function addLiquidityAndStake(
-        uint256 _liquidityAmount,
-        uint256 _stakeSTBLAmount,
-        address _sender
+    /// @notice Let user to add liquidity by supplying stable coin, access: ANY
+    /// @param _liqudityAmount is amount of stable coin tokens to secure
+    /// @param _liquidityAmount uint256 amount to be added on behalf the sender
+    /// @param _stakeSTBLAmount uint256 the staked amount if add liq and stake
+    function addLiquidity(
+        address _liquidityAmount,
+        uint256 _liqudityAmount,
+        uint256 _stakeSTBLAmount
     ) external;
 
     function getAvailableBMIXWithdrawableAmount(address _userAddr) external view returns (uint256);
 
     function getWithdrawalStatus(address _userAddr) external view returns (WithdrawalStatus);
 
-    function requestWithdrawal(uint256 _tokensToWithdraw) external;
+    function requestWithdrawal(uint256 _tokensToWithdraw, address _user) external;
 
-    function requestWithdrawalWithPermit(
-        uint256 _tokensToWithdraw,
-        uint8 _v,
-        bytes32 _r,
-        bytes32 _s
-    ) external;
+    // function requestWithdrawalWithPermit(
+    //     uint256 _tokensToWithdraw,
+    //     uint8 _v,
+    //     bytes32 _r,
+    //     bytes32 _s
+    // ) external;
+
+    /// @notice deploy leverage funds (RP vStable, RP lStable, ULP lStable)
+    /// @param  deployedAmount uint256 the deployed amount to be added or substracted from the total liquidity
+    /// @param isLeverage bool true for increase , false for decrease
+    function deployLeverageFunds(uint256 deployedAmount, bool isLeverage) external;
 
     function unlockTokens() external;
 
     /// @notice Let user to withdraw deposited liqiudity, access: ANY
-    function withdrawLiquidity() external;
+    function withdrawLiquidity(address sender) external returns (uint256);
 
     function getAPY() external view returns (uint256);
 

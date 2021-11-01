@@ -18,4 +18,10 @@ interface IPolicyBookFabric {
         string calldata _projectSymbol,
         uint256 _initialDeposit
     ) external returns (address);
+
+    /// @notice add user leverage pool to policy book registry : access owner
+    /// @param userLeverageAddress address user leverage pool proxy address
+    /// @param contractType ContractType type of contract that leverage pool will cover
+    function addUserLeveragePoolToRegistry(address userLeverageAddress, ContractType contractType)
+        external;
 }

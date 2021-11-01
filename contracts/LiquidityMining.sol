@@ -373,7 +373,7 @@ contract LiquidityMining is
 
         emit TeamInvested(_userTeamAddr, msg.sender, _finalTokensAmount);
 
-        IPolicyBook(_policyBookAddr).policyBookFacade().addLiquidityFor(msg.sender, _tokensAmount);
+        IPolicyBook(_policyBookAddr).addLiquidityFor(msg.sender, _tokensAmount);
     }
 
     function distributeNFT() external override {

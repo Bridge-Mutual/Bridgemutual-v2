@@ -9,6 +9,8 @@ interface IPolicyBookAdmin {
 
     function getCurrentPolicyBooksImplementation() external view returns (address);
 
+    function getCurrentPolicyBooksFacadeImplementation() external view returns (address);
+
     /// @notice It blacklists or whitelists a PolicyBook. Only whitelisted PolicyBooks can
     ///         receive stakes and funds
     /// @param policyBookAddress PolicyBook address that will be whitelisted or blacklisted
@@ -51,4 +53,22 @@ interface IPolicyBookAdmin {
 
     /// @notice Returns number of whitelisted distributors, access: ANY
     function countDistributors() external view returns (uint256);
+
+    /// @notice sets the policybookFacade mpls values
+    /// @param _facadeAddress address of the policybook facade
+    /// @param _userLeverageMPL uint256 value of the user leverage mpl;
+    /// @param _reinsuranceLeverageMPL uint256 value of the reinsurance leverage mpl
+    function setPolicyBookFacadeMPLs(
+        address _facadeAddress,
+        uint256 _userLeverageMPL,
+        uint256 _reinsuranceLeverageMPL
+    ) external;
+
+    /// @notice sets the policybookFacade mpls values
+    /// @param _facadeAddress address of the policybook facade
+    /// @param _newRebalancingThreshold uint256 value of the reinsurance leverage mpl
+    function setPolicyBookFacadeRebalancingThreshold(
+        address _facadeAddress,
+        uint256 _newRebalancingThreshold
+    ) external;
 }

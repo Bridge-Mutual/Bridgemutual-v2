@@ -5,7 +5,6 @@ pragma experimental ABIEncoderV2;
 import "@openzeppelin/contracts/utils/EnumerableSet.sol";
 import "@openzeppelin/contracts/math/Math.sol";
 import "@openzeppelin/contracts/math/SafeMath.sol";
-import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 
 import "./interfaces/IPolicyBook.sol";
 import "./interfaces/IPolicyBookRegistry.sol";
@@ -13,7 +12,7 @@ import "./interfaces/IContractsRegistry.sol";
 
 import "./abstract/AbstractDependant.sol";
 
-contract PolicyBookRegistry is IPolicyBookRegistry, AbstractDependant, OwnableUpgradeable {
+contract PolicyBookRegistry is IPolicyBookRegistry, AbstractDependant {
     using Math for uint256;
     using SafeMath for uint256;
     using EnumerableSet for EnumerableSet.AddressSet;
@@ -48,10 +47,6 @@ contract PolicyBookRegistry is IPolicyBookRegistry, AbstractDependant, OwnableUp
         _;
     }
 
-    function __PolicyBookRegistry_init() external initializer {
-        __Ownable_init();
-    }
-
     function setDependencies(IContractsRegistry _contractsRegistry)
         external
         override
@@ -80,19 +75,6 @@ contract PolicyBookRegistry is IPolicyBookRegistry, AbstractDependant, OwnableUp
         _policyBooksByType[contractType].add(policyBook);
 
         emit Added(insuredContract, policyBook);
-    }
-
-    function add(IPolicyBookFabric.ContractType contractType, address policyBook)
-        external
-        override
-        onlyOwner
-    {
-        require(policyBook != address(0), "PolicyBookRegistry: No PB at address zero");
-
-        _policyBooks.add(policyBook);
-        _policyBooksByType[contractType].add(policyBook);
-
-        //emit Added(insuredContract, policyBook);
     }
 
     function whitelist(address policyBookAddress, bool whitelisted)

@@ -11,6 +11,7 @@ import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import "./interfaces/IContractsRegistry.sol";
 import "./interfaces/IYieldGenerator.sol";
 import "./interfaces/IDefiProtocol.sol";
+import "./interfaces/ICapitalPool.sol";
 
 import "./abstract/AbstractDependant.sol";
 
@@ -25,12 +26,10 @@ contract YieldGenerator is IYieldGenerator, OwnableUpgradeable, AbstractDependan
     uint256 public constant PROTOCOLS_NUMBER = 5;
 
     ERC20 public stblToken;
-    address public capitalPoolAddress;
+    ICapitalPool public capitalPool;
 
     uint256 public totalDeposit;
     uint256 public whitelistedProtocols;
-    // TODO read the virtual stable volume from capital pool instead of it
-    uint256 internal vStblVolume;
 
     // index => defi protocol
     mapping(uint256 => DefiProtocol) internal defiProtocols;
@@ -49,7 +48,7 @@ contract YieldGenerator is IYieldGenerator, OwnableUpgradeable, AbstractDependan
     event DefiWithdrawn(uint256 indexed protocolIndex, uint256 amount, uint256 withdrawPercentage);
 
     modifier onlyCapitalPool() {
-        require(_msgSender() == capitalPoolAddress, "YG: Not a capital pool contract");
+        require(_msgSender() == address(capitalPool), "YG: Not a capital pool contract");
         _;
     }
 
@@ -68,8 +67,7 @@ contract YieldGenerator is IYieldGenerator, OwnableUpgradeable, AbstractDependan
         onlyInjectorOrZero
     {
         stblToken = ERC20(_contractsRegistry.getUSDTContract());
-        capitalPoolAddress = _contractsRegistry.getCapitalPoolContract();
-
+        capitalPool = ICapitalPool(_contractsRegistry.getCapitalPoolContract());
         defiProtocolsAddresses[uint256(DefiProtocols.AAVE)] = _contractsRegistry
             .getAaveProtocolContract();
         defiProtocolsAddresses[uint256(DefiProtocols.COMPOUND)] = _contractsRegistry
@@ -90,8 +88,8 @@ contract YieldGenerator is IYieldGenerator, OwnableUpgradeable, AbstractDependan
 
     /// @notice withdraw stable coin from mulitple defi protocols using formulas, access: capital pool
     /// @param amount uint256 the amount of stable coin to withdraw
-    function withdraw(uint256 amount) external override onlyCapitalPool {
-        _aggregateDepositWithdrawFunction(amount, false);
+    function withdraw(uint256 amount) external override onlyCapitalPool returns (uint256) {
+        return _aggregateDepositWithdrawFunction(amount, false);
     }
 
     /// @notice set the protocol settings for each defi protocol (allocations, whitelisted, threshold), access: owner
@@ -154,12 +152,13 @@ contract YieldGenerator is IYieldGenerator, OwnableUpgradeable, AbstractDependan
     function _aggregateDepositWithdrawFunction(uint256 amount, bool isDeposit)
         internal
         updateDefiProtocols(isDeposit)
+        returns (uint256 _actualAmountWithdrawn)
     {
         uint256 _protocolIndex;
         uint256 _protocolsNo = _howManyProtocols(amount, isDeposit);
         if (_protocolsNo == 1) {
             if (availableProtocols.length == 0) {
-                return;
+                return _actualAmountWithdrawn;
             }
             _protocolIndex = _getProtocolOfMaxWeight();
             if (isDeposit) {
@@ -167,7 +166,7 @@ contract YieldGenerator is IYieldGenerator, OwnableUpgradeable, AbstractDependan
                 _depoist(_protocolIndex, amount, PERCENTAGE_100);
             } else {
                 // withdraw 100% from this protocol
-                _withdraw(_protocolIndex, amount, PERCENTAGE_100);
+                _actualAmountWithdrawn = _withdraw(_protocolIndex, amount, PERCENTAGE_100);
             }
         } else if (_protocolsNo > 1) {
             delete _selectedProtocols;
@@ -196,7 +195,7 @@ contract YieldGenerator is IYieldGenerator, OwnableUpgradeable, AbstractDependan
                             _protocolRebalanceAllocation
                         );
                     } else {
-                        _withdraw(
+                        _actualAmountWithdrawn += _withdraw(
                             _selectedProtocols[i],
                             amount.mul(_protocolRebalanceAllocation).div(PERCENTAGE_100),
                             _protocolRebalanceAllocation
@@ -237,17 +236,19 @@ contract YieldGenerator is IYieldGenerator, OwnableUpgradeable, AbstractDependan
         uint256 _protocolIndex,
         uint256 _amount,
         uint256 _withdrawnPercentage
-    ) internal {
+    ) internal returns (uint256) {
+        uint256 _actualAmountWithdrawn;
         uint256 allocatedFunds = defiProtocols[_protocolIndex].depositedAmount;
 
-        if (allocatedFunds == 0) return;
+        if (allocatedFunds == 0) return _actualAmountWithdrawn;
 
         if (allocatedFunds < _amount) {
             _amount = defiProtocols[_protocolIndex].depositedAmount;
         }
 
-        uint256 _actualAmountWithdrawn =
-            IDefiProtocol(defiProtocolsAddresses[_protocolIndex]).withdraw(_amount);
+        _actualAmountWithdrawn = IDefiProtocol(defiProtocolsAddresses[_protocolIndex]).withdraw(
+            _amount
+        );
 
         // update protocol current allocation
         _updateProtocolCurrentAllocation(_protocolIndex, _actualAmountWithdrawn, false);
@@ -255,6 +256,8 @@ contract YieldGenerator is IYieldGenerator, OwnableUpgradeable, AbstractDependan
         totalDeposit = totalDeposit.sub(_actualAmountWithdrawn);
 
         emit DefiWithdrawn(_protocolIndex, _actualAmountWithdrawn, _withdrawnPercentage);
+
+        return _actualAmountWithdrawn;
     }
 
     /// @notice get the number of protocols need to rebalance
@@ -271,7 +274,7 @@ contract YieldGenerator is IYieldGenerator, OwnableUpgradeable, AbstractDependan
             _no1 = PROTOCOLS_NUMBER.mul(rebalanceAmount);
         }
 
-        uint256 _no2 = vStblVolume;
+        uint256 _no2 = _getCurrentvSTBLVolume();
 
         return _no1.add(_no2 - 1).div(_no2);
         //return _no1.div(_no2).add(_no1.mod(_no2) == 0 ? 0 : 1);
@@ -302,7 +305,7 @@ contract YieldGenerator is IYieldGenerator, OwnableUpgradeable, AbstractDependan
             }
 
             // update rebalance weight
-            defiProtocols[i].rebalanceWeight = _diffAllocation.mul(vStblVolume).div(
+            defiProtocols[i].rebalanceWeight = _diffAllocation.mul(_getCurrentvSTBLVolume()).div(
                 PERCENTAGE_100
             );
 
@@ -353,7 +356,7 @@ contract YieldGenerator is IYieldGenerator, OwnableUpgradeable, AbstractDependan
         }
         defiProtocols[_protocolIndex].depositedAmount = _depositedAmount;
         defiProtocols[_protocolIndex].currentAllocation = _depositedAmount.mul(PERCENTAGE_100).div(
-            vStblVolume
+            _getCurrentvSTBLVolume()
         );
     }
 
@@ -368,12 +371,7 @@ contract YieldGenerator is IYieldGenerator, OwnableUpgradeable, AbstractDependan
         return defiProtocols[_protocolIndex].rebalanceWeight.mul(PERCENTAGE_100).div(_totalWeight);
     }
 
-    // TODO:
-    // add interface
-    // reinusrancepool
-    // leverage portfolio
-    // policy premiums (20%)
-    // function stableBalance() public view returns(uint258) {
-    //     return regularCoverageBalance.plus(
-    // }
+    function _getCurrentvSTBLVolume() internal view returns (uint256) {
+        return capitalPool.virtualUsdtAccumulatedBalance();
+    }
 }

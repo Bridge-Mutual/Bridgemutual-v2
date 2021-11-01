@@ -30,8 +30,6 @@ interface IPolicyBookRegistry {
         address facadeAddress
     ) external;
 
-    function add(IPolicyBookFabric.ContractType contractType, address policyBook) external;
-
     function whitelist(address policyBookAddress, bool whitelisted) external;
 
     /// @notice returns required allowances for the policybooks

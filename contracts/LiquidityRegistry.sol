@@ -28,6 +28,12 @@ contract LiquidityRegistry is ILiquidityRegistry, AbstractDependant {
     // User address => policy books array
     mapping(address => EnumerableSet.AddressSet) private _policyBooks;
 
+    // new state variables - for upgrade
+    // List of withdrawls stored chronologically
+    address[] public withdrawlListCoverage;
+    address[] public withdrawlListUser;
+    uint256 public withdrawlListCounter;
+
     event PolicyBookAdded(address _userAddr, address _policyBookAddress);
     event PolicyBookRemoved(address _userAddr, address _policyBookAddress);
 
@@ -38,6 +44,11 @@ contract LiquidityRegistry is ILiquidityRegistry, AbstractDependant {
                 policyBookRegistry.isPolicyBook(msg.sender),
             "LR: Not an eligible contract"
         );
+        _;
+    }
+
+    modifier onlyPolicyBookFacade() {
+        require(policyBookRegistry.isPolicyBookFacade(msg.sender), "LR: not elegible contract");
         _;
     }
 
@@ -213,6 +224,87 @@ contract LiquidityRegistry is ILiquidityRegistry, AbstractDependant {
             );
 
             _arrLength++;
+        }
+    }
+
+    /// @notice Register's coverages Withdrawals in chronological order
+    /// @dev Requires withdrawls to be serialized according to their withdrawl date
+    /// @param _policyBook address of the policybook with requested withdrawl
+    /// @param _user address user addres requesting withdrawl
+    function registerWithdrawl(address _policyBook, address _user)
+        external
+        override
+        onlyPolicyBookFacade
+    {
+        (uint256 _date, , ) = IPolicyBook(_policyBook).withdrawalsInfo(_user);
+
+        if (withdrawlListCoverage.length > 0) {
+            uint256 _lastIndex = withdrawlListCoverage.length - 1;
+            if (_lastIndex > withdrawlListCounter) {
+                (, uint256 _previousDate, ) =
+                    IPolicyBook(withdrawlListCoverage[_lastIndex]).withdrawalsInfo(
+                        withdrawlListUser[_lastIndex]
+                    );
+
+                require(_previousDate <= _date, "LR: withdrawl out of order");
+            }
+        }
+
+        withdrawlListCoverage.push(_policyBook);
+        withdrawlListUser.push(_user);
+    }
+
+    /// @notice fetches the withdrawal data and amounts across all policybooks given a time contrain
+    /// @param _startTime uint256 withdrawal window time window start
+    /// @param _endTime uint256 withdrawal window time window end
+    /// @return _pbooks address[] list of policies withdrawls
+    /// @return _users address[] list of users withdrawls
+    /// @return _acumulatedAmount uint256 collected withdrawl amount in window
+    /// @return _count uint256 number of results retunred
+    function getWithdrawalRequestsInWindowTime(uint256 _startTime, uint256 _endTime)
+        external
+        override
+        returns (
+            address[] memory _pbooks,
+            address[] memory _users,
+            uint256 _acumulatedAmount,
+            uint256 _count
+        )
+    {
+        uint256 _from = withdrawlListCounter;
+        _pbooks = new address[](withdrawlListCoverage.length);
+        _users = new address[](withdrawlListCoverage.length);
+
+        for (uint256 i = _from; i < withdrawlListCoverage.length; i++) {
+            address _pbAddress = withdrawlListCoverage[i];
+            address _pbUser = withdrawlListUser[i];
+
+            // TODO: check allowed restrictions
+            (uint256 _amount, uint256 _date, bool _allowed) =
+                IPolicyBook(_pbAddress).withdrawalsInfo(_pbUser);
+
+            if (_date < _startTime) {
+                continue;
+            }
+            if (_date > _endTime) {
+                break;
+            }
+
+            // TODO: replace getWithdrawalStatus with status @ window timestamp instead
+            IPolicyBook.WithdrawalStatus _status =
+                IPolicyBook(_pbAddress).getWithdrawalStatus(_pbAddress);
+
+            if (
+                _status == IPolicyBook.WithdrawalStatus.READY ||
+                _status == IPolicyBook.WithdrawalStatus.PENDING
+            ) {
+                // TODO refactor function to only return indexes of registerd withdrawals
+                // between timestamps
+                _pbooks[_count] = _pbAddress;
+                _users[_count] = _pbUser;
+                _acumulatedAmount += _amount;
+                _count += 1;
+            }
         }
     }
 }

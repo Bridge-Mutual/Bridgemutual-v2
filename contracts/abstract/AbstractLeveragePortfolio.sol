@@ -15,6 +15,7 @@ import "../interfaces/IPolicyBookRegistry.sol";
 import "../interfaces/IContractsRegistry.sol";
 import "../interfaces/ILeveragePortfolio.sol";
 import "../interfaces/IPolicyBook.sol";
+import "../interfaces/ICapitalPool.sol";
 
 import "./AbstractDependant.sol";
 
@@ -31,7 +32,7 @@ abstract contract AbstractLeveragePortfolio is
 
     uint256 public constant MIN_UR = 2 * PRECISION;
 
-    address public capitalPoolAddress;
+    ICapitalPool public capitalPool;
     IPolicyBookRegistry public policyBookRegistry;
     ILeveragePortfolio public leveragePortfolio;
 
@@ -50,13 +51,13 @@ abstract contract AbstractLeveragePortfolio is
     event VirtualStableDeployed(address policyBook, uint256 deployedAmount);
     event ProvidedLeverageReevaluated(LeveragePortfolio leveragePool);
 
-    modifier onlyPolicyBooks() {
-        require(policyBookRegistry.isPolicyBook(_msgSender()), "LP: No access");
+    modifier onlyPolicyBookFacade() {
+        require(policyBookRegistry.isPolicyBookFacade(_msgSender()), "LP: No access");
         _;
     }
 
     modifier onlyCapitalPool() {
-        require(_msgSender() == address(capitalPoolAddress), "PB: No access");
+        require(_msgSender() == address(capitalPool), "PB: No access");
         _;
     }
 
@@ -72,10 +73,15 @@ abstract contract AbstractLeveragePortfolio is
     function deployLeverageStableToCoveragePools(uint256 mpl, uint256 secondMPL)
         external
         override
-        onlyPolicyBooks
+        onlyPolicyBookFacade
         returns (bool, uint256)
     {
-        return _deployLeverageStableToCoveragePools(mpl, secondMPL, _msgSender());
+        return
+            _deployLeverageStableToCoveragePools(
+                mpl,
+                secondMPL,
+                address((IPolicyBookFacade(_msgSender())).policyBook())
+            );
     }
 
     /// @notice deploy the vStable from RP in v2 and for next versions it will be from RP and LP : access by policybook.
@@ -84,25 +90,27 @@ abstract contract AbstractLeveragePortfolio is
     function deployVirtualStableToCoveragePools(uint256 mpl)
         external
         override
-        onlyPolicyBooks
+        onlyPolicyBookFacade
         returns (uint256)
     {
-        uint256 value = _calcvStableFormulaforOnePool(_msgSender());
-        uint256 _currentDeployedAmount = poolsDeployedAmount[_msgSender()];
+        address policyBookAddr = address((IPolicyBookFacade(_msgSender())).policyBook());
+
+        uint256 value = _calcvStableFormulaforOnePool(policyBookAddr);
+        uint256 _currentDeployedAmount = poolsDeployedAmount[policyBookAddr];
 
         uint256 _deployedAmount =
-            value.mul(vStableTotalLiquidity).div(_calcvStableFormulaforAllPools()).div(
-                PERCENTAGE_100
-            );
+            value.mul(vStableTotalLiquidity).div(_calcvStableFormulaforAllPools());
 
         uint256 _totalAmount = _deployedAmount.add(_currentDeployedAmount);
         uint256 _maxAmount = mpl.mul(vStableTotalLiquidity).div(PERCENTAGE_100);
 
         if (_totalAmount > _maxAmount) {
-            _deployedAmount = _maxAmount.sub(_totalAmount);
+            _deployedAmount = _maxAmount.sub(_currentDeployedAmount);
         }
-        poolsDeployedAmount[_msgSender()] += _deployedAmount;
-        emit VirtualStableDeployed(_msgSender(), _deployedAmount);
+        poolsDeployedAmount[policyBookAddr] += _deployedAmount;
+        _currentDeployedAmount += _deployedAmount;
+        poolsDeployedAmount[policyBookAddr] = _currentDeployedAmount;
+        emit VirtualStableDeployed(policyBookAddr, _deployedAmount);
         return _deployedAmount;
     }
 
@@ -268,13 +276,14 @@ abstract contract AbstractLeveragePortfolio is
         uint256 mpl;
         uint256 secondMPL;
         for (uint256 i = 0; i < leveragedCoveragePools.length(); i++) {
-            IPolicyBookFacade _coveragepool = _getCoveragePool(leveragedCoveragePools.at(i));
+            IPolicyBookFacade _policyBookFacade =
+                _getPolicyBookFacade(leveragedCoveragePools.at(i));
             if (leveragePool == LeveragePortfolio.USERLEVERAGEPOOL) {
-                mpl = _coveragepool.userleveragedMPL();
-                secondMPL = _coveragepool.reinsurancePoolMPL();
+                mpl = _policyBookFacade.userleveragedMPL();
+                secondMPL = _policyBookFacade.reinsurancePoolMPL();
             } else {
-                mpl = _coveragepool.reinsurancePoolMPL();
-                secondMPL = _coveragepool.userleveragedMPL();
+                mpl = _policyBookFacade.reinsurancePoolMPL();
+                secondMPL = _policyBookFacade.userleveragedMPL();
             }
             _deployLeverageStableToCoveragePools(mpl, secondMPL, leveragedCoveragePools.at(i));
 
@@ -299,13 +308,13 @@ abstract contract AbstractLeveragePortfolio is
     {
         uint256 res;
         IPolicyBook _policyBook = IPolicyBook(_policybookAddress);
-        IPolicyBookFacade _coveragepool = IPolicyBookFacade(_policyBook.policyBookFacade());
+        IPolicyBookFacade _policyBookFacade = _getPolicyBookFacade(_policybookAddress);
 
-        if (_coveragepool.reinsurancePoolMPL() > 0) {
+        if (_policyBookFacade.reinsurancePoolMPL() > 0) {
             uint256 _poolTotalLiquidity = _policyBook.totalLiquidity();
             uint256 _poolUR =
                 _policyBook.totalCoverTokens().mul(PERCENTAGE_100).div(_poolTotalLiquidity);
-            res = (_poolUR).mul(_poolUR).mul(_poolTotalLiquidity);
+            res = (_poolUR).mul(_poolUR).div(PERCENTAGE_100).mul(_poolTotalLiquidity);
         }
         return res;
     }
@@ -313,7 +322,7 @@ abstract contract AbstractLeveragePortfolio is
     /// @notice Returns the policybook facade that stores the leverage storage from a policybook
     /// @param _policybookAddress address of the policybook
     /// @return _coveragePool
-    function _getCoveragePool(address _policybookAddress)
+    function _getPolicyBookFacade(address _policybookAddress)
         internal
         view
         returns (IPolicyBookFacade _coveragePool)

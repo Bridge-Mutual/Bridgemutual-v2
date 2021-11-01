@@ -108,7 +108,7 @@ contract AaveProtocol is IDefiProtocol, OwnableUpgradeable, AbstractDependant {
         if (_accumaltedAmount > 0) {
             uint256 _amountInUnderlying =
                 lendingPool.withdraw(address(stablecoin), _accumaltedAmount, capitalPoolAddress);
-            /// TODO call a function in capital pool to update the balance of reinsurance pool
+
             reinsurancePool.addInterestFromDefiProtocols(_accumaltedAmount);
 
             totalRewards = totalRewards.add(_amountInUnderlying);

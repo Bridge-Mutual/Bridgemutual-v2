@@ -20,7 +20,7 @@ interface IYieldGenerator {
 
     /// @notice withdraw stable coin from mulitple defi protocols using formulas, access: capital pool
     /// @param amount uint256 the amount of stable coin to withdraw
-    function withdraw(uint256 amount) external;
+    function withdraw(uint256 amount) external returns (uint256);
 
     /// @notice set the protocol settings for each defi protocol (allocations, whitelisted, threshold), access: owner
     /// @param whitelisted bool[] list of whitelisted values for each protocol

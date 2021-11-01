@@ -99,26 +99,41 @@ interface IUserLeveragePool {
 
     function whitelist(bool _whitelisted) external;
 
+    /// @notice set max total liquidity for the pool
+    /// @param _maxCapacities uint256 the max total liquidity
+    function setMaxCapacities(uint256 _maxCapacities) external;
+
     /// @notice Getting number stats, access: ANY
+    /// @return _maxCapacities is a max liquidity of the pool
     /// @return _totalSTBLLiquidity is PolicyBook's liquidity
     /// @return _stakedSTBL is how much stable coin are staked on this PolicyBook
     /// @return _annualProfitYields is its APY
+    /// @return _annualInsuranceCost is becuase to follow the same function in policy book
     /// @return  _bmiXRatio is multiplied by 10**18. To get STBL representation
     function numberStats()
         external
         view
         returns (
+            uint256 _maxCapacities,
             uint256 _totalSTBLLiquidity,
             uint256 _stakedSTBL,
             uint256 _annualProfitYields,
+            uint256 _annualInsuranceCost,
             uint256 _bmiXRatio
         );
 
     /// @notice Getting info, access: ANY
     /// @return _symbol is the symbol of PolicyBook (bmiXCover)
-    /// @return _contractType is a type of insured contract
+    /// @return _insuredContract is an addres of insured contract
+    /// @return _contractType is becuase to follow the same function in policy book
+    /// @return _whitelisted is a state of whitelisting
     function info()
         external
         view
-        returns (string memory _symbol, IPolicyBookFabric.ContractType _contractType);
+        returns (
+            string memory _symbol,
+            address _insuredContract,
+            IPolicyBookFabric.ContractType _contractType,
+            bool _whitelisted
+        );
 }

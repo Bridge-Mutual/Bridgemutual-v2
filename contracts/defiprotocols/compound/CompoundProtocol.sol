@@ -102,7 +102,6 @@ contract CompoundProtocol is IDefiProtocol, OwnableUpgradeable, AbstractDependan
             );
 
             stablecoin.safeTransfer(capitalPoolAddress, _accumaltedAmount);
-            /// TODO call a function in capital pool to update the balance of reinsurance pool
             reinsurancePool.addInterestFromDefiProtocols(_accumaltedAmount);
 
             // get comp reward on top of farming and send it to reinsurance pool

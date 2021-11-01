@@ -77,10 +77,6 @@ interface IContractsRegistry {
 
     function getReputationSystemContract() external view returns (address);
 
-    function getShieldMiningViewContract() external view returns (address);
-
-    function getShieldMiningControllerContract() external view returns (address);
-
     function getAaveProtocolContract() external view returns (address);
 
     function getAaveLendPoolAddressProvdierContract() external view returns (address);

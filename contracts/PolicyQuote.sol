@@ -6,6 +6,7 @@ import "@openzeppelin/contracts/math/Math.sol";
 
 import "./interfaces/IPolicyBook.sol";
 import "./interfaces/IPolicyQuote.sol";
+import "./interfaces/IPolicyBookFacade.sol";
 
 import "./Globals.sol";
 
@@ -64,6 +65,7 @@ contract PolicyQuote is IPolicyQuote {
         uint256 _tokens,
         uint256 _totalCoverTokens,
         uint256 _totalLiquidity,
+        uint256 _totalLeveragedLiquidity,
         bool _safePolicyBook
     ) external pure override returns (uint256) {
         return
@@ -72,6 +74,7 @@ contract PolicyQuote is IPolicyQuote {
                 _tokens,
                 _totalCoverTokens,
                 _totalLiquidity,
+                _totalLeveragedLiquidity,
                 _safePolicyBook
             );
     }
@@ -87,6 +90,8 @@ contract PolicyQuote is IPolicyQuote {
                 _tokens,
                 IPolicyBook(_policyBookAddr).totalCoverTokens(),
                 IPolicyBook(_policyBookAddr).totalLiquidity(),
+                IPolicyBookFacade(address(IPolicyBook(_policyBookAddr).policyBookFacade()))
+                    .totalLeveragedLiquidity(),
                 IPolicyBook(_policyBookAddr).whitelisted()
             );
     }
@@ -96,6 +101,7 @@ contract PolicyQuote is IPolicyQuote {
         uint256 _tokens,
         uint256 _totalCoverTokens,
         uint256 _totalLiquidity,
+        uint256 _totalLeveragedLiquidity,
         bool _safePolicyBook
     ) internal pure returns (uint256) {
         require(
@@ -109,7 +115,9 @@ contract PolicyQuote is IPolicyQuote {
         );
 
         uint256 utilizationRatioPercentage =
-            ((_totalCoverTokens.add(_tokens)).mul(PERCENTAGE_100)).div(_totalLiquidity);
+            ((_totalCoverTokens.add(_tokens)).mul(PERCENTAGE_100)).div(
+                _totalLiquidity.add(_totalLeveragedLiquidity)
+            );
 
         uint256 annualInsuranceCostPercentage;
 

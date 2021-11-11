@@ -83,19 +83,19 @@ contract AaveProtocol is IDefiProtocol, OwnableUpgradeable, AbstractDependant {
         onlyYieldGenerator
         returns (uint256 actualAmountWithdrawn)
     {
-        require(totalDeposit >= amountInUnderlying, "AP: Amount exceed the balance");
+        if (totalDeposit >= amountInUnderlying) {
+            ILendingPool lendingPool = _getLendingPool();
 
-        ILendingPool lendingPool = _getLendingPool();
+            // Redeem `amountInUnderlying` aToken, since 1 aToken = 1 stablecoin
+            // Transfer `amountInUnderlying` stablecoin to capital pool
+            actualAmountWithdrawn = lendingPool.withdraw(
+                address(stablecoin),
+                amountInUnderlying,
+                capitalPoolAddress
+            );
 
-        // Redeem `amountInUnderlying` aToken, since 1 aToken = 1 stablecoin
-        // Transfer `amountInUnderlying` stablecoin to capital pool
-        actualAmountWithdrawn = lendingPool.withdraw(
-            address(stablecoin),
-            amountInUnderlying,
-            capitalPoolAddress
-        );
-
-        totalDeposit = totalDeposit.sub(actualAmountWithdrawn);
+            totalDeposit = totalDeposit.sub(actualAmountWithdrawn);
+        }
 
         return actualAmountWithdrawn;
     }

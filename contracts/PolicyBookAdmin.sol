@@ -159,14 +159,16 @@ contract PolicyBookAdmin is IPolicyBookAdmin, OwnableUpgradeable, AbstractDepend
         address[] memory _policies = policyBookRegistry.list(offset, limit);
 
         for (uint256 i = 0; i < _policies.length; i++) {
-            if (bytes(functionSignature).length > 0) {
-                upgrader.upgradeAndCall(
-                    _policies[i],
-                    policyBookImpl,
-                    abi.encodeWithSignature(functionSignature)
-                );
-            } else {
-                upgrader.upgrade(_policies[i], policyBookImpl);
+            if (!policyBookRegistry.isUserLeveragePool(_policies[i])) {
+                if (bytes(functionSignature).length > 0) {
+                    upgrader.upgradeAndCall(
+                        _policies[i],
+                        policyBookImpl,
+                        abi.encodeWithSignature(functionSignature)
+                    );
+                } else {
+                    upgrader.upgrade(_policies[i], policyBookImpl);
+                }
             }
         }
     }

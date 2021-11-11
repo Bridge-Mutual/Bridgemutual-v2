@@ -7,12 +7,14 @@ interface IPolicyQuote {
     /// @param _tokens is a number of tokens to cover
     /// @param _totalCoverTokens is a number of covered tokens
     /// @param _totalLiquidity is a liquidity amount
+    /// @param _totalLeveragedLiquidity is a totale deployed leverage to the pool
     /// @return amount of stable coin policy costs
     function getQuotePredefined(
         uint256 _durationSeconds,
         uint256 _tokens,
         uint256 _totalCoverTokens,
         uint256 _totalLiquidity,
+        uint256 _totalLeveragedLiquidity,
         bool _safePolicyBook
     ) external view returns (uint256);
 

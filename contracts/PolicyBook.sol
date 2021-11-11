@@ -121,7 +121,6 @@ contract PolicyBook is IPolicyBook, ERC20PermitUpgradeable, AbstractDependant {
         address _distributor
     );
     event CoverageChanged(uint256 _newTotalCoverTokens);
-    event DeployLeverageFunds(uint256 _deployedAmount, bool _isLeverage);
 
     modifier onlyClaimVoting() {
         require(_msgSender() == address(claimVoting), "PB: Not a CV");
@@ -447,6 +446,7 @@ contract PolicyBook is IPolicyBook, ERC20PermitUpgradeable, AbstractDependant {
             _coverTokens,
             newTotalCoverTokens,
             newTotalLiquidity,
+            policyBookFacade.totalLeveragedLiquidity(),
             whitelisted
         );
 
@@ -637,8 +637,8 @@ contract PolicyBook is IPolicyBook, ERC20PermitUpgradeable, AbstractDependant {
         /// TODO: track PB sblIngress individually ? or only the _mint
         if (_msgSender() != policyBookFabricAddress) {
             stblToken.safeTransferFrom(_liquidityHolderAddr, address(capitalPool), stblLiquidity);
-            capitalPool.addCoverageProvidersHardSTBL(stblLiquidity);
         }
+        capitalPool.addCoverageProvidersHardSTBL(stblLiquidity);
 
         /// @dev have to add to LM liquidity
         // TODO confirm changes to the liquidity mininign event
@@ -762,20 +762,6 @@ contract PolicyBook is IPolicyBook, ERC20PermitUpgradeable, AbstractDependant {
         emit WithdrawalRequested(_user, _tokensToWithdraw, _readyToWithdrawDate);
     }
 
-    /// @notice deploy leverage funds (RP vStable, RP lStable, ULP lStable)
-    /// @param  deployedAmount uint256 the deployed amount to be added or substracted from the total liquidity
-    /// @param isLeverage bool true for increase , false for decrease
-    function deployLeverageFunds(uint256 deployedAmount, bool isLeverage)
-        external
-        override
-        onlyPolicyBookFacade
-    {
-        totalLiquidity = isLeverage
-            ? totalLiquidity.add(deployedAmount)
-            : totalLiquidity.sub(deployedAmount);
-        emit DeployLeverageFunds(deployedAmount, isLeverage);
-    }
-
     function _lockTokens(address _userAddr, uint256 _neededTokensToLock) internal {
         uint256 _currentLockedTokens = withdrawalsInfo[_userAddr].withdrawalAmount;
 
@@ -883,6 +869,7 @@ contract PolicyBook is IPolicyBook, ERC20PermitUpgradeable, AbstractDependant {
         returns (
             uint256 _maxCapacities,
             uint256 _totalSTBLLiquidity,
+            uint256 _totalLeveragedLiquidity,
             uint256 _stakedSTBL,
             uint256 _annualProfitYields,
             uint256 _annualInsuranceCost,
@@ -898,6 +885,7 @@ contract PolicyBook is IPolicyBook, ERC20PermitUpgradeable, AbstractDependant {
         _annualProfitYields = getAPY().add(bmiCoverStakingView.getPolicyBookAPY(address(this)));
 
         uint256 possibleCoverage = Math.min(ANNUAL_COVERAGE_TOKENS, _maxCapacities);
+        _totalLeveragedLiquidity = policyBookFacade.totalLeveragedLiquidity();
 
         if (possibleCoverage >= MINUMUM_COVERAGE) {
             _annualInsuranceCost = policyQuote.getQuotePredefined(
@@ -905,6 +893,7 @@ contract PolicyBook is IPolicyBook, ERC20PermitUpgradeable, AbstractDependant {
                 possibleCoverage,
                 newTotalCoverTokens,
                 _totalSTBLLiquidity,
+                _totalLeveragedLiquidity,
                 whitelisted
             );
 

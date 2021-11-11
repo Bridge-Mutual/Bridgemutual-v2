@@ -5,7 +5,7 @@ pragma experimental ABIEncoderV2;
 import "../UserLeveragePool.sol";
 
 contract UserLeveragePoolMock is UserLeveragePool {
-    function __UserLeveragePool_init() external initializer {
+    function __UserLeveragePoolMock_init() external initializer {
         this.__UserLeveragePool_init(
             IPolicyBookFabric.ContractType.VARIOUS,
             "User Leverage Pool",
@@ -22,7 +22,7 @@ contract UserLeveragePoolMock is UserLeveragePool {
     }
 
     function setVtotalLiquidity(uint256 _vStableTotalLiquidity) external {
-        vStableTotalLiquidity = _vStableTotalLiquidity;
+        totalLiquidity = _vStableTotalLiquidity;
     }
 
     function mint(uint256 _amountToMint) external {

@@ -6,6 +6,6 @@ import "../ReinsurancePool.sol";
 
 contract ReinsurancePoolMock is ReinsurancePool {
     function setVtotalLiquidity(uint256 _vStableTotalLiquidity) external {
-        vStableTotalLiquidity = _vStableTotalLiquidity;
+        totalLiquidity = _vStableTotalLiquidity;
     }
 }

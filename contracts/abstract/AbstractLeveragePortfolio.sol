@@ -41,8 +41,8 @@ abstract contract AbstractLeveragePortfolio is
     uint256 public a_ProtocolConstant;
     uint256 public max_ProtocolConstant;
 
-    uint256 public override vStableTotalLiquidity;
-    uint256 public reevaluateThreshold;
+    uint256 public override totalLiquidity;
+    uint256 public rebalancingThreshold;
 
     mapping(address => uint256) public poolsDeployedAmount;
     EnumerableSet.AddressSet internal leveragedCoveragePools;
@@ -63,6 +63,11 @@ abstract contract AbstractLeveragePortfolio is
 
     function __LeveragePortfolio_init() internal initializer {
         __Ownable_init();
+        a_ProtocolConstant = 100 * PRECISION;
+        d_ProtocolConstant = 2 * PRECISION;
+        targetUR = 45 * PRECISION;
+        max_ProtocolConstant = PERCENTAGE_100;
+        rebalancingThreshold = DEFAULT_REBALANCING_THRESHOLD;
     }
 
     /// @notice deploy lStable from user leverage pool or reinsurance pool using 2 formulas: access by policybook.
@@ -85,32 +90,45 @@ abstract contract AbstractLeveragePortfolio is
     }
 
     /// @notice deploy the vStable from RP in v2 and for next versions it will be from RP and LP : access by policybook.
-    /// @param mpl uint256 reinsurance pool MPL
     /// @return the amount of vstable to deploy
-    function deployVirtualStableToCoveragePools(uint256 mpl)
+    function deployVirtualStableToCoveragePools()
         external
         override
         onlyPolicyBookFacade
         returns (uint256)
     {
         address policyBookAddr = address((IPolicyBookFacade(_msgSender())).policyBook());
+        IPolicyBookFacade _policyBookFacade = _getPolicyBookFacade(policyBookAddr);
+        uint256 _deployedAmount;
+        uint256 _mpl = _policyBookFacade.reinsurancePoolMPL();
 
-        uint256 value = _calcvStableFormulaforOnePool(policyBookAddr);
+        if (totalLiquidity == 0) return _deployedAmount;
+
         uint256 _currentDeployedAmount = poolsDeployedAmount[policyBookAddr];
+        uint256 _maxAmount = _mpl.mul(totalLiquidity).div(PERCENTAGE_100);
 
-        uint256 _deployedAmount =
-            value.mul(vStableTotalLiquidity).div(_calcvStableFormulaforAllPools());
+        if (_currentDeployedAmount > _maxAmount) return _deployedAmount;
+
+        uint256 result1 = _calcvStableFormulaforOnePool(policyBookAddr);
+
+        uint256 result2 = _calcvStableFormulaforAllPools();
+
+        if (result2 == 0) return _deployedAmount;
+
+        _deployedAmount = result1.mul(totalLiquidity).div(result2);
 
         uint256 _totalAmount = _deployedAmount.add(_currentDeployedAmount);
-        uint256 _maxAmount = mpl.mul(vStableTotalLiquidity).div(PERCENTAGE_100);
 
         if (_totalAmount > _maxAmount) {
             _deployedAmount = _maxAmount.sub(_currentDeployedAmount);
         }
-        poolsDeployedAmount[policyBookAddr] += _deployedAmount;
+
         _currentDeployedAmount += _deployedAmount;
+
         poolsDeployedAmount[policyBookAddr] = _currentDeployedAmount;
+
         emit VirtualStableDeployed(policyBookAddr, _deployedAmount);
+
         return _deployedAmount;
     }
 
@@ -131,9 +149,9 @@ abstract contract AbstractLeveragePortfolio is
     }
 
     function _calcM(uint256 poolUR) internal view returns (uint256) {
+        uint256 _PRECISION = 10**27;
         uint256 _ur;
-        uint256 const = 1;
-        if (targetUR.div(PERCENTAGE_100) > poolUR) {
+        if (targetUR > poolUR) {
             _ur = targetUR.sub(poolUR);
         } else {
             _ur = poolUR.sub(targetUR);
@@ -141,16 +159,19 @@ abstract contract AbstractLeveragePortfolio is
 
         uint256 _multiplier =
             Math.min(
-                (const.div(_ur)).mul(d_ProtocolConstant).div(a_ProtocolConstant),
-                max_ProtocolConstant.div(PERCENTAGE_100)
+                d_ProtocolConstant.mul(_PRECISION).div(_ur).mul(_PRECISION).div(
+                    a_ProtocolConstant
+                ),
+                max_ProtocolConstant
             );
+
         return _multiplier;
     }
 
     /// @notice set the threshold % for re-evaluation of the lStable provided across all Coverage pools
     /// @param _threshold uint256 is the reevaluatation threshold
     function setThreshold(uint256 _threshold) external override onlyOwner {
-        reevaluateThreshold = _threshold;
+        rebalancingThreshold = _threshold;
     }
 
     /// @notice set the protocol constant
@@ -202,42 +223,44 @@ abstract contract AbstractLeveragePortfolio is
     ) internal returns (bool isLeverage, uint256 deployedAmount) {
         IPolicyBook _coveragepool = IPolicyBook(policyBookAddress);
         uint256 _poolTotalLiquidity = _coveragepool.totalLiquidity();
+        uint256 _totalCoverTokens = _coveragepool.totalCoverTokens();
 
-        uint256 _currentDeployedAmount = poolsDeployedAmount[policyBookAddress];
+        if (_poolTotalLiquidity != 0 && _totalCoverTokens != 0 && totalLiquidity != 0) {
+            uint256 _currentDeployedAmount = poolsDeployedAmount[policyBookAddress];
 
-        uint256 _poolUR =
-            _coveragepool.totalCoverTokens().mul(PERCENTAGE_100).div(_poolTotalLiquidity);
+            uint256 _poolUR = _totalCoverTokens.mul(PERCENTAGE_100).div(_poolTotalLiquidity);
 
-        uint256 _netMPL = vStableTotalLiquidity.mul(mpl).div(PERCENTAGE_100);
+            uint256 _netMPL = totalLiquidity.mul(mpl).div(PERCENTAGE_100);
 
-        uint256 _netMPL2 =
-            leveragePortfolio.vStableTotalLiquidity().mul(secondMPL).div(PERCENTAGE_100);
+            uint256 _netMPL2 =
+                leveragePortfolio.totalLiquidity().mul(secondMPL).div(PERCENTAGE_100);
 
-        uint256 _amountToDeploy =
-            calcMaxLevFunds(LevFundsFactors(_netMPL, _netMPL2, _poolTotalLiquidity, _poolUR));
+            uint256 _amountToDeploy =
+                calcMaxLevFunds(LevFundsFactors(_netMPL, _netMPL2, _poolTotalLiquidity, _poolUR));
 
-        if (_amountToDeploy > _currentDeployedAmount) {
-            if (!leveragedCoveragePools.contains(policyBookAddress)) {
-                leveragedCoveragePools.add(policyBookAddress);
+            if (_amountToDeploy > _currentDeployedAmount) {
+                if (!leveragedCoveragePools.contains(policyBookAddress)) {
+                    leveragedCoveragePools.add(policyBookAddress);
+                }
+                isLeverage = true;
+                deployedAmount = _amountToDeploy.sub(_currentDeployedAmount);
+
+                _currentDeployedAmount += deployedAmount;
+            } else if (_currentDeployedAmount > _amountToDeploy) {
+                isLeverage = false;
+                deployedAmount = _currentDeployedAmount.sub(_amountToDeploy);
+
+                _currentDeployedAmount -= deployedAmount;
             }
-            isLeverage = true;
-            deployedAmount = _amountToDeploy.sub(_currentDeployedAmount);
 
-            _currentDeployedAmount += deployedAmount;
-        } else if (_currentDeployedAmount > _amountToDeploy) {
-            isLeverage = false;
-            deployedAmount = _currentDeployedAmount.sub(_amountToDeploy);
+            poolsDeployedAmount[policyBookAddress] = _currentDeployedAmount;
 
-            _currentDeployedAmount -= deployedAmount;
+            if (_currentDeployedAmount == 0) {
+                leveragedCoveragePools.remove(policyBookAddress);
+            }
+
+            emit LeverageStableDeployed(policyBookAddress, deployedAmount, isLeverage);
         }
-
-        poolsDeployedAmount[policyBookAddress] = _currentDeployedAmount;
-
-        if (_currentDeployedAmount == 0) {
-            leveragedCoveragePools.remove(policyBookAddress);
-        }
-
-        emit LeverageStableDeployed(policyBookAddress, deployedAmount, isLeverage);
     }
 
     function calcMaxLevFunds(LevFundsFactors memory factors) internal pure returns (uint256) {
@@ -263,8 +286,8 @@ abstract contract AbstractLeveragePortfolio is
     function _reevaluateProvidedLeverageStable(LeveragePortfolio leveragePool, uint256 newAmount)
         internal
     {
-        uint256 _newAmountPercentage = newAmount.mul(PERCENTAGE_100).div(vStableTotalLiquidity);
-        if (_newAmountPercentage > reevaluateThreshold) {
+        uint256 _newAmountPercentage = newAmount.mul(PERCENTAGE_100).div(totalLiquidity);
+        if (_newAmountPercentage > rebalancingThreshold) {
             _rebalanceProvidedLeverageStable(leveragePool);
             emit ProvidedLeverageReevaluated(leveragePool);
         }
@@ -275,9 +298,13 @@ abstract contract AbstractLeveragePortfolio is
     function _rebalanceProvidedLeverageStable(LeveragePortfolio leveragePool) internal {
         uint256 mpl;
         uint256 secondMPL;
-        for (uint256 i = 0; i < leveragedCoveragePools.length(); i++) {
-            IPolicyBookFacade _policyBookFacade =
-                _getPolicyBookFacade(leveragedCoveragePools.at(i));
+        uint256 _coveragePoolCount = policyBookRegistry.count();
+        address[] memory _policyBooksArr = policyBookRegistry.list(0, _coveragePoolCount);
+
+        for (uint256 i = 0; i < _policyBooksArr.length; i++) {
+            if (policyBookRegistry.isUserLeveragePool(_policyBooksArr[i])) continue;
+
+            IPolicyBookFacade _policyBookFacade = _getPolicyBookFacade(_policyBooksArr[i]);
             if (leveragePool == LeveragePortfolio.USERLEVERAGEPOOL) {
                 mpl = _policyBookFacade.userleveragedMPL();
                 secondMPL = _policyBookFacade.reinsurancePoolMPL();
@@ -285,18 +312,26 @@ abstract contract AbstractLeveragePortfolio is
                 mpl = _policyBookFacade.reinsurancePoolMPL();
                 secondMPL = _policyBookFacade.userleveragedMPL();
             }
-            _deployLeverageStableToCoveragePools(mpl, secondMPL, leveragedCoveragePools.at(i));
+            if (mpl > 0) {
+                (bool isLeverage, uint256 deployedAmount) =
+                    _deployLeverageStableToCoveragePools(mpl, secondMPL, _policyBooksArr[i]);
 
-            //TODO  call a function in policybook contract to leverage or delervage the amount of rebalance
+                _policyBookFacade.deployLeverageFundsAfterRebalance(
+                    deployedAmount,
+                    isLeverage,
+                    leveragePool
+                );
+            }
         }
     }
 
     function _calcvStableFormulaforAllPools() internal view returns (uint256) {
         uint256 _coveragePoolCount = policyBookRegistry.count();
-        address[] memory _coveragePools = policyBookRegistry.list(0, _coveragePoolCount);
+        address[] memory _policyBooksArr = policyBookRegistry.list(0, _coveragePoolCount);
+
         uint256 sum;
-        for (uint256 i = 0; i < _coveragePools.length; i++) {
-            sum += _calcvStableFormulaforOnePool(_coveragePools[i]);
+        for (uint256 i = 0; i < _policyBooksArr.length; i++) {
+            sum += _calcvStableFormulaforOnePool(_policyBooksArr[i]);
         }
         return sum;
     }
@@ -304,18 +339,25 @@ abstract contract AbstractLeveragePortfolio is
     function _calcvStableFormulaforOnePool(address _policybookAddress)
         internal
         view
+        virtual
         returns (uint256)
     {
         uint256 res;
-        IPolicyBook _policyBook = IPolicyBook(_policybookAddress);
-        IPolicyBookFacade _policyBookFacade = _getPolicyBookFacade(_policybookAddress);
 
-        if (_policyBookFacade.reinsurancePoolMPL() > 0) {
-            uint256 _poolTotalLiquidity = _policyBook.totalLiquidity();
-            uint256 _poolUR =
-                _policyBook.totalCoverTokens().mul(PERCENTAGE_100).div(_poolTotalLiquidity);
-            res = (_poolUR).mul(_poolUR).div(PERCENTAGE_100).mul(_poolTotalLiquidity);
-        }
+        if (policyBookRegistry.isUserLeveragePool(_policybookAddress)) return res;
+
+        IPolicyBook _policyBook = IPolicyBook(_policybookAddress);
+
+        uint256 _poolTotalLiquidity = _policyBook.totalLiquidity();
+        uint256 _poolCoverToken = _policyBook.totalCoverTokens();
+
+        if (_poolTotalLiquidity == 0 || _poolCoverToken == 0) return res;
+
+        uint256 _poolUR = _poolCoverToken.mul(PERCENTAGE_100).div(_poolTotalLiquidity);
+        res = (_poolUR).mul(_poolTotalLiquidity).div(PERCENTAGE_100).mul(_poolUR).div(
+            PERCENTAGE_100
+        );
+
         return res;
     }
 

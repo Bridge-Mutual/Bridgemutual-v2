@@ -2,10 +2,9 @@
 pragma solidity ^0.7.4;
 
 import "./IPolicyBook.sol";
+import "./ILeveragePortfolio.sol";
 
 interface IPolicyBookFacade {
-    function DEFAULT_REBALANCING_THRESHOLD() external view returns (uint256);
-
     /// @notice Let user to buy policy by supplying stable coin, access: ANY
     /// @param _epochsNumber period policy will cover
     /// @param _coverTokens amount paid for the coverage
@@ -22,11 +21,19 @@ interface IPolicyBookFacade {
 
     function policyBook() external view returns (IPolicyBook);
 
+    function userLiquidity(address account) external view returns (uint256);
+
+    /// @notice virtual funds deployed by reinsurance pool
     function VUreinsurnacePool() external view returns (uint256);
 
+    /// @notice leverage funds deployed by reinsurance pool
     function LUreinsurnacePool() external view returns (uint256);
 
+    /// @notice leverage funds deployed by user leverage pool
     function LUuserLeveragePool() external view returns (uint256);
+
+    /// @notice total leverage funds deployed to the pool sum of (VUreinsurnacePool,LUreinsurnacePool,LUuserLeveragePool)
+    function totalLeveragedLiquidity() external view returns (uint256);
 
     function userleveragedMPL() external view returns (uint256);
 
@@ -36,7 +43,11 @@ interface IPolicyBookFacade {
 
     /// @notice policyBookFacade initializer
     /// @param pbProxy polciybook address upgreadable cotnract.
-    function __PolicyBookFacade_init(address pbProxy) external;
+    function __PolicyBookFacade_init(
+        address pbProxy,
+        address liquidityProvider,
+        uint256 initialDeposit
+    ) external;
 
     /// @param _epochsNumber period policy will cover
     /// @param _coverTokens amount paid for the coverage
@@ -62,11 +73,6 @@ interface IPolicyBookFacade {
     /// @param _liquidityAmount is amount of stable coin tokens to secure
     function addLiquidity(uint256 _liquidityAmount) external;
 
-    /// @notice Let eligible contracts add liqiudity for another user by supplying stable coin
-    /// @param _liquidityHolderAddr is address of address to assign cover
-    /// @param _liquidityAmount is amount of stable coin tokens to secure
-    function addLiquidityFor(address _liquidityHolderAddr, uint256 _liquidityAmount) external;
-
     /// @notice Let user to add liquidity by supplying stable coin and stake it,
     /// @dev access: ANY
     function addLiquidityAndStake(uint256 _liquidityAmount, uint256 _stakeSTBLAmount) external;
@@ -86,6 +92,16 @@ interface IPolicyBookFacade {
             uint256,
             uint256
         );
+
+    /// @notice deploy leverage funds (RP vStable, RP lStable, ULP lStable)
+    /// @param  deployedAmount uint256 the deployed amount to be added or substracted from the total liquidity
+    /// @param isLeverage bool true for increase , false for decrease
+    /// @param leveragePool whether user leverage or reinsurance leverage
+    function deployLeverageFundsAfterRebalance(
+        uint256 deployedAmount,
+        bool isLeverage,
+        ILeveragePortfolio.LeveragePortfolio leveragePool
+    ) external;
 
     /// @notice set the MPL for the user leverage and the reinsurance leverage
     /// @param _userLeverageMPL uint256 value of the user leverage MPL

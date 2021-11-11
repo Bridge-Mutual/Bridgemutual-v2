@@ -90,14 +90,15 @@ contract YearnProtocol is IDefiProtocol, OwnableUpgradeable, AbstractDependant {
         returns (uint256 actualAmountWithdrawn)
     {
         // we ensure that we withdraw stablecoin from investment (not yield), which is represented by totalDeposit
-        require(totalDeposit >= amountInUnderlying, "YP: Amount exceed the investment");
-        // get the price for a single share
-        uint256 sharePrice = vault.pricePerShare();
-        // convert amountInUnderlying to withdraw in shares
-        uint256 amountInShares = amountInUnderlying.div(sharePrice).mul(PRECESSION);
-        // withdraw the underlying stablecoin and send it to the capitalPool
-        actualAmountWithdrawn = vault.withdraw(amountInShares, capitalPoolAddress);
-        totalDeposit = totalDeposit.sub(actualAmountWithdrawn);
+        if (totalDeposit >= amountInUnderlying) {
+            // get the price for a single share
+            uint256 sharePrice = vault.pricePerShare();
+            // convert amountInUnderlying to withdraw in shares
+            uint256 amountInShares = amountInUnderlying.div(sharePrice).mul(PRECESSION);
+            // withdraw the underlying stablecoin and send it to the capitalPool
+            actualAmountWithdrawn = vault.withdraw(amountInShares, capitalPoolAddress);
+            totalDeposit = totalDeposit.sub(actualAmountWithdrawn);
+        }
     }
 
     /** 

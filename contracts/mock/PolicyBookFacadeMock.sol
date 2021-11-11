@@ -21,7 +21,7 @@ contract PolicyBookFacadeMock is PolicyBookFacade {
             );
     }
 
-    function deployVirtualFundsByPR() external returns (uint256) {
-        return reinsurancePool.deployVirtualStableToCoveragePools(reinsurancePoolMPL);
+    function deployVirtualFundsByRP() external returns (uint256) {
+        return reinsurancePool.deployVirtualStableToCoveragePools();
     }
 }

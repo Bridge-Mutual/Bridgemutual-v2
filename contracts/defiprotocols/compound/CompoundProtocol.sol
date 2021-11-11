@@ -69,9 +69,10 @@ contract CompoundProtocol is IDefiProtocol, OwnableUpgradeable, AbstractDependan
         stablecoin.safeIncreaseAllowance(address(cToken), amount);
 
         // Deposit `amount` stablecoin to cToken
-        require(cToken.mint(amount) == ERRCODE_OK, "CP: Failed to mint cTokens");
-
-        totalDeposit = totalDeposit.add(amount);
+        uint256 res = cToken.mint(amount);
+        if (res == ERRCODE_OK) {
+            totalDeposit = totalDeposit.add(amount);
+        }
     }
 
     function withdraw(uint256 amountInUnderlying)
@@ -80,15 +81,16 @@ contract CompoundProtocol is IDefiProtocol, OwnableUpgradeable, AbstractDependan
         onlyYieldGenerator
         returns (uint256 actualAmountWithdrawn)
     {
-        require(totalDeposit >= amountInUnderlying, "CP: Amount exceed the balance");
-        // Withdraw `amountInUnderlying` stablecoin from cToken
-        // Transfer `amountInUnderlying` stablecoin to capital pool
-        require(cToken.redeemUnderlying(amountInUnderlying) == ERRCODE_OK, "CP: Failed to redeem");
+        if (totalDeposit >= amountInUnderlying) {
+            // Withdraw `amountInUnderlying` stablecoin from cToken
+            // Transfer `amountInUnderlying` stablecoin to capital pool
+            uint256 res = cToken.redeemUnderlying(amountInUnderlying);
+            if (res == ERRCODE_OK) {
+                stablecoin.safeTransfer(capitalPoolAddress, amountInUnderlying);
 
-        stablecoin.safeTransfer(capitalPoolAddress, amountInUnderlying);
-
-        totalDeposit = totalDeposit.sub(amountInUnderlying);
-
+                totalDeposit = totalDeposit.sub(amountInUnderlying);
+            }
+        }
         return amountInUnderlying;
     }
 
@@ -96,22 +98,21 @@ contract CompoundProtocol is IDefiProtocol, OwnableUpgradeable, AbstractDependan
         uint256 _accumaltedAmount = _totalValue().sub(totalDeposit);
 
         if (_accumaltedAmount > 0) {
-            require(
-                cToken.redeemUnderlying(_accumaltedAmount) == ERRCODE_OK,
-                "CP: Failed to redeem"
-            );
+            uint256 res = cToken.redeemUnderlying(_accumaltedAmount);
 
-            stablecoin.safeTransfer(capitalPoolAddress, _accumaltedAmount);
-            reinsurancePool.addInterestFromDefiProtocols(_accumaltedAmount);
+            if (res == ERRCODE_OK) {
+                stablecoin.safeTransfer(capitalPoolAddress, _accumaltedAmount);
+                reinsurancePool.addInterestFromDefiProtocols(_accumaltedAmount);
 
-            // get comp reward on top of farming and send it to reinsurance pool
-            comptroller.claimComp(address(this));
+                // get comp reward on top of farming and send it to reinsurance pool
+                comptroller.claimComp(address(this));
 
-            ///TODO decide for comp token, where should transfer it
-            // ERC20 comp = ERC20(comptroller.getCompAddress());
-            // comp.safeTransfer(address(reinsurancePool), comp.balanceOf(address(this)));
+                ///TODO decide for comp token, where should transfer it
+                // ERC20 comp = ERC20(comptroller.getCompAddress());
+                // comp.safeTransfer(address(reinsurancePool), comp.balanceOf(address(this)));
 
-            totalRewards = totalRewards.add(_accumaltedAmount);
+                totalRewards = totalRewards.add(_accumaltedAmount);
+            }
         }
     }
 

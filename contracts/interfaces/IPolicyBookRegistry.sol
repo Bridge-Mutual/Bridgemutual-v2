@@ -11,6 +11,7 @@ interface IPolicyBookRegistry {
         IPolicyBookFabric.ContractType contractType;
         uint256 maxCapacity;
         uint256 totalSTBLLiquidity;
+        uint256 totalLeveragedLiquidity;
         uint256 stakedSTBL;
         uint256 APY;
         uint256 annualInsuranceCost;
@@ -59,6 +60,9 @@ interface IPolicyBookRegistry {
 
     /// @notice Checks if provided address is a policyBookFacade
     function isPolicyBookFacade(address _facadeAddress) external view returns (bool);
+
+    /// @notice Checks if provided address is a user leverage pool
+    function isUserLeveragePool(address policyBookAddress) external view returns (bool);
 
     /// @notice Returns number of registered PolicyBooks with certain contract type
     function countByType(IPolicyBookFabric.ContractType contractType)

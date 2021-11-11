@@ -50,17 +50,17 @@ contract ReinsurancePool is AbstractLeveragePortfolio, IReinsurancePool {
         override
         onlyInjectorOrZero
     {
-        bmiToken = IERC20(_contractsRegistry.getBMIContract());
         stblToken = ERC20(_contractsRegistry.getUSDTContract());
         bmiStaking = IBMIStaking(_contractsRegistry.getBMIStakingContract());
+        bmiToken = IERC20(_contractsRegistry.getBMIContract());
         capitalPool = ICapitalPool(_contractsRegistry.getCapitalPoolContract());
         claimVotingAddress = _contractsRegistry.getClaimVotingContract();
-        aaveProtocol = _contractsRegistry.getAaveProtocolContract();
-        compoundProtocol = _contractsRegistry.getCompoundProtocolContract();
-        yearnProtocol = _contractsRegistry.getYearnProtocolContract();
         policyBookRegistry = IPolicyBookRegistry(
             _contractsRegistry.getPolicyBookRegistryContract()
         );
+        compoundProtocol = _contractsRegistry.getCompoundProtocolContract();
+        aaveProtocol = _contractsRegistry.getAaveProtocolContract();
+        yearnProtocol = _contractsRegistry.getYearnProtocolContract();
         leveragePortfolio = ILeveragePortfolio(_contractsRegistry.getUserLeveragePoolContract());
         stblDecimals = stblToken.decimals();
     }
@@ -85,8 +85,10 @@ contract ReinsurancePool is AbstractLeveragePortfolio, IReinsurancePool {
     /// @dev access CapitalPool
     /// @param  premiumAmount uint256 the premium amount which is 20% of premium + portion of 80%
     function addPolicyPremium(uint256, uint256 premiumAmount) external override onlyCapitalPool {
-        vStableTotalLiquidity += premiumAmount;
+        totalLiquidity += premiumAmount;
+
         _reevaluateProvidedLeverageStable(LeveragePortfolio.REINSURANCEPOOL, premiumAmount);
+
         emit PremiumAdded(_msgSender(), premiumAmount);
     }
 
@@ -97,7 +99,7 @@ contract ReinsurancePool is AbstractLeveragePortfolio, IReinsurancePool {
         override
         onlyDefiProtocols
     {
-        vStableTotalLiquidity += interestAmount;
+        totalLiquidity += interestAmount;
         capitalPool.addReinsurancePoolHardSTBL(interestAmount);
         _reevaluateProvidedLeverageStable(LeveragePortfolio.REINSURANCEPOOL, interestAmount);
         emit DefiInterestAdded(interestAmount);

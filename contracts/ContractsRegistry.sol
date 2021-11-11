@@ -87,6 +87,8 @@ contract ContractsRegistry is IContractsRegistry, AccessControlUpgradeable {
     bytes32 public constant MPH_PROTOCOL_NAME = keccak256("MPH_PROTOCOL");
     bytes32 public constant BARN_BRIDGE_PROTOCOL_NAME = keccak256("BARN_BRIDGE_PROTOCOL");
 
+    bytes32 public constant SHIELD_MINING_NAME = keccak256("SHIELD_MINING");
+
     modifier onlyAdmin() {
         require(
             hasRole(REGISTRY_ADMIN_ROLE, msg.sender),
@@ -294,6 +296,10 @@ contract ContractsRegistry is IContractsRegistry, AccessControlUpgradeable {
 
     function getBarnBridgeProtocolContract() external view override returns (address) {
         return getContract(BARN_BRIDGE_PROTOCOL_NAME);
+    }
+
+    function getShieldMiningContract() external view override returns (address) {
+        return getContract(SHIELD_MINING_NAME);
     }
 
     function getContract(bytes32 name) public view returns (address) {

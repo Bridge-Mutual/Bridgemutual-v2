@@ -3,13 +3,22 @@ pragma solidity ^0.7.4;
 pragma experimental ABIEncoderV2;
 
 interface ICapitalPool {
-    struct PermiumFactors {
+    // TODO rename Permium for Premium
+    struct PremiumFactors {
         uint256 stblAmount;
-        uint256 permiumDurationInDays;
+        uint256 premiumDurationInDays;
         uint256 protocolFee;
         uint256 lStblDeployedByLP;
         uint256 vStblDeployedByRP;
         uint256 vStblOfCP;
+        uint256 totalLiqforPremium;
+        uint256 premiumPerDay;
+        uint256 premiumPerDeployment;
+        uint256 poolUtilizationRation;
+        uint256 participatedlStblDeployedByLP;
+        uint256 reinsurancePoolPremium;
+        uint256 userLeveragePoolPremium;
+        uint256 coveragePoolPremium;
     }
 
     function virtualUsdtAccumulatedBalance() external view returns (uint256);

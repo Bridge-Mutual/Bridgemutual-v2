@@ -109,7 +109,10 @@ contract PolicyBookRegistry is IPolicyBookRegistry, AbstractDependant {
         _allowances = new uint256[](policyBooks.length);
 
         for (uint256 i = 0; i < policyBooks.length; i++) {
-            require(isPolicyBook(policyBooks[i]), "PolicyBookRegistry: Not a PolicyBook");
+            require(
+                isPolicyBook(policyBooks[i]) && !isUserLeveragePool(policyBooks[i]),
+                "PolicyBookRegistry: Not a PolicyBook"
+            );
 
             (_durations[i], _allowances[i]) = IPolicyBook(policyBooks[i]).getPolicyPrice(
                 epochsNumbers[i],
@@ -131,7 +134,10 @@ contract PolicyBookRegistry is IPolicyBookRegistry, AbstractDependant {
         );
 
         for (uint256 i = 0; i < policyBooks.length; i++) {
-            require(isPolicyBook(policyBooks[i]), "PolicyBookRegistry: Not a PolicyBook");
+            require(
+                isPolicyBook(policyBooks[i]) && !isUserLeveragePool(policyBooks[i]),
+                "PolicyBookRegistry: Not a PolicyBook"
+            );
 
             IPolicyBook(policyBooks[i]).policyBookFacade().buyPolicyFor(
                 msg.sender,
@@ -154,7 +160,10 @@ contract PolicyBookRegistry is IPolicyBookRegistry, AbstractDependant {
         );
 
         for (uint256 i = 0; i < policyBooks.length; i++) {
-            require(isPolicyBook(policyBooks[i]), "PolicyBookRegistry: Not a PolicyBook");
+            require(
+                isPolicyBook(policyBooks[i]) && !isUserLeveragePool(policyBooks[i]),
+                "PolicyBookRegistry: Not a PolicyBook"
+            );
 
             IPolicyBook(policyBooks[i]).policyBookFacade().buyPolicyFromDistributorFor(
                 msg.sender,
@@ -172,6 +181,15 @@ contract PolicyBookRegistry is IPolicyBookRegistry, AbstractDependant {
     function isPolicyBookFacade(address _facadeAddress) public view override returns (bool) {
         address _policyBookAddress = policyBookFacades[_facadeAddress];
         return isPolicyBook(_policyBookAddress);
+    }
+
+    function isUserLeveragePool(address policyBookAddress) public view override returns (bool) {
+        bool _isLeveragePool;
+        if (_policyBooks.contains(policyBookAddress)) {
+            _isLeveragePool = (IPolicyBook(policyBookAddress).contractType() ==
+                IPolicyBookFabric.ContractType.VARIOUS);
+        }
+        return _isLeveragePool;
     }
 
     function countByType(IPolicyBookFabric.ContractType contractType)
@@ -334,6 +352,7 @@ contract PolicyBookRegistry is IPolicyBookRegistry, AbstractDependant {
             (
                 _stats[i].maxCapacity,
                 _stats[i].totalSTBLLiquidity,
+                _stats[i].totalLeveragedLiquidity,
                 _stats[i].stakedSTBL,
                 _stats[i].APY,
                 _stats[i].annualInsuranceCost,
@@ -365,6 +384,7 @@ contract PolicyBookRegistry is IPolicyBookRegistry, AbstractDependant {
             (
                 _stats[i].maxCapacity,
                 _stats[i].totalSTBLLiquidity,
+                _stats[i].totalLeveragedLiquidity,
                 _stats[i].stakedSTBL,
                 _stats[i].APY,
                 _stats[i].annualInsuranceCost,

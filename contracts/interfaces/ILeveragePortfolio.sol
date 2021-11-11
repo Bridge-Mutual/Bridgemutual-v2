@@ -20,9 +20,8 @@ interface ILeveragePortfolio {
         returns (bool, uint256);
 
     /// @notice deploy the vStable from RP in v2 and for next versions it will be from RP and LP : access by policybook.
-    /// @param mpl uint256 reinsurance pool MPL
     /// @return  the amount of vstable to deploy
-    function deployVirtualStableToCoveragePools(uint256 mpl) external returns (uint256);
+    function deployVirtualStableToCoveragePools() external returns (uint256);
 
     /// @notice set the threshold % for re-evaluation of the lStable provided across all Coverage pools : access by owner
     /// @param threshold uint256 is the reevaluatation threshold
@@ -46,7 +45,7 @@ interface ILeveragePortfolio {
     function calcM(uint256 poolUR) external returns (uint256);
 
     /// @return uint256 the amount of vStable stored in the pool
-    function vStableTotalLiquidity() external view returns (uint256);
+    function totalLiquidity() external view returns (uint256);
 
     /// @notice add the portion of 80% of premium to user leverage pool where the leverage provide lstable : access policybook
     /// add the 20% of premium + portion of 80% of premium where reisnurance pool participate in coverage pools (vStable)  : access policybook

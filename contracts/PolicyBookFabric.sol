@@ -34,6 +34,8 @@ contract PolicyBookFabric is IPolicyBookFabric, OwnableUpgradeable, AbstractDepe
     ILiquidityMining public liquidityMining;
     ERC20 public stblToken;
 
+    address public capitalPoolAddress;
+
     uint256 public stblDecimals;
 
     event Created(address insured, ContractType contractType, address at, address facade);
@@ -55,7 +57,7 @@ contract PolicyBookFabric is IPolicyBookFabric, OwnableUpgradeable, AbstractDepe
         policyBookAdmin = IPolicyBookAdmin(_contractsRegistry.getPolicyBookAdminContract());
         liquidityMining = ILiquidityMining(_contractsRegistry.getLiquidityMiningContract());
         stblToken = ERC20(_contractsRegistry.getUSDTContract());
-
+        capitalPoolAddress = IContractsRegistry(_contractsRegistry).getCapitalPoolContract();
         stblDecimals = stblToken.decimals();
     }
 
@@ -100,7 +102,9 @@ contract PolicyBookFabric is IPolicyBookFabric, OwnableUpgradeable, AbstractDepe
             );
 
         IPolicyBookFacade(address(_policyBookFacadeProxy)).__PolicyBookFacade_init(
-            address(_policyBookProxy)
+            address(_policyBookProxy),
+            msg.sender,
+            _initialDeposit
         );
 
         AbstractDependant(address(_policyBookProxy)).setDependencies(contractsRegistry);
@@ -131,7 +135,7 @@ contract PolicyBookFabric is IPolicyBookFabric, OwnableUpgradeable, AbstractDepe
 
         stblToken.safeTransferFrom(
             msg.sender,
-            address(_policyBookProxy),
+            capitalPoolAddress,
             DecimalsConverter.convertFrom18(_initialDeposit, stblDecimals)
         );
 

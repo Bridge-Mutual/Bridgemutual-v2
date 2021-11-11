@@ -98,4 +98,6 @@ interface IContractsRegistry {
     function getBarnBridgeProtocolContract() external view returns (address);
 
     function getYieldGeneratorContract() external view returns (address);
+
+    function getShieldMiningContract() external view returns (address);
 }

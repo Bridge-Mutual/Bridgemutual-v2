@@ -132,9 +132,6 @@ contract CapitalPool is ICapitalPool, OwnableUpgradeable, AbstractDependant {
         uint256 _epochsNumber,
         uint256 _protocolFee
     ) external override onlyPolicyBook broadcastBalancing returns (uint256) {
-        uint256 reinsurancePoolPermium;
-        uint256 userLeveragePoolPermium;
-        uint256 coveragePoolPermium;
         uint256 _lStblDeployedByLP;
         uint256 _vStblDeployedByRP;
         uint256 _vStblOfCP = regularCoverageBalance[_msgSender()];
@@ -143,75 +140,49 @@ contract CapitalPool is ICapitalPool, OwnableUpgradeable, AbstractDependant {
             IPolicyBookFacade(IPolicyBook(msg.sender).policyBookFacade())
         )
             .getPoolsData();
-        (
-            reinsurancePoolPermium,
-            userLeveragePoolPermium,
-            coveragePoolPermium
-        ) = _calcPermiumForAllPools(
-            PermiumFactors(
-                _stblAmount,
-                _epochsNumber.mul(EPOCH_DURATION_IN_DAYS),
-                _protocolFee,
-                _lStblDeployedByLP,
-                _vStblDeployedByRP,
-                _vStblOfCP
-            )
-        );
+
+        PremiumFactors memory factors;
+        factors.stblAmount = _stblAmount;
+        factors.premiumDurationInDays = _epochsNumber.mul(EPOCH_DAYS_AMOUNT);
+        factors.protocolFee = _protocolFee;
+        factors.lStblDeployedByLP = _lStblDeployedByLP;
+        factors.vStblDeployedByRP = _vStblDeployedByRP;
+        factors.vStblOfCP = _vStblOfCP;
+
+        factors = _calcPremiumForAllPools(factors);
 
         // update the pools with the new balance
-        reinsurancePoolBalance += reinsurancePoolPermium;
-        leveragePoolBalance += userLeveragePoolPermium;
-        regularCoverageBalance[_msgSender()] += coveragePoolPermium;
+        reinsurancePoolBalance += factors.reinsurancePoolPremium;
+        leveragePoolBalance += factors.userLeveragePoolPremium;
+        regularCoverageBalance[_msgSender()] += factors.coveragePoolPremium;
         hardUsdtAccumulatedBalance += _stblAmount;
         virtualUsdtAccumulatedBalance += _stblAmount;
 
-        // added the premium to the pools
-        reinsurancePool.addPolicyPremium(_epochsNumber, reinsurancePoolPermium);
-        userLeveragePool.addPolicyPremium(_epochsNumber, userLeveragePoolPermium);
-        return coveragePoolPermium;
+        if (factors.reinsurancePoolPremium > 0) {
+            reinsurancePool.addPolicyPremium(_epochsNumber, factors.reinsurancePoolPremium);
+        }
+        if (factors.userLeveragePoolPremium > 0) {
+            userLeveragePool.addPolicyPremium(_epochsNumber, factors.userLeveragePoolPremium);
+        }
+
+        return factors.coveragePoolPremium;
     }
 
-    function _calcPermiumForAllPools(PermiumFactors memory factors)
+    function _calcPremiumForAllPools(PremiumFactors memory factors)
         internal
-        returns (
-            uint256 reinsurancePoolPermium,
-            uint256 userLeveragePoolPermium,
-            uint256 coveragePoolPermium
-        )
+        returns (PremiumFactors memory)
     {
-        uint256 _poolUR =
-            (IPolicyBook(_msgSender())).totalCoverTokens().mul(PERCENTAGE_100).div(
-                factors.vStblOfCP
-            );
+        factors.poolUtilizationRation = (IPolicyBook(_msgSender()))
+            .totalCoverTokens()
+            .mul(PERCENTAGE_100)
+            .div(factors.vStblOfCP);
 
-        uint256 _participatedlStblDeployedByLP =
-            factors.lStblDeployedByLP.mul(userLeveragePool.calcM(_poolUR));
+        factors.participatedlStblDeployedByLP = factors
+            .lStblDeployedByLP
+            .mul(userLeveragePool.calcM(factors.poolUtilizationRation))
+            .div(PERCENTAGE_100);
 
-        // pool liq + part of pool leverage + reinsurance pool virtual deployed
-        uint256 totalLiqforPremium =
-            factors.vStblOfCP.add(factors.vStblDeployedByRP).add(_participatedlStblDeployedByLP);
-
-        uint256 _premiumPerDay =
-            (
-                (factors.stblAmount.sub(factors.protocolFee)).mul(PRECISION).div(
-                    factors.permiumDurationInDays
-                )
-            )
-                .div(PRECISION);
-
-        uint256 _premiumEach =
-            (totalLiqforPremium.mul(PRECISION).div(_premiumPerDay)).div(PRECISION);
-
-        reinsurancePoolPermium = (
-            _premiumEach.mul(factors.vStblDeployedByRP).mul(factors.permiumDurationInDays)
-        )
-            .add(factors.protocolFee);
-        userLeveragePoolPermium = _premiumEach.mul(_participatedlStblDeployedByLP).mul(
-            factors.permiumDurationInDays
-        );
-        coveragePoolPermium = _premiumEach.mul(factors.vStblOfCP).mul(
-            factors.permiumDurationInDays
-        );
+        factors = _setupPremiumCalculation(factors);
     }
 
     /// @notice distributes the hardSTBL from the coverage providers
@@ -272,13 +243,17 @@ contract CapitalPool is ICapitalPool, OwnableUpgradeable, AbstractDependant {
 
         uint256 _pendingClaimAmount = claimingRegistry.getClaimableAmounts(_pendingClaimsIndexes);
 
-        uint256 lastCompletedDay =
-            (block.timestamp.mul(PRECISION).div(1 days).mul(PRECISION)).sub(8);
+        uint256 lastCompletedDay = block.timestamp.mul(PRECISION);
+        lastCompletedDay = lastCompletedDay.div(1 days);
+        lastCompletedDay = lastCompletedDay.div(PRECISION);
+        lastCompletedDay = lastCompletedDay.sub(8);
+
+        // uint256 lastCompletedDay =
+        //     (block.timestamp.mul(PRECISION).div(1 days).mul(PRECISION)).sub(8);
 
         uint256 _startTime = lastCompletedDay.mul(1 days);
         uint256 _endTime = lastCompletedDay.mul(1 days).add(liquidityCushionDuration);
 
-        /// TODO include user leverage pool withrawal request
         (, , uint256 _requiredLiquidity, ) =
             liquidityRegistry.getWithdrawalRequestsInWindowTime(_startTime, _endTime);
 
@@ -351,5 +326,64 @@ contract CapitalPool is ICapitalPool, OwnableUpgradeable, AbstractDependant {
         virtualUsdtAccumulatedBalance -= _stblAmount;
 
         stblToken.safeTransfer(_sender, _stblAmount);
+    }
+
+    function _setupPremiumCalculation(PremiumFactors memory factors)
+        internal
+        view
+        returns (PremiumFactors memory)
+    {
+        factors.totalLiqforPremium = factors.vStblOfCP.add(factors.vStblDeployedByRP).add(
+            factors.participatedlStblDeployedByLP
+        );
+
+        factors.premiumPerDay = (factors.stblAmount.sub(factors.protocolFee)).mul(PRECISION);
+        factors.premiumPerDay = factors.premiumPerDay.div(
+            factors.premiumDurationInDays.mul(PRECISION)
+        );
+
+        factors.premiumPerDeployment = (factors.premiumPerDay.mul(PRECISION)).div(
+            factors.totalLiqforPremium.mul(PRECISION)
+        );
+
+        factors.reinsurancePoolPremium = _calcReinsurancePoolPremium(factors);
+        factors.userLeveragePoolPremium = _calcUserLeveragePoolPremium(factors);
+        factors.coveragePoolPremium = _calcCoveragePoolPremium(factors);
+
+        return factors;
+    }
+
+    function _calcReinsurancePoolPremium(PremiumFactors memory factors)
+        internal
+        view
+        returns (uint256)
+    {
+        return
+            (
+                factors.premiumPerDeployment.mul(factors.vStblDeployedByRP).mul(
+                    factors.premiumDurationInDays
+                )
+            )
+                .add(factors.protocolFee);
+    }
+
+    function _calcUserLeveragePoolPremium(PremiumFactors memory factors)
+        internal
+        view
+        returns (uint256)
+    {
+        return
+            factors.premiumPerDeployment.mul(factors.participatedlStblDeployedByLP).mul(
+                factors.premiumDurationInDays
+            );
+    }
+
+    function _calcCoveragePoolPremium(PremiumFactors memory factors)
+        internal
+        view
+        returns (uint256)
+    {
+        return
+            factors.premiumPerDeployment.mul(factors.vStblOfCP).mul(factors.premiumDurationInDays);
     }
 }

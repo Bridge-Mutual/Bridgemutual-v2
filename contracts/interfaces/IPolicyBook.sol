@@ -182,11 +182,6 @@ interface IPolicyBook {
     //     bytes32 _s
     // ) external;
 
-    /// @notice deploy leverage funds (RP vStable, RP lStable, ULP lStable)
-    /// @param  deployedAmount uint256 the deployed amount to be added or substracted from the total liquidity
-    /// @param isLeverage bool true for increase , false for decrease
-    function deployLeverageFunds(uint256 deployedAmount, bool isLeverage) external;
-
     function unlockTokens() external;
 
     /// @notice Let user to withdraw deposited liqiudity, access: ANY
@@ -200,6 +195,7 @@ interface IPolicyBook {
     /// @notice Getting number stats, access: ANY
     /// @return _maxCapacities is a max token amount that a user can buy
     /// @return _totalSTBLLiquidity is PolicyBook's liquidity
+    /// @return _totalLeveragedLiquidity is PolicyBook's leveraged liquidity
     /// @return _stakedSTBL is how much stable coin are staked on this PolicyBook
     /// @return _annualProfitYields is its APY
     /// @return _annualInsuranceCost is percentage of cover tokens that is required to be paid for 1 year of insurance
@@ -209,6 +205,7 @@ interface IPolicyBook {
         returns (
             uint256 _maxCapacities,
             uint256 _totalSTBLLiquidity,
+            uint256 _totalLeveragedLiquidity,
             uint256 _stakedSTBL,
             uint256 _annualProfitYields,
             uint256 _annualInsuranceCost,

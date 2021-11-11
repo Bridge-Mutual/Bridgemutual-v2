@@ -68,10 +68,10 @@ interface IUserLeveragePool {
     /// @param _liqudityAmount is amount of stable coin tokens to secure
     function addLiquidity(uint256 _liqudityAmount) external;
 
-    /// @notice Let eligible contracts add liqiudity for another user by supplying stable coin
-    /// @param _liquidityHolderAddr is address of address to assign cover
-    /// @param _liqudityAmount is amount of stable coin tokens to secure
-    function addLiquidityFor(address _liquidityHolderAddr, uint256 _liqudityAmount) external;
+    // /// @notice Let eligible contracts add liqiudity for another user by supplying stable coin
+    // /// @param _liquidityHolderAddr is address of address to assign cover
+    // /// @param _liqudityAmount is amount of stable coin tokens to secure
+    // function addLiquidityFor(address _liquidityHolderAddr, uint256 _liqudityAmount) external;
 
     function addLiquidityAndStake(uint256 _liquidityAmount, uint256 _stakeSTBLAmount) external;
 
@@ -81,12 +81,12 @@ interface IUserLeveragePool {
 
     function requestWithdrawal(uint256 _tokensToWithdraw) external;
 
-    function requestWithdrawalWithPermit(
-        uint256 _tokensToWithdraw,
-        uint8 _v,
-        bytes32 _r,
-        bytes32 _s
-    ) external;
+    // function requestWithdrawalWithPermit(
+    //     uint256 _tokensToWithdraw,
+    //     uint8 _v,
+    //     bytes32 _r,
+    //     bytes32 _s
+    // ) external;
 
     function unlockTokens() external;
 
@@ -106,6 +106,7 @@ interface IUserLeveragePool {
     /// @notice Getting number stats, access: ANY
     /// @return _maxCapacities is a max liquidity of the pool
     /// @return _totalSTBLLiquidity is PolicyBook's liquidity
+    /// @return _totalLeveragedLiquidity is becuase to follow the same function in policy book
     /// @return _stakedSTBL is how much stable coin are staked on this PolicyBook
     /// @return _annualProfitYields is its APY
     /// @return _annualInsuranceCost is becuase to follow the same function in policy book
@@ -116,6 +117,7 @@ interface IUserLeveragePool {
         returns (
             uint256 _maxCapacities,
             uint256 _totalSTBLLiquidity,
+            uint256 _totalLeveragedLiquidity,
             uint256 _stakedSTBL,
             uint256 _annualProfitYields,
             uint256 _annualInsuranceCost,

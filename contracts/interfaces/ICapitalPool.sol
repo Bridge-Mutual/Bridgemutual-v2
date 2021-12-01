@@ -3,22 +3,16 @@ pragma solidity ^0.7.4;
 pragma experimental ABIEncoderV2;
 
 interface ICapitalPool {
-    // TODO rename Permium for Premium
     struct PremiumFactors {
         uint256 stblAmount;
         uint256 premiumDurationInDays;
-        uint256 protocolFee;
+        uint256 premiumPrice;
         uint256 lStblDeployedByLP;
         uint256 vStblDeployedByRP;
         uint256 vStblOfCP;
-        uint256 totalLiqforPremium;
-        uint256 premiumPerDay;
         uint256 premiumPerDeployment;
-        uint256 poolUtilizationRation;
         uint256 participatedlStblDeployedByLP;
-        uint256 reinsurancePoolPremium;
-        uint256 userLeveragePoolPremium;
-        uint256 coveragePoolPremium;
+        address userLeveragePoolAddress;
     }
 
     function virtualUsdtAccumulatedBalance() external view returns (uint256);
@@ -67,8 +61,4 @@ interface ICapitalPool {
         uint256 _stblAmount,
         bool _isLeveragePool
     ) external;
-
-    /// @notice Sets the duration in time the capital pool reserves liquidity
-    /// @param _newDuration uint2566 amount in seconds for the new period
-    function setLiquidityCushionDuration(uint256 _newDuration) external;
 }

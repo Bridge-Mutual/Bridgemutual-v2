@@ -3,7 +3,7 @@ pragma solidity ^0.7.4;
 pragma experimental ABIEncoderV2;
 
 interface IYieldGenerator {
-    enum DefiProtocols {AAVE, COMPOUND, YEARN, MPH, BARNBRIDGE}
+    enum DefiProtocols {AAVE, COMPOUND, YEARN}
 
     struct DefiProtocol {
         uint256 targetAllocation;

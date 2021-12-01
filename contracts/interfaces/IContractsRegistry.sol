@@ -53,7 +53,7 @@ interface IContractsRegistry {
 
     function getReinsurancePoolContract() external view returns (address);
 
-    function getUserLeveragePoolContract() external view returns (address);
+    function getLeveragePortfolioViewContract() external view returns (address);
 
     function getCapitalPoolContract() external view returns (address);
 
@@ -92,10 +92,6 @@ interface IContractsRegistry {
     function getYearnProtocolContract() external view returns (address);
 
     function getYearnVaultContract() external view returns (address);
-
-    function getMPHProtocolContract() external view returns (address);
-
-    function getBarnBridgeProtocolContract() external view returns (address);
 
     function getYieldGeneratorContract() external view returns (address);
 

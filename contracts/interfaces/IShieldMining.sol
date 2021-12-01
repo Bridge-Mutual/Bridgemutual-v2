@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.7.4;
+pragma experimental ABIEncoderV2;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
@@ -11,6 +12,7 @@ interface IShieldMining {
         uint256 firstBlockWithReward;
         uint256 lastBlockWithReward;
         uint256 lastUpdateBlock;
+        uint256 lastBlockBeforePause;
         uint256 rewardPerTokenStored;
         uint256 rewardTokensLocked;
         uint256 totalSupply;
@@ -28,14 +30,9 @@ interface IShieldMining {
         address liquidityProvider
     ) external;
 
-    function createShieldMining(
-        address _shieldToken,
-        address _policyBook,
-        uint256 _amount,
-        uint256 _duration
-    ) external;
+    function associateShieldMining(address _policyBook, address _shieldMiningToken) external;
 
-    function refill(
+    function fillShieldMining(
         address _policyBook,
         uint256 _amount,
         uint256 _duration
@@ -49,4 +46,14 @@ interface IShieldMining {
     function recoverNonLockedRewardTokens(address _policyBook) external;
 
     function getShieldTokenAddress(address _policyBook) external view returns (address);
+
+    function getUserRewardPaid(address _policyBook, address _account)
+        external
+        view
+        returns (uint256);
+
+    function getShieldMiningInfo(address _policyBook)
+        external
+        view
+        returns (ShieldMiningInfo memory _shieldMiningInfo);
 }

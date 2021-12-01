@@ -25,6 +25,7 @@ interface IPolicyBook {
 
     struct BuyPolicyParameters {
         address buyer;
+        address holder;
         uint256 epochsNumber;
         uint256 coverTokens;
         uint256 distributorFee;
@@ -47,6 +48,8 @@ interface IPolicyBook {
     function setPolicyBookFacade(address _policyBookFacade) external;
 
     function EPOCH_DURATION() external view returns (uint256);
+
+    function stblDecimals() external view returns (uint256);
 
     function READY_TO_WITHDRAW_PERIOD() external view returns (uint256);
 
@@ -137,13 +140,15 @@ interface IPolicyBook {
     ) external view returns (uint256 totalSeconds, uint256 totalPrice);
 
     /// @notice Let user to buy policy by supplying stable coin, access: ANY
-    /// @param _buyer who is buying the coverage
+    /// @param _buyer who is transferring funds
+    /// @param _holder who owns coverage
     /// @param _epochsNumber period policy will cover
     /// @param _coverTokens amount paid for the coverage
     /// @param _distributorFee distributor fee (commission). It can't be greater than PROTOCOL_PERCENTAGE
     /// @param _distributor if it was sold buy a whitelisted distributor, it is distributor address to receive fee (commission)
     function buyPolicy(
         address _buyer,
+        address _holder,
         uint256 _epochsNumber,
         uint256 _coverTokens,
         uint256 _distributorFee,
@@ -160,12 +165,14 @@ interface IPolicyBook {
     function addLiquidityFor(address _liquidityHolderAddr, uint256 _liqudityAmount) external;
 
     /// @notice Let user to add liquidity by supplying stable coin, access: ANY
-    /// @param _liqudityAmount is amount of stable coin tokens to secure
+    /// @param _liquidityBuyerAddr address the one that transfer funds
+    /// @param _liquidityHolderAddr address the one that owns liquidity
     /// @param _liquidityAmount uint256 amount to be added on behalf the sender
     /// @param _stakeSTBLAmount uint256 the staked amount if add liq and stake
     function addLiquidity(
-        address _liquidityAmount,
-        uint256 _liqudityAmount,
+        address _liquidityBuyerAddr,
+        address _liquidityHolderAddr,
+        uint256 _liquidityAmount,
         uint256 _stakeSTBLAmount
     ) external;
 

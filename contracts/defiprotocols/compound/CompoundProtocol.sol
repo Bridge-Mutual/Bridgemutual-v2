@@ -65,8 +65,8 @@ contract CompoundProtocol is IDefiProtocol, OwnableUpgradeable, AbstractDependan
     /// @param amount uint256 the amount of stable coin will deposit
     function deposit(uint256 amount) external override onlyYieldGenerator {
         // Approve `amount` stablecoin to cToken
-        /// TODO reset the allowance for TetherA
-        stablecoin.safeIncreaseAllowance(address(cToken), amount);
+        stablecoin.safeApprove(address(cToken), 0);
+        stablecoin.safeApprove(address(cToken), amount);
 
         // Deposit `amount` stablecoin to cToken
         uint256 res = cToken.mint(amount);

@@ -68,7 +68,7 @@ contract ContractsRegistry is IContractsRegistry, AccessControlUpgradeable {
     bytes32 public constant CLAIM_VOTING_NAME = keccak256("CLAIM_VOTING");
     bytes32 public constant REPUTATION_SYSTEM_NAME = keccak256("REPUTATION_SYSTEM");
     bytes32 public constant REINSURANCE_POOL_NAME = keccak256("REINSURANCE_POOL");
-    bytes32 public constant USER_LEVERAGE_POOL_NAME = keccak256("USER_LEVERAGE_POOL");
+    bytes32 public constant LEVERAGE_PORTFOLIO_VIEW_NAME = keccak256("LEVERAGE_PORTFOLIO_VIEW");
     bytes32 public constant CAPITAL_POOL_NAME = keccak256("CAPITAL_POOL");
     bytes32 public constant YIELD_GENERATOR_NAME = keccak256("YIELD_GENERATOR");
 
@@ -83,9 +83,6 @@ contract ContractsRegistry is IContractsRegistry, AccessControlUpgradeable {
 
     bytes32 public constant YEARN_PROTOCOL_NAME = keccak256("YEARN_PROTOCOL");
     bytes32 public constant YEARN_VAULT_NAME = keccak256("YEARN_VAULT");
-
-    bytes32 public constant MPH_PROTOCOL_NAME = keccak256("MPH_PROTOCOL");
-    bytes32 public constant BARN_BRIDGE_PROTOCOL_NAME = keccak256("BARN_BRIDGE_PROTOCOL");
 
     bytes32 public constant SHIELD_MINING_NAME = keccak256("SHIELD_MINING");
 
@@ -210,8 +207,8 @@ contract ContractsRegistry is IContractsRegistry, AccessControlUpgradeable {
         return getContract(REINSURANCE_POOL_NAME);
     }
 
-    function getUserLeveragePoolContract() external view override returns (address) {
-        return getContract(USER_LEVERAGE_POOL_NAME);
+    function getLeveragePortfolioViewContract() external view override returns (address) {
+        return getContract(LEVERAGE_PORTFOLIO_VIEW_NAME);
     }
 
     function getYieldGeneratorContract() external view override returns (address) {
@@ -288,14 +285,6 @@ contract ContractsRegistry is IContractsRegistry, AccessControlUpgradeable {
 
     function getYearnVaultContract() external view override returns (address) {
         return getContract(YEARN_VAULT_NAME);
-    }
-
-    function getMPHProtocolContract() external view override returns (address) {
-        return getContract(MPH_PROTOCOL_NAME);
-    }
-
-    function getBarnBridgeProtocolContract() external view override returns (address) {
-        return getContract(BARN_BRIDGE_PROTOCOL_NAME);
     }
 
     function getShieldMiningContract() external view override returns (address) {

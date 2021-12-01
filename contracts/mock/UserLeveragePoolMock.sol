@@ -5,18 +5,10 @@ pragma experimental ABIEncoderV2;
 import "../UserLeveragePool.sol";
 
 contract UserLeveragePoolMock is UserLeveragePool {
-    function __UserLeveragePoolMock_init() external initializer {
-        this.__UserLeveragePool_init(
-            IPolicyBookFabric.ContractType.VARIOUS,
-            "User Leverage Pool",
-            "USDT"
-        );
-    }
-
     function triggerPremiumsDistribution() external withPremiumsDistribution {}
 
     function getSTBLToBMIXRatio() external view returns (uint256) {
-        uint256 currentLiquidity = getNewLiquidity();
+        (, uint256 currentLiquidity) = getNewCoverAndLiquidity();
 
         return _getSTBLToBMIXRatio(currentLiquidity);
     }

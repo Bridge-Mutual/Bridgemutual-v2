@@ -58,7 +58,10 @@ interface IUserLeveragePool {
     function forceUpdateBMICoverStakingRewardMultiplier() external;
 
     /// @notice function to get precise current cover and liquidity
-    function getNewLiquidity() external view returns (uint256 newTotalLiquidity);
+    function getNewCoverAndLiquidity()
+        external
+        view
+        returns (uint256 newTotalCoverTokens, uint256 newTotalLiquidity);
 
     function updateEpochsInfo() external;
 

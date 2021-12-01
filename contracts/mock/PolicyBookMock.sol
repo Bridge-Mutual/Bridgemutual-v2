@@ -39,4 +39,20 @@ contract PolicyBookMock is PolicyBook {
     function burn(uint256 _amountToBurn) external {
         _burn(_msgSender(), _amountToBurn);
     }
+
+    function testAddPolicyHoldersHardSTBL(
+        uint256 _stblAmount,
+        uint256 _epochsNumber,
+        uint256 _protocolFee
+    ) external returns (uint256) {
+        return capitalPool.addPolicyHoldersHardSTBL(_stblAmount, _epochsNumber, _protocolFee);
+    }
+
+    function setWithdrawlInfoDate(address _user, uint256 _date) public {
+        withdrawalsInfo[_user].readyToWithdrawDate = _date;
+    }
+
+    function getUserAvailableSTBL(address _user) public view returns (uint256) {
+        return _getUserAvailableSTBL(_user);
+    }
 }

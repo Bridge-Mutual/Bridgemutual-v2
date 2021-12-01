@@ -11,7 +11,6 @@ import "./libraries/DecimalsConverter.sol";
 
 import "./tokens/erc20permit-upgradeable/ERC20PermitUpgradeable.sol";
 
-import "./interfaces/helpers/IPriceFeed.sol";
 import "./interfaces/IPolicyBook.sol";
 import "./interfaces/IBMICoverStaking.sol";
 import "./interfaces/ICapitalPool.sol";
@@ -66,7 +65,6 @@ contract PolicyBook is IPolicyBook, ERC20PermitUpgradeable, AbstractDependant {
     address public override insuranceContractAddress;
     IPolicyBookFabric.ContractType public override contractType;
 
-    IPriceFeed public priceFeed;
     ERC20 public stblToken;
     IPolicyRegistry public policyRegistry;
     IBMICoverStaking public bmiCoverStaking;
@@ -90,7 +88,7 @@ contract PolicyBook is IPolicyBook, ERC20PermitUpgradeable, AbstractDependant {
     mapping(uint256 => uint256) public epochAmounts;
     mapping(uint256 => int256) public premiumDistributionDeltas;
 
-    uint256 public stblDecimals;
+    uint256 public override stblDecimals;
 
     // new state variables here , avoid break the storage when upgrade
     INFTStaking public nftStaking;
@@ -207,7 +205,6 @@ contract PolicyBook is IPolicyBook, ERC20PermitUpgradeable, AbstractDependant {
         override
         onlyInjectorOrZero
     {
-        priceFeed = IPriceFeed(_contractsRegistry.getPriceFeedContract());
         stblToken = ERC20(_contractsRegistry.getUSDTContract());
         bmiCoverStaking = IBMICoverStaking(_contractsRegistry.getBMICoverStakingContract());
         bmiCoverStakingView = IBMICoverStakingView(
@@ -433,7 +430,7 @@ contract PolicyBook is IPolicyBook, ERC20PermitUpgradeable, AbstractDependant {
     function getPolicyPrice(
         uint256 _epochsNumber,
         uint256 _coverTokens,
-        address _buyer
+        address _holder
     ) public view override returns (uint256 totalSeconds, uint256 totalPrice) {
         require(_coverTokens >= MINUMUM_COVERAGE, "PB: Wrong cover");
         require(_epochsNumber > 0 && _epochsNumber <= MAXIMUM_EPOCHS, "PB: Wrong epoch duration");
@@ -447,11 +444,11 @@ contract PolicyBook is IPolicyBook, ERC20PermitUpgradeable, AbstractDependant {
             newTotalCoverTokens,
             newTotalLiquidity,
             policyBookFacade.totalLeveragedLiquidity(),
-            whitelisted
+            policyBookFacade.safePricingModel()
         );
 
         // reduce premium by reward NFT locked by user
-        uint256 _reductionMultiplier = nftStaking.getUserReductionMultiplier(_buyer);
+        uint256 _reductionMultiplier = nftStaking.getUserReductionMultiplier(_holder);
         if (_reductionMultiplier > 0) {
             totalPrice = totalPrice.sub(totalPrice.mul(_reductionMultiplier).div(PERCENTAGE_100));
         }
@@ -459,6 +456,7 @@ contract PolicyBook is IPolicyBook, ERC20PermitUpgradeable, AbstractDependant {
 
     function buyPolicy(
         address _buyer,
+        address _holder,
         uint256 _epochsNumber,
         uint256 _coverTokens,
         uint256 _distributorFee,
@@ -468,6 +466,7 @@ contract PolicyBook is IPolicyBook, ERC20PermitUpgradeable, AbstractDependant {
             _buyPolicy(
                 BuyPolicyParameters(
                     _buyer,
+                    _holder,
                     _epochsNumber,
                     _coverTokens,
                     _distributorFee,
@@ -484,11 +483,11 @@ contract PolicyBook is IPolicyBook, ERC20PermitUpgradeable, AbstractDependant {
         returns (uint256)
     {
         require(
-            !policyRegistry.isPolicyActive(parameters.buyer, address(this)),
+            !policyRegistry.isPolicyActive(parameters.holder, address(this)),
             "PB: The holder already exists"
         );
         require(
-            claimingRegistry.canBuyNewPolicy(parameters.buyer, address(this)),
+            claimingRegistry.canBuyNewPolicy(parameters.holder, address(this)),
             "PB: Claim is pending"
         );
 
@@ -499,7 +498,7 @@ contract PolicyBook is IPolicyBook, ERC20PermitUpgradeable, AbstractDependant {
         require(totalLiquidity >= _totalCoverTokens, "PB: Not enough liquidity");
 
         (uint256 _totalSeconds, uint256 _totalPrice) =
-            getPolicyPrice(parameters.epochsNumber, parameters.coverTokens, parameters.buyer);
+            getPolicyPrice(parameters.epochsNumber, parameters.coverTokens, parameters.holder);
 
         // Partners are rewarded with X% of the Premium, coming from the Protocol’s fee part.
         // It's a part of 20% initially send to the Reinsurance pool
@@ -519,7 +518,7 @@ contract PolicyBook is IPolicyBook, ERC20PermitUpgradeable, AbstractDependant {
         uint256 _endEpochNumber = _currentEpochNumber.add(parameters.epochsNumber.sub(1));
         uint256 _virtualEndEpochNumber = _endEpochNumber + VIRTUAL_EPOCHS;
 
-        policyHolders[parameters.buyer] = PolicyHolder(
+        policyHolders[parameters.holder] = PolicyHolder(
             parameters.coverTokens,
             _currentEpochNumber,
             _endEpochNumber,
@@ -546,9 +545,9 @@ contract PolicyBook is IPolicyBook, ERC20PermitUpgradeable, AbstractDependant {
             DecimalsConverter.convertFrom18(_price, stblDecimals)
         );
         _price = capitalPool.addPolicyHoldersHardSTBL(
-            _price,
+            DecimalsConverter.convertFrom18(_price, stblDecimals),
             parameters.epochsNumber,
-            _reinsurancePrice
+            DecimalsConverter.convertFrom18(_reinsurancePrice, stblDecimals)
         );
 
         _addPolicyPremiumToDistributions(
@@ -556,10 +555,10 @@ contract PolicyBook is IPolicyBook, ERC20PermitUpgradeable, AbstractDependant {
             _price
         );
 
-        policyRegistry.addPolicy(parameters.buyer, parameters.coverTokens, _price, _totalSeconds);
+        policyRegistry.addPolicy(parameters.holder, parameters.coverTokens, _price, _totalSeconds);
 
         emit PolicyBought(
-            parameters.buyer,
+            parameters.holder,
             parameters.coverTokens,
             _totalPrice,
             _totalCoverTokens,
@@ -612,15 +611,17 @@ contract PolicyBook is IPolicyBook, ERC20PermitUpgradeable, AbstractDependant {
         external
         override
     {
-        addLiquidity(_liquidityHolderAddr, _liquidityAmount, 0);
+        addLiquidity(_liquidityHolderAddr, _liquidityHolderAddr, _liquidityAmount, 0);
     }
 
     /// @notice adds liquidity on behalf of a sender
     /// @dev only allowed to be called from its facade
-    /// @param _liquidityHolderAddr, address  of the sender
+    /// @param _liquidityBuyerAddr, address  of the one who pays
+    /// @param _liquidityHolderAddr, address  of the one who hold
     /// @param _liquidityAmount, uint256 amount to be added on behalf the sender
     /// @param _stakeSTBLAmount uint256 the staked amount if add liq and stake
     function addLiquidity(
+        address _liquidityBuyerAddr,
         address _liquidityHolderAddr,
         uint256 _liquidityAmount,
         uint256 _stakeSTBLAmount
@@ -636,7 +637,7 @@ contract PolicyBook is IPolicyBook, ERC20PermitUpgradeable, AbstractDependant {
         /// @dev PBF already sent stable tokens
         /// TODO: track PB sblIngress individually ? or only the _mint
         if (_msgSender() != policyBookFabricAddress) {
-            stblToken.safeTransferFrom(_liquidityHolderAddr, address(capitalPool), stblLiquidity);
+            stblToken.safeTransferFrom(_liquidityBuyerAddr, address(capitalPool), stblLiquidity);
         }
         capitalPool.addCoverageProvidersHardSTBL(stblLiquidity);
 
@@ -721,20 +722,8 @@ contract PolicyBook is IPolicyBook, ERC20PermitUpgradeable, AbstractDependant {
         return WithdrawalStatus.READY;
     }
 
-    /// TODO assest if we should keep *permit functions
-    // function requestWithdrawalWithPermit(
-    //     uint256 _tokensToWithdraw,
-    //     uint8 _v,
-    //     bytes32 _r,
-    //     bytes32 _s
-    // ) external override {
-    //     permit(_msgSender(), address(this), _tokensToWithdraw, MAX_INT, _v, _r, _s);
-
-    //     requestWithdrawal(_tokensToWithdraw, msg.sender);
-    // }
-
     function requestWithdrawal(uint256 _tokensToWithdraw, address _user)
-        public
+        external
         override
         onlyPolicyBookFacade
         withPremiumsDistribution
@@ -894,7 +883,7 @@ contract PolicyBook is IPolicyBook, ERC20PermitUpgradeable, AbstractDependant {
                 newTotalCoverTokens,
                 _totalSTBLLiquidity,
                 _totalLeveragedLiquidity,
-                whitelisted
+                policyBookFacade.safePricingModel()
             );
 
             _annualInsuranceCost = _annualInsuranceCost

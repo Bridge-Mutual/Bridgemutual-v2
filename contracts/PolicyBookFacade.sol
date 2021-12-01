@@ -4,7 +4,7 @@ pragma solidity ^0.7.4;
 import "@openzeppelin/contracts/math/SafeMath.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/Initializable.sol";
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-
+import "@openzeppelin/contracts/utils/EnumerableSet.sol";
 import "./libraries/DecimalsConverter.sol";
 
 import "./interfaces/IContractsRegistry.sol";
@@ -13,23 +13,26 @@ import "./interfaces/ILiquidityRegistry.sol";
 import "./interfaces/IPolicyBookAdmin.sol";
 import "./interfaces/IPolicyBookFacade.sol";
 import "./interfaces/helpers/IPriceFeed.sol";
+import "./interfaces/IPolicyBookFabric.sol";
+import "./interfaces/IPolicyBookRegistry.sol";
 
 import "./abstract/AbstractDependant.sol";
 
 import "./Globals.sol";
 
 contract PolicyBookFacade is IPolicyBookFacade, AbstractDependant, Initializable {
+    using EnumerableSet for EnumerableSet.AddressSet;
+
     IPolicyBookAdmin public policyBookAdmin;
     ILeveragePortfolio public reinsurancePool;
-    ILeveragePortfolio public userLeveragePool;
     IPolicyBook public override policyBook;
     IShieldMining public shieldMining;
+    IPolicyBookRegistry public policyBookRegistry;
 
     using SafeMath for uint256;
 
     ILiquidityRegistry public liquidityRegistry;
 
-    address public policyBookRegistry;
     address public capitalPoolAddress;
     address public priceFeed;
 
@@ -38,7 +41,7 @@ contract PolicyBookFacade is IPolicyBookFacade, AbstractDependant, Initializable
     // leverage funds deployed by reinsurance pool
     uint256 public override LUreinsurnacePool;
     // leverage funds deployed by user leverage pool
-    uint256 public override LUuserLeveragePool;
+    mapping(address => uint256) public override LUuserLeveragePool;
     // total leverage funds deployed to the pool sum of (VUreinsurnacePool,LUreinsurnacePool,LUuserLeveragePool)
     uint256 public override totalLeveragedLiquidity;
 
@@ -47,24 +50,13 @@ contract PolicyBookFacade is IPolicyBookFacade, AbstractDependant, Initializable
 
     uint256 public override rebalancingThreshold;
 
+    bool public override safePricingModel;
+
     mapping(address => uint256) public override userLiquidity;
 
-    event DeployLeverageFunds(uint256 _deployedAmount, bool _isLeverage);
+    EnumerableSet.AddressSet internal userLeveragePools;
 
-    modifier shieldMiningUpdate(address liquidityProvider, uint256 liquidityAmount) {
-        _;
-        uint256 totalSupplyAfterMint = IERC20(address(policyBook)).totalSupply();
-        // check if SM active
-        if (shieldMining.getShieldTokenAddress(address(policyBook)) != address(0)) {
-            shieldMining.updateTotalSupply(
-                address(policyBook),
-                totalSupplyAfterMint,
-                liquidityProvider
-            );
-        }
-
-        userLiquidity[liquidityProvider] = liquidityAmount;
-    }
+    event DeployLeverageFunds(uint256 _deployedAmount);
 
     modifier onlyCapitalPool() {
         require(msg.sender == capitalPoolAddress, "PBFC: only CapitalPool");
@@ -78,7 +70,8 @@ contract PolicyBookFacade is IPolicyBookFacade, AbstractDependant, Initializable
 
     modifier onlyLeveragePortfolio() {
         require(
-            msg.sender == address(reinsurancePool) || msg.sender == address(userLeveragePool),
+            msg.sender == address(reinsurancePool) ||
+                policyBookRegistry.isUserLeveragePool(msg.sender),
             "PBFC: only LeveragePortfolio"
         );
         _;
@@ -106,14 +99,15 @@ contract PolicyBookFacade is IPolicyBookFacade, AbstractDependant, Initializable
     {
         IContractsRegistry _contractsRegistry = IContractsRegistry(contractsRegistry);
 
-        capitalPoolAddress = IContractsRegistry(_contractsRegistry).getCapitalPoolContract();
-        policyBookRegistry = IContractsRegistry(_contractsRegistry)
-            .getPolicyBookRegistryContract();
+        capitalPoolAddress = _contractsRegistry.getCapitalPoolContract();
+        policyBookRegistry = IPolicyBookRegistry(
+            _contractsRegistry.getPolicyBookRegistryContract()
+        );
         liquidityRegistry = ILiquidityRegistry(_contractsRegistry.getLiquidityRegistryContract());
         policyBookAdmin = IPolicyBookAdmin(_contractsRegistry.getPolicyBookAdminContract());
-        priceFeed = IContractsRegistry(_contractsRegistry).getPriceFeedContract();
+        priceFeed = _contractsRegistry.getPriceFeedContract();
         reinsurancePool = ILeveragePortfolio(_contractsRegistry.getReinsurancePoolContract());
-        userLeveragePool = ILeveragePortfolio(_contractsRegistry.getUserLeveragePoolContract());
+
         shieldMining = IShieldMining(_contractsRegistry.getShieldMiningContract());
     }
 
@@ -121,15 +115,15 @@ contract PolicyBookFacade is IPolicyBookFacade, AbstractDependant, Initializable
     /// @param _epochsNumber is number of seconds to cover
     /// @param _coverTokens is number of tokens to cover
     function buyPolicy(uint256 _epochsNumber, uint256 _coverTokens) external override {
-        _buyPolicy(msg.sender, _epochsNumber, _coverTokens, 0, address(0));
+        _buyPolicy(msg.sender, msg.sender, _epochsNumber, _coverTokens, 0, address(0));
     }
 
     function buyPolicyFor(
-        address _buyer,
+        address _holder,
         uint256 _epochsNumber,
         uint256 _coverTokens
-    ) external override onlyPolicyBookRegistry {
-        _buyPolicy(_buyer, _epochsNumber, _coverTokens, 0, address(0));
+    ) external override {
+        _buyPolicy(msg.sender, _holder, _epochsNumber, _coverTokens, 0, address(0));
     }
 
     function buyPolicyFromDistributor(
@@ -138,29 +132,48 @@ contract PolicyBookFacade is IPolicyBookFacade, AbstractDependant, Initializable
         address _distributor
     ) external override {
         uint256 _distributorFee = policyBookAdmin.distributorFees(_distributor);
-        require(_distributorFee > 0, "PB: distributor not whitelisted");
-        _buyPolicy(msg.sender, _epochsNumber, _coverTokens, _distributorFee, _distributor);
+        _buyPolicy(
+            msg.sender,
+            msg.sender,
+            _epochsNumber,
+            _coverTokens,
+            _distributorFee,
+            _distributor
+        );
     }
 
     /// @notice Let user to buy policy by supplying stable coin, access: ANY
-    /// @param _buyer address user the policy is being "bought for"
+    /// @param _holder address user the policy is being "bought for"
     /// @param _epochsNumber is number of seconds to cover
     /// @param _coverTokens is number of tokens to cover
     function buyPolicyFromDistributorFor(
-        address _buyer,
+        address _holder,
         uint256 _epochsNumber,
         uint256 _coverTokens,
         address _distributor
     ) external override {
         uint256 _distributorFee = policyBookAdmin.distributorFees(_distributor);
-        require(_distributorFee > 0, "PB: distributor not whitelisted");
-        _buyPolicy(_buyer, _epochsNumber, _coverTokens, _distributorFee, _distributor);
+        _buyPolicy(
+            msg.sender,
+            _holder,
+            _epochsNumber,
+            _coverTokens,
+            _distributorFee,
+            _distributor
+        );
     }
 
     /// @notice Let user to add liquidity by supplying stable coin, access: ANY
     /// @param _liquidityAmount is amount of stable coin tokens to secure
     function addLiquidity(uint256 _liquidityAmount) external override {
-        _addLiquidity(msg.sender, _liquidityAmount, 0);
+        _addLiquidity(msg.sender, msg.sender, _liquidityAmount, 0);
+    }
+
+    function addLiquidityFromDistributorFor(address _liquidityHolderAddr, uint256 _liquidityAmount)
+        external
+        override
+    {
+        _addLiquidity(msg.sender, _liquidityHolderAddr, _liquidityAmount, 0);
     }
 
     /// @notice Let user to add liquidity by supplying stable coin and stake it,
@@ -169,19 +182,50 @@ contract PolicyBookFacade is IPolicyBookFacade, AbstractDependant, Initializable
         external
         override
     {
-        _addLiquidity(msg.sender, _liquidityAmount, _stakeSTBLAmount);
+        _addLiquidity(msg.sender, msg.sender, _liquidityAmount, _stakeSTBLAmount);
     }
 
     function _addLiquidity(
+        address _liquidityBuyerAddr,
         address _liquidityHolderAddr,
         uint256 _liquidityAmount,
         uint256 _stakeSTBLAmount
-    ) internal shieldMiningUpdate(_liquidityHolderAddr, _liquidityAmount) {
-        policyBook.addLiquidity(_liquidityHolderAddr, _liquidityAmount, _stakeSTBLAmount);
-        _deployLeveragedFunds(_liquidityAmount);
+    ) internal {
+        policyBook.addLiquidity(
+            _liquidityBuyerAddr,
+            _liquidityHolderAddr,
+            _liquidityAmount,
+            _stakeSTBLAmount
+        );
+
+        _reevaluateProvidedLeverageStable(_liquidityAmount);
+        _updateShieldMining(_liquidityHolderAddr, _liquidityAmount, false);
+    }
+
+    function _updateShieldMining(
+        address liquidityProvider,
+        uint256 liquidityAmount,
+        bool isWithdraw
+    ) internal {
+        // check if SM active
+        if (shieldMining.getShieldTokenAddress(address(policyBook)) != address(0)) {
+            uint256 totalSupplyAfterMint = IERC20(address(policyBook)).totalSupply();
+            shieldMining.updateTotalSupply(
+                address(policyBook),
+                totalSupplyAfterMint,
+                liquidityProvider
+            );
+        }
+
+        if (isWithdraw) {
+            userLiquidity[liquidityProvider] -= liquidityAmount;
+        } else {
+            userLiquidity[liquidityProvider] += liquidityAmount;
+        }
     }
 
     function _buyPolicy(
+        address _policyBuyerAddr,
         address _policyHolderAddr,
         uint256 _epochsNumber,
         uint256 _coverTokens,
@@ -190,6 +234,7 @@ contract PolicyBookFacade is IPolicyBookFacade, AbstractDependant, Initializable
     ) internal {
         uint256 _premium =
             policyBook.buyPolicy(
+                _policyBuyerAddr,
                 _policyHolderAddr,
                 _epochsNumber,
                 _coverTokens,
@@ -197,75 +242,120 @@ contract PolicyBookFacade is IPolicyBookFacade, AbstractDependant, Initializable
                 _distributor
             );
 
-        _deployLeveragedFunds(_premium);
+        _reevaluateProvidedLeverageStable(_premium);
     }
 
-    function _checkRebalancingThreshold(uint256 newAmount) internal view returns (bool) {
-        uint256 _newAmountPercentage =
-            newAmount.mul(PERCENTAGE_100).div(policyBook.totalLiquidity());
-        return _newAmountPercentage > rebalancingThreshold ? true : false;
+    function _reevaluateProvidedLeverageStable(uint256 newAmount) internal {
+        if (policyBook.totalLiquidity() > 0 && policyBook.totalCoverTokens() > 0) {
+            uint256 _newAmountPercentage =
+                newAmount.mul(PERCENTAGE_100).div(policyBook.totalLiquidity());
+            if (_newAmountPercentage > rebalancingThreshold) {
+                _deployLeveragedFunds();
+            }
+        } else if (policyBook.totalLiquidity() == 0 || policyBook.totalCoverTokens() == 0) {
+            // TODO hard rebalancing
+        }
     }
 
-    /// @notice deploy leverage funds (RP vStable, RP lStable, ULP lStable)
+    /// @notice deploy leverage funds (RP lStable, ULP lStable)
     /// @param  deployedAmount uint256 the deployed amount to be added or substracted from the total liquidity
-    /// @param isLeverage bool true for increase , false for decrease
     /// @param leveragePool whether user leverage or reinsurance leverage
     function deployLeverageFundsAfterRebalance(
         uint256 deployedAmount,
-        bool isLeverage,
         ILeveragePortfolio.LeveragePortfolio leveragePool
     ) external override onlyLeveragePortfolio {
-        totalLeveragedLiquidity = isLeverage
-            ? totalLeveragedLiquidity.add(deployedAmount)
-            : totalLeveragedLiquidity.sub(deployedAmount);
         if (leveragePool == ILeveragePortfolio.LeveragePortfolio.USERLEVERAGEPOOL) {
-            LUuserLeveragePool = isLeverage
-                ? LUuserLeveragePool.add(deployedAmount)
-                : LUuserLeveragePool.sub(deployedAmount);
-        } else {
-            LUreinsurnacePool = isLeverage
-                ? LUreinsurnacePool.add(deployedAmount)
-                : LUreinsurnacePool.sub(deployedAmount);
-        }
+            LUuserLeveragePool[msg.sender] = deployedAmount;
 
-        emit DeployLeverageFunds(deployedAmount, isLeverage);
+            if (LUuserLeveragePool[msg.sender] > 0) {
+                if (!userLeveragePools.contains(msg.sender)) {
+                    userLeveragePools.add(msg.sender);
+                }
+            } else {
+                if (userLeveragePools.contains(msg.sender)) {
+                    userLeveragePools.remove(msg.sender);
+                }
+            }
+        } else {
+            LUreinsurnacePool = deployedAmount;
+        }
+        uint256 _LUuserLeveragePool;
+        if (userLeveragePools.length() > 0) {
+            _LUuserLeveragePool = LUuserLeveragePool[userLeveragePools.at(0)];
+        }
+        totalLeveragedLiquidity = VUreinsurnacePool.add(LUreinsurnacePool).add(
+            _LUuserLeveragePool
+        );
+        emit DeployLeverageFunds(deployedAmount);
     }
 
-    function _deployLeveragedFunds(uint256 newAmount) internal {
-        if (_checkRebalancingThreshold(newAmount)) {
-            uint256 _deployedAmount;
-            bool _isLeverage;
-            if (reinsurancePoolMPL > 0) {
-                _deployedAmount = reinsurancePool.deployVirtualStableToCoveragePools();
-                VUreinsurnacePool += _deployedAmount;
+    /// @notice deploy virtual funds (RP vStable)
+    /// @param  deployedAmount uint256 the deployed amount to be added to the liquidity
+    function deployVirtualFundsAfterRebalance(uint256 deployedAmount)
+        external
+        override
+        onlyLeveragePortfolio
+    {
+        VUreinsurnacePool = deployedAmount;
+        uint256 _LUuserLeveragePool;
+        if (userLeveragePools.length() > 0) {
+            _LUuserLeveragePool = LUuserLeveragePool[userLeveragePools.at(0)];
+        }
+        totalLeveragedLiquidity = VUreinsurnacePool.add(LUreinsurnacePool).add(
+            _LUuserLeveragePool
+        );
+        emit DeployLeverageFunds(deployedAmount);
+    }
 
-                (_isLeverage, _deployedAmount) = reinsurancePool
-                    .deployLeverageStableToCoveragePools(reinsurancePoolMPL, userleveragedMPL);
-                LUreinsurnacePool = _isLeverage
-                    ? LUreinsurnacePool.add(_deployedAmount)
-                    : LUreinsurnacePool.sub(_deployedAmount);
-            }
-            if (userleveragedMPL > 0) {
-                (_isLeverage, _deployedAmount) = userLeveragePool
-                    .deployLeverageStableToCoveragePools(userleveragedMPL, reinsurancePoolMPL);
-                LUuserLeveragePool = _isLeverage
-                    ? LUuserLeveragePool.add(_deployedAmount)
-                    : LUuserLeveragePool.sub(_deployedAmount);
-            }
-            uint256 _totalLeveragedLiquidity =
-                VUreinsurnacePool.add(LUreinsurnacePool).add(LUuserLeveragePool);
+    function _deployLeveragedFunds() internal {
+        uint256 _deployedAmount;
 
-            if (_totalLeveragedLiquidity != totalLeveragedLiquidity) {
-                totalLeveragedLiquidity = _totalLeveragedLiquidity;
-                emit DeployLeverageFunds(_deployedAmount, _isLeverage);
+        uint256 _LUuserLeveragePool;
+        if (reinsurancePoolMPL > 0) {
+            _deployedAmount = reinsurancePool.deployVirtualStableToCoveragePools();
+            VUreinsurnacePool = _deployedAmount;
+
+            _deployedAmount = reinsurancePool.deployLeverageStableToCoveragePools(
+                ILeveragePortfolio.LeveragePortfolio.REINSURANCEPOOL
+            );
+            LUreinsurnacePool = _deployedAmount;
+        }
+        if (userleveragedMPL > 0) {
+            address[] memory _userLeverageArr =
+                policyBookRegistry.listByType(
+                    IPolicyBookFabric.ContractType.VARIOUS,
+                    0,
+                    policyBookRegistry.countByType(IPolicyBookFabric.ContractType.VARIOUS)
+                );
+            for (uint256 i = 0; i < _userLeverageArr.length; i++) {
+                _deployedAmount = ILeveragePortfolio(_userLeverageArr[i])
+                    .deployLeverageStableToCoveragePools(
+                    ILeveragePortfolio.LeveragePortfolio.USERLEVERAGEPOOL
+                );
+                LUuserLeveragePool[_userLeverageArr[i]] = _deployedAmount;
+                if (LUuserLeveragePool[_userLeverageArr[i]] > 0) {
+                    if (!userLeveragePools.contains(_userLeverageArr[i])) {
+                        userLeveragePools.add(_userLeverageArr[i]);
+                    }
+                } else {
+                    if (userLeveragePools.contains(_userLeverageArr[i])) {
+                        userLeveragePools.remove(_userLeverageArr[i]);
+                    }
+                }
+
+                _LUuserLeveragePool += LUuserLeveragePool[_userLeverageArr[i]];
             }
         }
+        totalLeveragedLiquidity = VUreinsurnacePool.add(LUreinsurnacePool).add(
+            _LUuserLeveragePool
+        );
     }
 
     /// @notice Let user to withdraw deposited liqiudity, access: ANY
-    function withdrawLiquidity() external override shieldMiningUpdate(msg.sender, 0) {
+    function withdrawLiquidity() external override {
         uint256 _withdrawAmount = policyBook.withdrawLiquidity(msg.sender);
-        _deployLeveragedFunds(_withdrawAmount);
+        _reevaluateProvidedLeverageStable(_withdrawAmount);
+        _updateShieldMining(msg.sender, _withdrawAmount, true);
     }
 
     /// @notice set the MPL for the user leverage and the reinsurance leverage
@@ -291,10 +381,17 @@ contract PolicyBookFacade is IPolicyBookFacade, AbstractDependant, Initializable
         rebalancingThreshold = _newRebalancingThreshold;
     }
 
+    /// @notice sets the rebalancing threshold value
+    /// @param _safePricingModel bool is pricing model safe (true) or not (false)
+    function setSafePricingModel(bool _safePricingModel) external override onlyPolicyBookAdmin {
+        safePricingModel = _safePricingModel;
+    }
+
     /// @notice fetches all the pools data
     /// @return uint256 VUreinsurnacePool
     /// @return uint256 LUreinsurnacePool
     /// @return uint256 LUleveragePool
+    /// @return uint256 user leverage pool address
     function getPoolsData()
         external
         view
@@ -302,16 +399,35 @@ contract PolicyBookFacade is IPolicyBookFacade, AbstractDependant, Initializable
         returns (
             uint256,
             uint256,
-            uint256
+            uint256,
+            address
         )
     {
-        return (VUreinsurnacePool, LUreinsurnacePool, LUuserLeveragePool);
+        uint256 _LUuserLeveragePool;
+        address _userLeverageAddress;
+        if (userLeveragePools.length() > 0) {
+            _LUuserLeveragePool = DecimalsConverter.convertFrom18(
+                LUuserLeveragePool[userLeveragePools.at(0)],
+                policyBook.stblDecimals()
+            );
+            _userLeverageAddress = userLeveragePools.at(0);
+        }
+        /// TODO for v2 it is one user leverage pool , so need to figure it out after v2
+        return (
+            DecimalsConverter.convertFrom18(VUreinsurnacePool, policyBook.stblDecimals()),
+            DecimalsConverter.convertFrom18(LUreinsurnacePool, policyBook.stblDecimals()),
+            _LUuserLeveragePool,
+            _userLeverageAddress
+        );
     }
 
     // TODO possible sandwich attack or allowance fluctuation
     function getClaimApprovalAmount(address user) external view override returns (uint256) {
         (uint256 _coverTokens, , , , ) = policyBook.policyHolders(user);
-        _coverTokens = DecimalsConverter.convertFrom18(_coverTokens.div(100), 6);
+        _coverTokens = DecimalsConverter.convertFrom18(
+            _coverTokens.div(100),
+            policyBook.stblDecimals()
+        );
 
         return IPriceFeed(priceFeed).howManyBMIsInUSDT(_coverTokens);
     }

@@ -16,12 +16,13 @@ interface IPolicyBookFabric {
         ContractType _contractType,
         string calldata _description,
         string calldata _projectSymbol,
-        uint256 _initialDeposit
+        uint256 _initialDeposit,
+        address _shieldMiningToken
     ) external returns (address);
 
-    /// @notice add user leverage pool to policy book registry : access owner
-    /// @param userLeverageAddress address user leverage pool proxy address
-    /// @param contractType ContractType type of contract that leverage pool will cover
-    function addUserLeveragePoolToRegistry(address userLeverageAddress, ContractType contractType)
-        external;
+    function createLeveragePools(
+        ContractType _contractType,
+        string calldata _description,
+        string calldata _projectSymbol
+    ) external returns (address);
 }

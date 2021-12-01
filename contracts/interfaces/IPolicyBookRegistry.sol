@@ -21,7 +21,7 @@ interface IPolicyBookRegistry {
 
     function policyBooksByInsuredAddress(address insuredContract) external view returns (address);
 
-    function policyBookFacades(address insuredContract) external view returns (address);
+    function policyBookFacades(address facadeAddress) external view returns (address);
 
     /// @notice Adds PolicyBook to registry, access: PolicyFabric
     function add(
@@ -45,14 +45,6 @@ interface IPolicyBookRegistry {
         address[] calldata policyBooks,
         uint256[] calldata epochsNumbers,
         uint256[] calldata coversTokens
-    ) external;
-
-    /// @notice Buys a batch of policies from distributor
-    function buyPolicyBatchFromDistributor(
-        address[] calldata policyBooks,
-        uint256[] calldata epochsNumbers,
-        uint256[] calldata coversTokens,
-        address distributor
     ) external;
 
     /// @notice Checks if provided address is a PolicyBook

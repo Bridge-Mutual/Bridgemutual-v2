@@ -122,7 +122,7 @@ interface IClaimingRegistry {
     /// @notice returns claim info by its index
     function claimInfo(uint256 index) external view returns (ClaimInfo memory _claimInfo);
 
-    function getClaimableIndexes() external view returns (uint256[] memory, uint256);
+    function getAllPendingClaimsAmount() external view returns (uint256 _totalClaimsAmount);
 
     function getClaimableAmounts(uint256[] memory _claimIndexes) external view returns (uint256);
 

@@ -16,6 +16,8 @@ import "./interfaces/IPolicyBookFabric.sol";
 import "./interfaces/IPolicyBookRegistry.sol";
 import "./interfaces/IContractsRegistry.sol";
 import "./interfaces/ILiquidityMining.sol";
+import "./interfaces/IShieldMining.sol";
+import "./interfaces/IUserLeveragePool.sol";
 
 import "./abstract/AbstractDependant.sol";
 
@@ -25,6 +27,7 @@ import "./Globals.sol";
 
 contract PolicyBookFabric is IPolicyBookFabric, OwnableUpgradeable, AbstractDependant {
     using SafeERC20 for ERC20;
+    using Address for address;
 
     uint256 public constant MINIMAL_INITIAL_DEPOSIT = 1000 * DECIMALS18; // 1000 STBL
 
@@ -32,6 +35,7 @@ contract PolicyBookFabric is IPolicyBookFabric, OwnableUpgradeable, AbstractDepe
     IPolicyBookRegistry public policyBookRegistry;
     IPolicyBookAdmin public policyBookAdmin;
     ILiquidityMining public liquidityMining;
+    IShieldMining public shieldMining;
     ERC20 public stblToken;
 
     address public capitalPoolAddress;
@@ -59,6 +63,7 @@ contract PolicyBookFabric is IPolicyBookFabric, OwnableUpgradeable, AbstractDepe
         stblToken = ERC20(_contractsRegistry.getUSDTContract());
         capitalPoolAddress = IContractsRegistry(_contractsRegistry).getCapitalPoolContract();
         stblDecimals = stblToken.decimals();
+        shieldMining = IShieldMining(_contractsRegistry.getShieldMiningContract());
     }
 
     function create(
@@ -66,8 +71,9 @@ contract PolicyBookFabric is IPolicyBookFabric, OwnableUpgradeable, AbstractDepe
         ContractType _contractType,
         string calldata _description,
         string calldata _projectSymbol,
-        uint256 _initialDeposit
-    ) external override returns (address) {
+        uint256 _initialDeposit,
+        address _shieldMiningToken
+    ) public override returns (address) {
         require(_insuranceContract != address(0), "PBF: Null address");
         require(bytes(_description).length <= 200, "PBF: Project description is too long");
         require(
@@ -141,17 +147,43 @@ contract PolicyBookFabric is IPolicyBookFabric, OwnableUpgradeable, AbstractDepe
 
         IPolicyBook(address(_policyBookProxy)).addLiquidityFor(msg.sender, _initialDeposit);
 
+        if (_shieldMiningToken != address(0)) {
+            shieldMining.associateShieldMining(address(_policyBookProxy), _shieldMiningToken);
+        }
+
         return address(_policyBookProxy);
     }
 
-    /// @notice add user leverage pool to policy book registry : access owner
-    /// @param userLeverageAddress address user leverage pool proxy address
-    /// @param contractType ContractType type of contract that leverage pool will cover
-    function addUserLeveragePoolToRegistry(address userLeverageAddress, ContractType contractType)
-        external
-        override
-        onlyOwner
-    {
-        policyBookRegistry.add(address(0), contractType, userLeverageAddress, address(0));
+    function createLeveragePools(
+        ContractType _contractType,
+        string calldata _description,
+        string calldata _projectSymbol
+    ) public override onlyOwner returns (address) {
+        require(bytes(_description).length <= 200, "PBF: Project description is too long");
+        require(
+            bytes(_projectSymbol).length != 0 && bytes(_projectSymbol).length <= 30,
+            "PBF: Project symbol is too long/short"
+        );
+
+        TransparentUpgradeableProxy _userLeverageProxy =
+            new TransparentUpgradeableProxy(
+                policyBookAdmin.getCurrentUserLeverageImplementation(),
+                policyBookAdmin.getUpgrader(),
+                ""
+            );
+
+        IUserLeveragePool(address(_userLeverageProxy)).__UserLeveragePool_init(
+            _contractType,
+            _description,
+            _projectSymbol
+        );
+
+        AbstractDependant(address(_userLeverageProxy)).setDependencies(contractsRegistry);
+        AbstractDependant(address(_userLeverageProxy)).setInjector(address(policyBookAdmin));
+        policyBookRegistry.add(address(0), _contractType, address(_userLeverageProxy), address(0));
+
+        emit Created(address(0), _contractType, address(_userLeverageProxy), address(0));
+
+        return address(_userLeverageProxy);
     }
 }

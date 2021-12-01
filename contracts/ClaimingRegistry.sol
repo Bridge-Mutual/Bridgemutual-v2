@@ -379,35 +379,20 @@ contract ClaimingRegistry is IClaimingRegistry, Initializable, AbstractDependant
         );
     }
 
-    /// @notice gets the list of accepted claims
-    /// @dev selects claims with ACCEPTED status
-    /// @return uint256[]
-    function getClaimableIndexes()
+    /// @notice fetches the pending claims amounts
+    /// @return _totalClaimsAmount uint256 collect claim amounts from pending claims
+    function getAllPendingClaimsAmount()
         external
         view
         override
-        returns (uint256[] memory, uint256 _lenght)
+        returns (uint256 _totalClaimsAmount)
     {
-        uint256[] memory _claimable = new uint256[](_pendingClaimsIndexes.length());
-        uint256 _claimCount = 0;
-
+        uint256 index;
         for (uint256 i = 0; i < _pendingClaimsIndexes.length(); i++) {
-            uint256 _claimIndex = _pendingClaimsIndexes.at(i);
-            if (claimStatus(_claimIndex) == ClaimStatus.ACCEPTED) {
-                _claimable[_claimCount] = _claimIndex;
-                _claimCount++;
-            }
+            index = _pendingClaimsIndexes.at(i);
+
+            _totalClaimsAmount += _allClaimsByIndexInfo[index].claimAmount;
         }
-
-        uint256[] memory _trimmedClaims = new uint256[](_claimCount);
-
-        uint256 _lenght;
-        for (uint256 j = 0; j < _trimmedClaims.length; j++) {
-            _trimmedClaims[j] = _claimable[j];
-            _lenght = j;
-        }
-
-        return (_trimmedClaims, _lenght);
     }
 
     /// @notice gets the claiming balance from a list of claim indexes
@@ -440,12 +425,12 @@ contract ClaimingRegistry is IClaimingRegistry, Initializable, AbstractDependant
         } else if (!_allClaimsByIndexInfo[index].appeal) {
             _allClaimsByIndexInfo[index].status = ClaimStatus.REJECTED_CAN_APPEAL;
 
-            emit ClaimRejected(claimer, policyBookAddress, index);
+            emit AppealRejected(claimer, policyBookAddress, index);
         } else {
             _allClaimsByIndexInfo[index].status = ClaimStatus.REJECTED;
             delete _allClaimsToIndex[policyBookAddress][claimer];
 
-            emit AppealRejected(claimer, policyBookAddress, index);
+            emit ClaimRejected(claimer, policyBookAddress, index);
         }
 
         _allClaimsByIndexInfo[index].dateEnded = block.timestamp;

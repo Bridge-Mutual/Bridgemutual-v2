@@ -7,9 +7,15 @@ interface IPolicyBookAdmin {
 
     function getImplementationOfPolicyBook(address policyBookAddress) external returns (address);
 
+    function getImplementationOfPolicyBookFacade(address policyBookFacadeAddress)
+        external
+        returns (address);
+
     function getCurrentPolicyBooksImplementation() external view returns (address);
 
     function getCurrentPolicyBooksFacadeImplementation() external view returns (address);
+
+    function getCurrentUserLeverageImplementation() external view returns (address);
 
     /// @notice It blacklists or whitelists a PolicyBook. Only whitelisted PolicyBooks can
     ///         receive stakes and funds
@@ -71,4 +77,26 @@ interface IPolicyBookAdmin {
         address _facadeAddress,
         uint256 _newRebalancingThreshold
     ) external;
+
+    /// @notice sets the policybookFacade mpls values
+    /// @param _facadeAddress address of the policybook facade
+    /// @param _safePricingModel bool is pricing model safe (true) or not (false)
+    function setPolicyBookFacadeSafePricingModel(address _facadeAddress, bool _safePricingModel)
+        external;
+
+    function setLeveragePortfolioRebalancingThreshold(
+        address _LeveragePoolAddress,
+        uint256 _newRebalancingThreshold
+    ) external;
+
+    function setLeveragePortfolioProtocolConstant(
+        address _LeveragePoolAddress,
+        uint256 _targetUR,
+        uint256 _d_ProtocolConstant,
+        uint256 _a_ProtocolConstant,
+        uint256 _max_ProtocolConstant
+    ) external;
+
+    function setUserLeverageMaxCapacities(address _userLeverageAddress, uint256 _maxCapacities)
+        external;
 }

@@ -65,8 +65,8 @@ contract YearnProtocol is IDefiProtocol, OwnableUpgradeable, AbstractDependant {
     */
     function deposit(uint256 amount) external override onlyYieldGenerator {
         // approve amount of stablecoin to Vault
-        /// TODO reset the allowance for TetherA
-        stablecoin.safeIncreaseAllowance(address(vault), amount);
+        stablecoin.safeApprove(address(vault), 0);
+        stablecoin.safeApprove(address(vault), amount);
         // deposit amount of stablecoin to Vault, returns the amount of shares issued
         vault.deposit(amount);
         totalDeposit = totalDeposit.add(amount);

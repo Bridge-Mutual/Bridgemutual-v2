@@ -15,7 +15,7 @@ interface IPolicyQuote {
         uint256 _totalCoverTokens,
         uint256 _totalLiquidity,
         uint256 _totalLeveragedLiquidity,
-        bool _safePolicyBook
+        bool _safePricingModel
     ) external view returns (uint256);
 
     /// @notice Let user to calculate policy cost in stable coin, access: ANY

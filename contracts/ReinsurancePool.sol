@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.7.4;
 pragma experimental ABIEncoderV2;
+import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 
 import "./abstract/AbstractLeveragePortfolio.sol";
 import "./interfaces/IReinsurancePool.sol";
 import "./interfaces/IBMIStaking.sol";
 
-contract ReinsurancePool is AbstractLeveragePortfolio, IReinsurancePool {
+contract ReinsurancePool is AbstractLeveragePortfolio, IReinsurancePool, OwnableUpgradeable {
     using SafeERC20 for ERC20;
 
     IERC20 public bmiToken;
@@ -23,7 +24,6 @@ contract ReinsurancePool is AbstractLeveragePortfolio, IReinsurancePool {
 
     event Recovered(address tokenAddress, uint256 tokenAmount);
     event STBLWithdrawn(address user, uint256 amount);
-    event PremiumAdded(address policyBook, uint256 premiumAmount);
     event DefiInterestAdded(uint256 interestAmount);
 
     modifier onlyClaimVoting() {
@@ -42,6 +42,7 @@ contract ReinsurancePool is AbstractLeveragePortfolio, IReinsurancePool {
     }
 
     function __ReinsurancePool_init() external initializer {
+        __LeveragePortfolio_init();
         __Ownable_init();
     }
 
@@ -61,7 +62,10 @@ contract ReinsurancePool is AbstractLeveragePortfolio, IReinsurancePool {
         compoundProtocol = _contractsRegistry.getCompoundProtocolContract();
         aaveProtocol = _contractsRegistry.getAaveProtocolContract();
         yearnProtocol = _contractsRegistry.getYearnProtocolContract();
-        leveragePortfolio = ILeveragePortfolio(_contractsRegistry.getUserLeveragePoolContract());
+        leveragePortfolioView = ILeveragePortfolioView(
+            _contractsRegistry.getLeveragePortfolioViewContract()
+        );
+        policyBookAdmin = _contractsRegistry.getPolicyBookAdminContract();
         stblDecimals = stblToken.decimals();
     }
 
@@ -89,7 +93,7 @@ contract ReinsurancePool is AbstractLeveragePortfolio, IReinsurancePool {
 
         _reevaluateProvidedLeverageStable(LeveragePortfolio.REINSURANCEPOOL, premiumAmount);
 
-        emit PremiumAdded(_msgSender(), premiumAmount);
+        emit PremiumAdded(premiumAmount);
     }
 
     /// @notice add the interest amount from defi protocol : access defi protocols
@@ -99,9 +103,13 @@ contract ReinsurancePool is AbstractLeveragePortfolio, IReinsurancePool {
         override
         onlyDefiProtocols
     {
-        totalLiquidity += interestAmount;
+        uint256 amount = DecimalsConverter.convertTo18(interestAmount, stblDecimals);
+        totalLiquidity += amount;
+
         capitalPool.addReinsurancePoolHardSTBL(interestAmount);
-        _reevaluateProvidedLeverageStable(LeveragePortfolio.REINSURANCEPOOL, interestAmount);
-        emit DefiInterestAdded(interestAmount);
+
+        _reevaluateProvidedLeverageStable(LeveragePortfolio.REINSURANCEPOOL, amount);
+
+        emit DefiInterestAdded(amount);
     }
 }

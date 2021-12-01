@@ -61,8 +61,8 @@ contract AaveProtocol is IDefiProtocol, OwnableUpgradeable, AbstractDependant {
         ILendingPool lendingPool = _getLendingPool();
 
         // Approve `amount` stablecoin to lendingPool
-        /// TODO reset the allowance for TetherA
-        stablecoin.safeIncreaseAllowance(address(lendingPool), amount);
+        stablecoin.safeApprove(address(lendingPool), 0);
+        stablecoin.safeApprove(address(lendingPool), amount);
 
         // Deposit `amount` stablecoin to lendingPool
         lendingPool.deposit(address(stablecoin), amount, address(this), 0);

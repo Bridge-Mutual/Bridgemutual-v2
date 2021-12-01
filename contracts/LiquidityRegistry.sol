@@ -28,11 +28,12 @@ contract LiquidityRegistry is ILiquidityRegistry, AbstractDependant {
     // User address => policy books array
     mapping(address => EnumerableSet.AddressSet) private _policyBooks;
 
-    // new state variables - for upgrade
-    // List of withdrawls stored chronologically
-    address[] public withdrawlListCoverage;
-    address[] public withdrawlListUser;
-    uint256 public withdrawlListCounter;
+    // User address => policy books array - for withdrawl requests for all pools
+    mapping(address => EnumerableSet.AddressSet) private _withdrawlRequestsList;
+    // list of all users have withdrawl request
+    EnumerableSet.AddressSet internal _withdrawlRequestUsersList;
+
+    address public capitalPool;
 
     event PolicyBookAdded(address _userAddr, address _policyBookAddress);
     event PolicyBookRemoved(address _userAddr, address _policyBookAddress);
@@ -47,8 +48,8 @@ contract LiquidityRegistry is ILiquidityRegistry, AbstractDependant {
         _;
     }
 
-    modifier onlyPolicyBookFacade() {
-        require(policyBookRegistry.isPolicyBookFacade(msg.sender), "LR: not elegible contract");
+    modifier onlyCapitalPool() {
+        require(msg.sender == capitalPool, "LR: not Capital Pool");
         _;
     }
 
@@ -61,6 +62,7 @@ contract LiquidityRegistry is ILiquidityRegistry, AbstractDependant {
             _contractsRegistry.getPolicyBookRegistryContract()
         );
         bmiCoverStaking = IBMICoverStaking(_contractsRegistry.getBMICoverStakingContract());
+        capitalPool = _contractsRegistry.getCapitalPoolContract();
     }
 
     function tryToAddPolicyBook(address _userAddr, address _policyBookAddr)
@@ -227,83 +229,54 @@ contract LiquidityRegistry is ILiquidityRegistry, AbstractDependant {
         }
     }
 
-    /// @notice Register's coverages Withdrawals in chronological order
-    /// @dev Requires withdrawls to be serialized according to their withdrawl date
+    /// @notice Register's Withdrawals for all pools
+    /// @dev Requires withdrawls to be serialized
     /// @param _policyBook address of the policybook with requested withdrawl
     /// @param _user address user addres requesting withdrawl
     function registerWithdrawl(address _policyBook, address _user)
         external
         override
-        onlyPolicyBookFacade
+        onlyEligibleContracts
     {
-        (uint256 _date, , ) = IPolicyBook(_policyBook).withdrawalsInfo(_user);
-
-        if (withdrawlListCoverage.length > 0) {
-            uint256 _lastIndex = withdrawlListCoverage.length - 1;
-            if (_lastIndex > withdrawlListCounter) {
-                (, uint256 _previousDate, ) =
-                    IPolicyBook(withdrawlListCoverage[_lastIndex]).withdrawalsInfo(
-                        withdrawlListUser[_lastIndex]
-                    );
-
-                require(_previousDate <= _date, "LR: withdrawl out of order");
-            }
-        }
-
-        withdrawlListCoverage.push(_policyBook);
-        withdrawlListUser.push(_user);
+        _withdrawlRequestsList[_user].add(_policyBook);
+        _withdrawlRequestUsersList.add(_user);
     }
 
-    /// @notice fetches the withdrawal data and amounts across all policybooks given a time contrain
-    /// @param _startTime uint256 withdrawal window time window start
-    /// @param _endTime uint256 withdrawal window time window end
-    /// @return _pbooks address[] list of policies withdrawls
-    /// @return _users address[] list of users withdrawls
-    /// @return _acumulatedAmount uint256 collected withdrawl amount in window
-    /// @return _count uint256 number of results retunred
-    function getWithdrawalRequestsInWindowTime(uint256 _startTime, uint256 _endTime)
+    /// @notice fetches the withdrawal data and amounts across all policybooks
+    /// @return _totalWithdrawlAmount uint256 collected withdrawl amount
+    function getAllPendingWithdrawalRequestsAmount()
         external
         override
-        returns (
-            address[] memory _pbooks,
-            address[] memory _users,
-            uint256 _acumulatedAmount,
-            uint256 _count
-        )
+        returns (uint256 _totalWithdrawlAmount)
     {
-        uint256 _from = withdrawlListCounter;
-        _pbooks = new address[](withdrawlListCoverage.length);
-        _users = new address[](withdrawlListCoverage.length);
+        IPolicyBook.WithdrawalStatus _currentStatus;
 
-        for (uint256 i = _from; i < withdrawlListCoverage.length; i++) {
-            address _pbAddress = withdrawlListCoverage[i];
-            address _pbUser = withdrawlListUser[i];
+        address _userAddr;
+        address policyBookAddr;
 
-            // TODO: check allowed restrictions
-            (uint256 _amount, uint256 _date, bool _allowed) =
-                IPolicyBook(_pbAddress).withdrawalsInfo(_pbUser);
+        for (uint256 i = 0; i < _withdrawlRequestUsersList.length(); i++) {
+            _userAddr = _withdrawlRequestUsersList.at(i);
 
-            if (_date < _startTime) {
+            if (_withdrawlRequestsList[_userAddr].length() == 0) {
+                _withdrawlRequestUsersList.remove(_userAddr);
                 continue;
             }
-            if (_date > _endTime) {
-                break;
-            }
+            for (uint256 j = 0; j < _withdrawlRequestsList[_userAddr].length(); j++) {
+                policyBookAddr = _withdrawlRequestsList[_userAddr].at(j);
+                IPolicyBook _currentPolicyBook = IPolicyBook(policyBookAddr);
 
-            // TODO: replace getWithdrawalStatus with status @ window timestamp instead
-            IPolicyBook.WithdrawalStatus _status =
-                IPolicyBook(_pbAddress).getWithdrawalStatus(_pbAddress);
+                _currentStatus = _currentPolicyBook.getWithdrawalStatus(_userAddr);
 
-            if (
-                _status == IPolicyBook.WithdrawalStatus.READY ||
-                _status == IPolicyBook.WithdrawalStatus.PENDING
-            ) {
-                // TODO refactor function to only return indexes of registerd withdrawals
-                // between timestamps
-                _pbooks[_count] = _pbAddress;
-                _users[_count] = _pbUser;
-                _acumulatedAmount += _amount;
-                _count += 1;
+                if (
+                    _currentStatus == IPolicyBook.WithdrawalStatus.NONE ||
+                    _currentStatus == IPolicyBook.WithdrawalStatus.EXPIRED
+                ) {
+                    _withdrawlRequestsList[_userAddr].remove(policyBookAddr);
+                    continue;
+                }
+
+                (uint256 _requestAmount, , ) = _currentPolicyBook.withdrawalsInfo(_userAddr);
+                _totalWithdrawlAmount += _currentPolicyBook.convertBMIXToSTBL(_requestAmount);
             }
         }
     }

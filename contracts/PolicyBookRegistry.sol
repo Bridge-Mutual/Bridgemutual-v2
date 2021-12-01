@@ -147,33 +147,6 @@ contract PolicyBookRegistry is IPolicyBookRegistry, AbstractDependant {
         }
     }
 
-    function buyPolicyBatchFromDistributor(
-        address[] calldata policyBooks,
-        uint256[] calldata epochsNumbers,
-        uint256[] calldata coversTokens,
-        address distributor
-    ) external override {
-        require(
-            policyBooks.length == epochsNumbers.length &&
-                policyBooks.length == coversTokens.length,
-            "PolicyBookRegistry: Lengths mismatch"
-        );
-
-        for (uint256 i = 0; i < policyBooks.length; i++) {
-            require(
-                isPolicyBook(policyBooks[i]) && !isUserLeveragePool(policyBooks[i]),
-                "PolicyBookRegistry: Not a PolicyBook"
-            );
-
-            IPolicyBook(policyBooks[i]).policyBookFacade().buyPolicyFromDistributorFor(
-                msg.sender,
-                epochsNumbers[i],
-                coversTokens[i],
-                distributor
-            );
-        }
-    }
-
     function isPolicyBook(address policyBook) public view override returns (bool) {
         return _policyBooks.contains(policyBook);
     }

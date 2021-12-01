@@ -23,7 +23,7 @@ contract YieldGenerator is IYieldGenerator, OwnableUpgradeable, AbstractDependan
     using Math for uint256;
 
     uint256 public constant DEPOSIT_SAFETY_MARGIN = 15 * 10**24; //1.5
-    uint256 public constant PROTOCOLS_NUMBER = 5;
+    uint256 public constant PROTOCOLS_NUMBER = 3;
 
     ERC20 public stblToken;
     ICapitalPool public capitalPool;
@@ -59,6 +59,19 @@ contract YieldGenerator is IYieldGenerator, OwnableUpgradeable, AbstractDependan
 
     function __YieldGenerator_init() external initializer {
         __Ownable_init();
+        whitelistedProtocols = 3;
+        // setup AAVE
+        defiProtocols[uint256(DefiProtocols.AAVE)].targetAllocation = 45 * PRECISION;
+        defiProtocols[uint256(DefiProtocols.AAVE)].whiteListed = true;
+        defiProtocols[uint256(DefiProtocols.AAVE)].threshold = true;
+        // setup Compound
+        defiProtocols[uint256(DefiProtocols.COMPOUND)].targetAllocation = 45 * PRECISION;
+        defiProtocols[uint256(DefiProtocols.COMPOUND)].whiteListed = true;
+        defiProtocols[uint256(DefiProtocols.COMPOUND)].threshold = true;
+        // setup Yearn
+        defiProtocols[uint256(DefiProtocols.YEARN)].targetAllocation = 10 * PRECISION;
+        defiProtocols[uint256(DefiProtocols.YEARN)].whiteListed = true;
+        defiProtocols[uint256(DefiProtocols.YEARN)].threshold = true;
     }
 
     function setDependencies(IContractsRegistry _contractsRegistry)
@@ -74,10 +87,6 @@ contract YieldGenerator is IYieldGenerator, OwnableUpgradeable, AbstractDependan
             .getCompoundProtocolContract();
         defiProtocolsAddresses[uint256(DefiProtocols.YEARN)] = _contractsRegistry
             .getYearnProtocolContract();
-        defiProtocolsAddresses[uint256(DefiProtocols.MPH)] = _contractsRegistry
-            .getMPHProtocolContract();
-        defiProtocolsAddresses[uint256(DefiProtocols.BARNBRIDGE)] = _contractsRegistry
-            .getBarnBridgeProtocolContract();
     }
 
     /// @notice deposit stable coin into multiple defi protocols using formulas, access: capital pool
@@ -117,7 +126,7 @@ contract YieldGenerator is IYieldGenerator, OwnableUpgradeable, AbstractDependan
                 whitelistedProtocols = whitelistedProtocols.add(1);
             }
 
-            defiProtocols[i].targetAllocation = allocations[i] * PRECISION;
+            defiProtocols[i].targetAllocation = allocations[i];
 
             defiProtocols[i].whiteListed = _whiteListed;
             defiProtocols[i].threshold = threshold[i];
@@ -263,7 +272,7 @@ contract YieldGenerator is IYieldGenerator, OwnableUpgradeable, AbstractDependan
     /// @notice get the number of protocols need to rebalance
     /// @param rebalanceAmount uint256 the amount of stable coin will depsoit or withdraw
     function _howManyProtocols(uint256 rebalanceAmount, bool isDeposit)
-        public
+        internal
         view
         returns (uint256)
     {

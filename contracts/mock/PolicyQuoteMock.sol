@@ -16,7 +16,7 @@ contract PolicyQuoteMock is IPolicyQuote {
         uint256 _totalCoverTokens,
         uint256 _totalLiquidity,
         uint256 _totalLeveragedLiquidity,
-        bool _safePolicyBook
+        bool _safePricingModel
     ) external view override returns (uint256) {
         return mockQuote;
     }

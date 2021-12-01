@@ -14,6 +14,8 @@ import "./interfaces/IPolicyBookAdmin.sol";
 import "./interfaces/IPolicyBookRegistry.sol";
 import "./interfaces/IContractsRegistry.sol";
 import "./interfaces/IPolicyBook.sol";
+import "./interfaces/ILeveragePortfolio.sol";
+import "./interfaces/IUserLeveragePool.sol";
 
 import "./abstract/AbstractDependant.sol";
 
@@ -33,6 +35,7 @@ contract PolicyBookAdmin is IPolicyBookAdmin, OwnableUpgradeable, AbstractDepend
 
     // new state variables
     address private policyBookFacadeImplementationAddress;
+    address private userLeverageImplementationAddress;
 
     IClaimingRegistry internal claimingRegistry;
     EnumerableSet.AddressSet private _whitelistedDistributors;
@@ -48,10 +51,12 @@ contract PolicyBookAdmin is IPolicyBookAdmin, OwnableUpgradeable, AbstractDepend
     /// TODO can't init contract after upgrade , workaround to set policyfacade impl
     function __PolicyBookAdmin_init(
         address _policyBookImplementationAddress,
-        address _policyBookFacadeImplementationAddress
+        address _policyBookFacadeImplementationAddress,
+        address _userLeverageImplementationAddress
     ) external initializer {
         require(_policyBookImplementationAddress != address(0), "PBA: PB Zero address");
         require(_policyBookFacadeImplementationAddress != address(0), "PBA: PBF Zero address");
+        require(_userLeverageImplementationAddress != address(0), "PBA: PBF Zero address");
 
         __Ownable_init();
 
@@ -59,6 +64,7 @@ contract PolicyBookAdmin is IPolicyBookAdmin, OwnableUpgradeable, AbstractDepend
 
         policyBookImplementationAddress = _policyBookImplementationAddress;
         policyBookFacadeImplementationAddress = _policyBookFacadeImplementationAddress;
+        userLeverageImplementationAddress = _userLeverageImplementationAddress;
     }
 
     function setDependencies(IContractsRegistry _contractsRegistry)
@@ -107,10 +113,23 @@ contract PolicyBookAdmin is IPolicyBookAdmin, OwnableUpgradeable, AbstractDepend
     {
         require(
             policyBookRegistry.isPolicyBook(policyBookAddress),
-            "PolicyBookAdmin: Not a policybook"
+            "PolicyBookAdmin: Not a PolicyBook"
         );
 
         return upgrader.getImplementation(policyBookAddress);
+    }
+
+    function getImplementationOfPolicyBookFacade(address policyBookFacadeAddress)
+        external
+        override
+        returns (address)
+    {
+        require(
+            policyBookRegistry.isPolicyBookFacade(policyBookFacadeAddress),
+            "PolicyBookAdmin: Not a PolicyBookFacade"
+        );
+
+        return upgrader.getImplementation(policyBookFacadeAddress);
     }
 
     function getCurrentPolicyBooksImplementation() external view override returns (address) {
@@ -121,9 +140,25 @@ contract PolicyBookAdmin is IPolicyBookAdmin, OwnableUpgradeable, AbstractDepend
         return policyBookFacadeImplementationAddress;
     }
 
+    function getCurrentUserLeverageImplementation() external view override returns (address) {
+        return userLeverageImplementationAddress;
+    }
+
     function _setPolicyBookImplementation(address policyBookImpl) internal {
         if (policyBookImplementationAddress != policyBookImpl) {
             policyBookImplementationAddress = policyBookImpl;
+        }
+    }
+
+    function _setPolicyBookFacadeImplementation(address policyBookFacadeImpl) internal {
+        if (policyBookFacadeImplementationAddress != policyBookFacadeImpl) {
+            policyBookFacadeImplementationAddress = policyBookFacadeImpl;
+        }
+    }
+
+    function _setUserLeverageImplementation(address userLeverageImpl) internal {
+        if (userLeverageImplementationAddress != userLeverageImpl) {
+            userLeverageImplementationAddress = userLeverageImpl;
         }
     }
 
@@ -173,6 +208,103 @@ contract PolicyBookAdmin is IPolicyBookAdmin, OwnableUpgradeable, AbstractDepend
         }
     }
 
+    function upgradePolicyBookFacades(
+        address policyBookFacadeImpl,
+        uint256 offset,
+        uint256 limit
+    ) external onlyOwner {
+        _upgradePolicyBookFacades(policyBookFacadeImpl, offset, limit, "");
+    }
+
+    /// @notice can only call functions that have no parameters
+    function upgradePolicyBookFacadesAndCall(
+        address policyBookFacadeImpl,
+        uint256 offset,
+        uint256 limit,
+        string calldata functionSignature
+    ) external onlyOwner {
+        _upgradePolicyBookFacades(policyBookFacadeImpl, offset, limit, functionSignature);
+    }
+
+    function _upgradePolicyBookFacades(
+        address policyBookFacadeImpl,
+        uint256 offset,
+        uint256 limit,
+        string memory functionSignature
+    ) internal {
+        require(policyBookFacadeImpl != address(0), "PolicyBookAdmin: Zero address");
+        require(Address.isContract(policyBookFacadeImpl), "PolicyBookAdmin: Invalid address");
+
+        _setPolicyBookFacadeImplementation(policyBookFacadeImpl);
+
+        address[] memory _policies = policyBookRegistry.list(offset, limit);
+
+        for (uint256 i = 0; i < _policies.length; i++) {
+            if (!policyBookRegistry.isUserLeveragePool(_policies[i])) {
+                IPolicyBook _policyBook = IPolicyBook(_policies[i]);
+                address policyBookFacade =
+                    address(IPolicyBookFacade(_policyBook.policyBookFacade()));
+                if (bytes(functionSignature).length > 0) {
+                    upgrader.upgradeAndCall(
+                        policyBookFacade,
+                        policyBookFacadeImpl,
+                        abi.encodeWithSignature(functionSignature)
+                    );
+                } else {
+                    upgrader.upgrade(policyBookFacade, policyBookFacadeImpl);
+                }
+            }
+        }
+    }
+
+    /// TODO refactor all upgrades function in one function
+    function upgradeUserLeveragePools(
+        address userLeverageImpl,
+        uint256 offset,
+        uint256 limit
+    ) external onlyOwner {
+        _upgradeUserLeveragePools(userLeverageImpl, offset, limit, "");
+    }
+
+    /// @notice can only call functions that have no parameters
+    function upgradeUserLeveragePoolsAndCall(
+        address userLeverageImpl,
+        uint256 offset,
+        uint256 limit,
+        string calldata functionSignature
+    ) external onlyOwner {
+        _upgradeUserLeveragePools(userLeverageImpl, offset, limit, functionSignature);
+    }
+
+    function _upgradeUserLeveragePools(
+        address userLeverageImpl,
+        uint256 offset,
+        uint256 limit,
+        string memory functionSignature
+    ) internal {
+        require(userLeverageImpl != address(0), "PolicyBookAdmin: Zero address");
+        require(Address.isContract(userLeverageImpl), "PolicyBookAdmin: Invalid address");
+
+        _setUserLeverageImplementation(userLeverageImpl);
+
+        address[] memory _policies =
+            policyBookRegistry.listByType(IPolicyBookFabric.ContractType.VARIOUS, offset, limit);
+
+        for (uint256 i = 0; i < _policies.length; i++) {
+            if (!policyBookRegistry.isUserLeveragePool(_policies[i])) {
+                if (bytes(functionSignature).length > 0) {
+                    upgrader.upgradeAndCall(
+                        _policies[i],
+                        userLeverageImpl,
+                        abi.encodeWithSignature(functionSignature)
+                    );
+                } else {
+                    upgrader.upgrade(_policies[i], userLeverageImpl);
+                }
+            }
+        }
+    }
+
     /// @notice It blacklists or whitelists a PolicyBook. Only whitelisted PolicyBooks can
     ///         receive stakes and funds
     /// @param policyBookAddress PolicyBook address that will be whitelisted or blacklisted
@@ -188,7 +320,7 @@ contract PolicyBookAdmin is IPolicyBookAdmin, OwnableUpgradeable, AbstractDepend
 
     /// @notice Whitelist distributor address and respective fees
     /// @param _distributor distributor address that will receive funds
-    /// @param _distributorFee distributor fee amount (passed with its precision : _distributorFee * 10**24)
+    /// @param _distributorFee distributor fee amount (passed with its precision : _distributorFee * 10**25)
     function whitelistDistributor(address _distributor, uint256 _distributorFee)
         external
         override
@@ -305,5 +437,49 @@ contract PolicyBookAdmin is IPolicyBookAdmin, OwnableUpgradeable, AbstractDepend
         uint256 _newRebalancingThreshold
     ) external override onlyOwner {
         IPolicyBookFacade(_facadeAddress).setRebalancingThreshold(_newRebalancingThreshold);
+    }
+
+    /// @notice sets the policybookFacade mpls values
+    /// @param _facadeAddress address of the policybook facade
+    /// @param _safePricingModel bool is pricing model safe (true) or not (false)
+    function setPolicyBookFacadeSafePricingModel(address _facadeAddress, bool _safePricingModel)
+        external
+        override
+        onlyOwner
+    {
+        IPolicyBookFacade(_facadeAddress).setSafePricingModel(_safePricingModel);
+    }
+
+    /// @notice sets the user leverage pool Rebalancing Threshold
+    /// @param _LeveragePoolAddress address of the policybook facade
+    /// @param _newRebalancingThreshold uint256 value of Rebalancing Threshold
+    function setLeveragePortfolioRebalancingThreshold(
+        address _LeveragePoolAddress,
+        uint256 _newRebalancingThreshold
+    ) external override onlyOwner {
+        ILeveragePortfolio(_LeveragePoolAddress).setRebalancingThreshold(_newRebalancingThreshold);
+    }
+
+    function setLeveragePortfolioProtocolConstant(
+        address _LeveragePoolAddress,
+        uint256 _targetUR,
+        uint256 _d_ProtocolConstant,
+        uint256 _a_ProtocolConstant,
+        uint256 _max_ProtocolConstant
+    ) external override onlyOwner {
+        ILeveragePortfolio(_LeveragePoolAddress).setProtocolConstant(
+            _targetUR,
+            _d_ProtocolConstant,
+            _a_ProtocolConstant,
+            _max_ProtocolConstant
+        );
+    }
+
+    function setUserLeverageMaxCapacities(address _userLeverageAddress, uint256 _maxCapacities)
+        external
+        override
+        onlyOwner
+    {
+        IUserLeveragePool(_userLeverageAddress).setMaxCapacities(_maxCapacities);
     }
 }

@@ -5,19 +5,17 @@ pragma experimental ABIEncoderV2;
 import "../PolicyBookFacade.sol";
 
 contract PolicyBookFacadeMock is PolicyBookFacade {
-    function deployLeverageFundsByLP() external returns (bool, uint256) {
+    function deployLeverageFundsByLP(address levragePool) external returns (uint256) {
         return
-            userLeveragePool.deployLeverageStableToCoveragePools(
-                userleveragedMPL,
-                reinsurancePoolMPL
+            ILeveragePortfolio(levragePool).deployLeverageStableToCoveragePools(
+                ILeveragePortfolio.LeveragePortfolio.USERLEVERAGEPOOL
             );
     }
 
-    function deployLeverageFundsByRP() external returns (bool, uint256) {
+    function deployLeverageFundsByRP() external returns (uint256) {
         return
             reinsurancePool.deployLeverageStableToCoveragePools(
-                reinsurancePoolMPL,
-                userleveragedMPL
+                ILeveragePortfolio.LeveragePortfolio.REINSURANCEPOOL
             );
     }
 

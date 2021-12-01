@@ -66,7 +66,7 @@ contract PolicyQuote is IPolicyQuote {
         uint256 _totalCoverTokens,
         uint256 _totalLiquidity,
         uint256 _totalLeveragedLiquidity,
-        bool _safePolicyBook
+        bool _safePricingModel
     ) external pure override returns (uint256) {
         return
             _getQuote(
@@ -75,7 +75,7 @@ contract PolicyQuote is IPolicyQuote {
                 _totalCoverTokens,
                 _totalLiquidity,
                 _totalLeveragedLiquidity,
-                _safePolicyBook
+                _safePricingModel
             );
     }
 
@@ -92,7 +92,8 @@ contract PolicyQuote is IPolicyQuote {
                 IPolicyBook(_policyBookAddr).totalLiquidity(),
                 IPolicyBookFacade(address(IPolicyBook(_policyBookAddr).policyBookFacade()))
                     .totalLeveragedLiquidity(),
-                IPolicyBook(_policyBookAddr).whitelisted()
+                IPolicyBookFacade(address(IPolicyBook(_policyBookAddr).policyBookFacade()))
+                    .safePricingModel()
             );
     }
 
@@ -102,7 +103,7 @@ contract PolicyQuote is IPolicyQuote {
         uint256 _totalCoverTokens,
         uint256 _totalLiquidity,
         uint256 _totalLeveragedLiquidity,
-        bool _safePolicyBook
+        bool _safePricingModel
     ) internal pure returns (uint256) {
         require(
             _durationSeconds > 0 && _durationSeconds <= SECONDS_IN_THE_YEAR,
@@ -126,7 +127,7 @@ contract PolicyQuote is IPolicyQuote {
         uint256 maxPercentPremiumCost100Utilization =
             HIGH_RISK_MAX_PERCENT_PREMIUM_COST_100_UTILIZATION;
 
-        if (_safePolicyBook) {
+        if (_safePricingModel) {
             maxPercentPremiumCost = LOW_RISK_MAX_PERCENT_PREMIUM_COST;
             maxPercentPremiumCost100Utilization = LOW_RISK_MAX_PERCENT_PREMIUM_COST_100_UTILIZATION;
         }

@@ -5,27 +5,31 @@ interface ILeveragePortfolio {
     enum LeveragePortfolio {USERLEVERAGEPOOL, REINSURANCEPOOL}
     struct LevFundsFactors {
         uint256 netMPL;
-        uint256 netMPL2;
+        uint256 netMPLn;
         uint256 poolTotalLiquidity;
         uint256 poolUR;
     }
 
+    function targetUR() external view returns (uint256);
+
+    function d_ProtocolConstant() external view returns (uint256);
+
+    function a_ProtocolConstant() external view returns (uint256);
+
+    function max_ProtocolConstant() external view returns (uint256);
+
     /// @notice deploy lStable from user leverage pool or reinsurance pool using 2 formulas: access by policybook.
-    /// @dev if function call from LP then the MPL is of LP and secondMPL is of RP and vise versa
-    /// @param mpl uint256 the MPL of policy book for LP or RP
-    /// @param mpl uint256 the MPL of policy book for LP or RP
-    /// @return bool is leverage or deleverage , uint256 the amount of lStable
-    function deployLeverageStableToCoveragePools(uint256 mpl, uint256 secondMPL)
+    /// @param leveragePoolType LeveragePortfolio is determine the pool which call the function
+    function deployLeverageStableToCoveragePools(LeveragePortfolio leveragePoolType)
         external
-        returns (bool, uint256);
+        returns (uint256);
 
     /// @notice deploy the vStable from RP in v2 and for next versions it will be from RP and LP : access by policybook.
-    /// @return  the amount of vstable to deploy
     function deployVirtualStableToCoveragePools() external returns (uint256);
 
     /// @notice set the threshold % for re-evaluation of the lStable provided across all Coverage pools : access by owner
     /// @param threshold uint256 is the reevaluatation threshold
-    function setThreshold(uint256 threshold) external;
+    function setRebalancingThreshold(uint256 threshold) external;
 
     /// @notice set the protocol constant : access by owner
     /// @param _targetUR uint256 target utitlization ration
@@ -42,7 +46,7 @@ interface ILeveragePortfolio {
     /// @notice calc M factor by formual M = min( abs((1/ (Tur-UR))*d) /a, max)
     /// @param poolUR uint256 utitilization ratio for a coverage pool
     /// @return uint256 M facotr
-    function calcM(uint256 poolUR) external returns (uint256);
+    //function calcM(uint256 poolUR) external returns (uint256);
 
     /// @return uint256 the amount of vStable stored in the pool
     function totalLiquidity() external view returns (uint256);

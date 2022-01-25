@@ -29,6 +29,7 @@ contract CERC20Mock is ERC20 {
         stblToken.safeTransferFrom(msg.sender, address(this), amount);
         userDeposited[msg.sender] = userDeposited[msg.sender].add(amount);
         _mint(msg.sender, amount.mul(COMPOUND_EXCHANGE_RATE_PRECISION).div(exchangeRate));
+        exchangeRate += 1000 * 10**10;
         return 0;
     }
 

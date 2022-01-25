@@ -26,8 +26,8 @@ contract VBMI is IVBMI, ERC20PermitUpgradeable, AbstractDependant {
     }
 
     function __VBMI_init() external initializer {
-        __ERC20Permit_init("BMI Voting Token");
-        __ERC20_init("BMI Voting Token", "vBMI");
+        __ERC20Permit_init("BMI V2 Voting Token");
+        __ERC20_init("BMI V2 Voting Token", "vBMIV2");
     }
 
     function setDependencies(IContractsRegistry _contractsRegistry)

@@ -47,10 +47,14 @@ contract CapitalPool is ICapitalPool, OwnableUpgradeable, AbstractDependant {
     // all vStable capital balance , updated by (all pool transfer + withdraw from liq cushion)
     uint256 public override virtualUsdtAccumulatedBalance;
     // pool balances tracking
-    uint256 public liquidityCushionBalance;
+    uint256 public override liquidityCushionBalance;
     address public maintainer;
 
     uint256 public stblDecimals;
+
+    // new state post v2 deployemnt
+    bool public isLiqCushionPaused;
+    bool public automaticHardRebalancing;
 
     event PoolBalancesUpdated(
         uint256 hardUsdtAccumulatedBalance,
@@ -134,7 +138,8 @@ contract CapitalPool is ICapitalPool, OwnableUpgradeable, AbstractDependant {
 
         IPolicyBookFacade policyBookFacade =
             IPolicyBookFacade(IPolicyBook(_msgSender()).policyBookFacade());
-        /// TODO for v2 it is one user leverage pool , so need to figure it out after v2
+        /// TODO for v2 it is one user leverage pool ,after v2 it need to refactor premium function
+        /// to get the list of leveraged pools
         (
             factors.vStblDeployedByRP,
             ,
@@ -270,6 +275,23 @@ contract CapitalPool is ICapitalPool, OwnableUpgradeable, AbstractDependant {
     /// @notice rebalances pools acording to v2 specification and dao enforced policies
     /// @dev  emits PoolBalancesUpdated
     function rebalanceLiquidityCushion() public override broadcastBalancing onlyMaintainer {
+        //check defi protocol balances
+        (, uint256 _lostAmount) = yieldGenerator.reevaluateDefiProtocolBalances();
+
+        if (_lostAmount > 0) {
+            isLiqCushionPaused = true;
+            if (automaticHardRebalancing) {
+                defiHardRebalancing();
+            }
+        }
+
+        // hard rebalancing - Stop all withdrawals from all pools
+        if (isLiqCushionPaused) {
+            hardUsdtAccumulatedBalance += liquidityCushionBalance;
+            liquidityCushionBalance = 0;
+            return;
+        }
+
         uint256 _pendingClaimAmount = claimingRegistry.getAllPendingClaimsAmount();
 
         uint256 _pendingWithdrawlAmount =
@@ -285,16 +307,78 @@ contract CapitalPool is ICapitalPool, OwnableUpgradeable, AbstractDependant {
 
         hardUsdtAccumulatedBalance = 0;
 
+        uint256 _actualAmount;
         if (_deposit > 0) {
             stblToken.safeApprove(address(yieldGenerator), 0);
             stblToken.safeApprove(address(yieldGenerator), _deposit);
 
-            yieldGenerator.deposit(_deposit);
+            _actualAmount = yieldGenerator.deposit(_deposit);
+            if (_actualAmount < _deposit) {
+                hardUsdtAccumulatedBalance += _deposit.sub(_actualAmount);
+            }
         } else if (_withdraw > 0) {
-            yieldGenerator.withdraw(_withdraw);
+            _actualAmount = yieldGenerator.withdraw(_withdraw);
+            if (_actualAmount < _withdraw) {
+                liquidityCushionBalance -= _withdraw.sub(_actualAmount);
+            }
         }
 
         emit LiquidityCushionRebalanced(_requiredLiquidity, _withdraw, _deposit);
+    }
+
+    function defiHardRebalancing() public onlyOwner {
+        (uint256 _totalDeposit, uint256 _lostAmount) =
+            yieldGenerator.reevaluateDefiProtocolBalances();
+
+        ///TODO use threshold to evaluate lost amount
+        if (_lostAmount > 0 && _totalDeposit > _lostAmount) {
+            uint256 _lostPercentage =
+                (_totalDeposit.sub(_lostAmount)).mul(PERCENTAGE_100).div(_totalDeposit);
+
+            address[] memory _policyBooksArr =
+                policyBookRegistry.list(0, policyBookRegistry.count());
+            ///@dev we should update all coverage pools liquidity before leverage pool
+            /// in order to do leverage rebalancing for all pools
+            for (uint256 i = 0; i < _policyBooksArr.length; i++) {
+                if (policyBookRegistry.isUserLeveragePool(_policyBooksArr[i])) continue;
+
+                _updatePolicyBookLiquidity(_policyBooksArr[i], _lostPercentage, false);
+            }
+
+            address[] memory _userLeverageArr =
+                policyBookRegistry.listByType(
+                    IPolicyBookFabric.ContractType.VARIOUS,
+                    0,
+                    policyBookRegistry.countByType(IPolicyBookFabric.ContractType.VARIOUS)
+                );
+
+            for (uint256 i = 0; i < _userLeverageArr.length; i++) {
+                _updatePolicyBookLiquidity(_userLeverageArr[i], _lostPercentage, true);
+            }
+            yieldGenerator.defiHardRebalancing();
+        }
+    }
+
+    function _updatePolicyBookLiquidity(
+        address _policyBookAddress,
+        uint256 _lostPercentage,
+        bool _isLeveragePool
+    ) internal {
+        IPolicyBook _policyBook = IPolicyBook(_policyBookAddress);
+        uint256 _currentLiquidity = _policyBook.totalLiquidity();
+        uint256 _newLiquidity = _currentLiquidity.mul(_lostPercentage).div(PERCENTAGE_100);
+
+        _policyBook.updateLiquidity(_newLiquidity);
+
+        uint256 _stblLostAmount =
+            DecimalsConverter.convertFrom18(_currentLiquidity.sub(_newLiquidity), stblDecimals);
+
+        if (_isLeveragePool) {
+            leveragePoolBalance[_policyBookAddress] -= _stblLostAmount;
+        } else {
+            regularCoverageBalance[_policyBookAddress] -= _stblLostAmount;
+        }
+        virtualUsdtAccumulatedBalance -= _stblLostAmount;
     }
 
     /// @notice Fullfils policybook claims by transfering the balance to claimer
@@ -325,6 +409,18 @@ contract CapitalPool is ICapitalPool, OwnableUpgradeable, AbstractDependant {
     function setMaintainer(address _newMainteiner) public onlyOwner {
         require(_newMainteiner != address(0), "CP: invalid maintainer address");
         maintainer = _newMainteiner;
+    }
+
+    function pauseLiquidityCushionRebalancing(bool _paused) public onlyOwner {
+        require(_paused != isLiqCushionPaused, "CP: invalid paused state");
+
+        isLiqCushionPaused = _paused;
+    }
+
+    function automateHardRebalancing(bool _isAutomatic) public onlyOwner {
+        require(_isAutomatic != automaticHardRebalancing, "CP: invalid state");
+
+        automaticHardRebalancing = _isAutomatic;
     }
 
     function _withdrawFromLiquidityCushion(address _sender, uint256 _stblAmount)

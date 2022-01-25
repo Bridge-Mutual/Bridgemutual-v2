@@ -17,8 +17,8 @@ contract PolicyQuoteMock is IPolicyQuote {
         uint256 _totalLiquidity,
         uint256 _totalLeveragedLiquidity,
         bool _safePricingModel
-    ) external view override returns (uint256) {
-        return mockQuote;
+    ) external view override returns (uint256, uint256) {
+        return (mockQuote, 0);
     }
 
     function getQuote(
@@ -28,4 +28,16 @@ contract PolicyQuoteMock is IPolicyQuote {
     ) external view override returns (uint256) {
         return mockQuote;
     }
+
+    function setupPricingModel(
+        uint256 _riskyAssetThresholdPercentage,
+        uint256 _minimumCostPercentage,
+        uint256 _minimumInsuranceCost,
+        uint256 _lowRiskMaxPercentPremiumCost,
+        uint256 _lowRiskMaxPercentPremiumCost100Utilization,
+        uint256 _highRiskMaxPercentPremiumCost,
+        uint256 _highRiskMaxPercentPremiumCost100Utilization
+    ) external override {}
+
+    function getMINUR(bool _safePricingModel) external view override returns (uint256 _minUR) {}
 }

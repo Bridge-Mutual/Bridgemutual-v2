@@ -23,7 +23,7 @@ contract STKBMIToken is ISTKBMIToken, ERC20PermitUpgradeable, AbstractDependant 
     }
 
     function __STKBMIToken_init() external initializer {
-        __ERC20_init("Staking BMI", "stkBMI");
+        __ERC20_init("Staking BMI V2", "stkBMIV2");
     }
 
     function setDependencies(IContractsRegistry _contractsRegistry)

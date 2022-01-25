@@ -6,8 +6,7 @@ interface ILeveragePortfolio {
     struct LevFundsFactors {
         uint256 netMPL;
         uint256 netMPLn;
-        uint256 poolTotalLiquidity;
-        uint256 poolUR;
+        address policyBookAddr;
     }
 
     function targetUR() external view returns (uint256);
@@ -34,12 +33,12 @@ interface ILeveragePortfolio {
     /// @notice set the protocol constant : access by owner
     /// @param _targetUR uint256 target utitlization ration
     /// @param _d_ProtocolConstant uint256 D protocol constant
-    /// @param  _a_ProtocolConstant uint256 A protocol constant
+    /// @param  _a1_ProtocolConstant uint256 A1 protocol constant
     /// @param _max_ProtocolConstant uint256 the max % included
     function setProtocolConstant(
         uint256 _targetUR,
         uint256 _d_ProtocolConstant,
-        uint256 _a_ProtocolConstant,
+        uint256 _a1_ProtocolConstant,
         uint256 _max_ProtocolConstant
     ) external;
 

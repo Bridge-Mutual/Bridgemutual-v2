@@ -91,13 +91,15 @@ contract YieldGenerator is IYieldGenerator, OwnableUpgradeable, AbstractDependan
 
     /// @notice deposit stable coin into multiple defi protocols using formulas, access: capital pool
     /// @param amount uint256 the amount of stable coin to deposit
-    function deposit(uint256 amount) external override onlyCapitalPool {
-        _aggregateDepositWithdrawFunction(amount, true);
+    function deposit(uint256 amount) external override onlyCapitalPool returns (uint256) {
+        if (amount == 0 && _getCurrentvSTBLVolume() == 0) return 0;
+        return _aggregateDepositWithdrawFunction(amount, true);
     }
 
     /// @notice withdraw stable coin from mulitple defi protocols using formulas, access: capital pool
     /// @param amount uint256 the amount of stable coin to withdraw
     function withdraw(uint256 amount) external override onlyCapitalPool returns (uint256) {
+        if (amount == 0 && _getCurrentvSTBLVolume() == 0) return 0;
         return _aggregateDepositWithdrawFunction(amount, false);
     }
 
@@ -150,61 +152,78 @@ contract YieldGenerator is IYieldGenerator, OwnableUpgradeable, AbstractDependan
     {
         _defiProtocol = DefiProtocol(
             defiProtocols[index].targetAllocation,
-            defiProtocols[index].currentAllocation,
+            _calcProtocolCurrentAllocation(index),
             defiProtocols[index].rebalanceWeight,
             defiProtocols[index].depositedAmount,
             defiProtocols[index].whiteListed,
-            defiProtocols[index].threshold
+            defiProtocols[index].threshold,
+            defiProtocols[index].withdrawMax,
+            IDefiProtocol(defiProtocolsAddresses[index]).totalValue()
         );
     }
 
     function _aggregateDepositWithdrawFunction(uint256 amount, bool isDeposit)
         internal
         updateDefiProtocols(isDeposit)
-        returns (uint256 _actualAmountWithdrawn)
+        returns (uint256 _actualAmount)
     {
         uint256 _protocolIndex;
         uint256 _protocolsNo = _howManyProtocols(amount, isDeposit);
         if (_protocolsNo == 1) {
             if (availableProtocols.length == 0) {
-                return _actualAmountWithdrawn;
+                return _actualAmount;
             }
-            _protocolIndex = _getProtocolOfMaxWeight();
+
             if (isDeposit) {
+                _protocolIndex = _getProtocolOfMaxWeight();
                 // deposit 100% to this protocol
                 _depoist(_protocolIndex, amount, PERCENTAGE_100);
+                _actualAmount = amount;
             } else {
+                _protocolIndex = _getProtocolOfMinWeight();
                 // withdraw 100% from this protocol
-                _actualAmountWithdrawn = _withdraw(_protocolIndex, amount, PERCENTAGE_100);
+                _actualAmount = _withdraw(_protocolIndex, amount, PERCENTAGE_100);
             }
         } else if (_protocolsNo > 1) {
             delete _selectedProtocols;
 
             uint256 _totalWeight;
+            uint256 _depoistedAmount;
+            uint256 _protocolRebalanceAllocation;
 
             for (uint256 i = 0; i < _protocolsNo; i++) {
                 if (availableProtocols.length == 0) {
                     break;
                 }
-                _protocolIndex = _getProtocolOfMaxWeight();
+                if (isDeposit) {
+                    _protocolIndex = _getProtocolOfMaxWeight();
+                } else {
+                    _protocolIndex = _getProtocolOfMinWeight();
+                }
                 _totalWeight = _totalWeight.add(defiProtocols[_protocolIndex].rebalanceWeight);
                 _selectedProtocols.push(_protocolIndex);
             }
 
             if (_selectedProtocols.length > 0) {
                 for (uint256 i = 0; i < _selectedProtocols.length; i++) {
-                    uint256 _protocolRebalanceAllocation =
-                        _calcRebalanceAllocation(_selectedProtocols[i], _totalWeight);
+                    _protocolRebalanceAllocation = _calcRebalanceAllocation(
+                        _selectedProtocols[i],
+                        _totalWeight
+                    );
 
                     if (isDeposit) {
                         // deposit % allocation to this protocol
+                        _depoistedAmount = amount.mul(_protocolRebalanceAllocation).div(
+                            PERCENTAGE_100
+                        );
                         _depoist(
                             _selectedProtocols[i],
-                            amount.mul(_protocolRebalanceAllocation).div(PERCENTAGE_100),
+                            _depoistedAmount,
                             _protocolRebalanceAllocation
                         );
+                        _actualAmount += _depoistedAmount;
                     } else {
-                        _actualAmountWithdrawn += _withdraw(
+                        _actualAmount += _withdraw(
                             _selectedProtocols[i],
                             amount.mul(_protocolRebalanceAllocation).div(PERCENTAGE_100),
                             _protocolRebalanceAllocation
@@ -229,8 +248,7 @@ contract YieldGenerator is IYieldGenerator, OwnableUpgradeable, AbstractDependan
 
         IDefiProtocol(defiProtocolsAddresses[_protocolIndex]).deposit(_amount);
 
-        // update protocol current allocation
-        _updateProtocolCurrentAllocation(_protocolIndex, _amount, true);
+        defiProtocols[_protocolIndex].depositedAmount += _amount;
 
         totalDeposit = totalDeposit.add(_amount);
 
@@ -252,15 +270,14 @@ contract YieldGenerator is IYieldGenerator, OwnableUpgradeable, AbstractDependan
         if (allocatedFunds == 0) return _actualAmountWithdrawn;
 
         if (allocatedFunds < _amount) {
-            _amount = defiProtocols[_protocolIndex].depositedAmount;
+            _amount = allocatedFunds;
         }
 
         _actualAmountWithdrawn = IDefiProtocol(defiProtocolsAddresses[_protocolIndex]).withdraw(
             _amount
         );
 
-        // update protocol current allocation
-        _updateProtocolCurrentAllocation(_protocolIndex, _actualAmountWithdrawn, false);
+        defiProtocols[_protocolIndex].depositedAmount -= _actualAmountWithdrawn;
 
         totalDeposit = totalDeposit.sub(_actualAmountWithdrawn);
 
@@ -296,20 +313,25 @@ contract YieldGenerator is IYieldGenerator, OwnableUpgradeable, AbstractDependan
 
         for (uint256 i = 0; i < PROTOCOLS_NUMBER; i++) {
             uint256 _targetAllocation = defiProtocols[i].targetAllocation;
-            uint256 _currentAllocation = defiProtocols[i].currentAllocation;
+            uint256 _currentAllocation = _calcProtocolCurrentAllocation(i);
             uint256 _diffAllocation;
 
             if (isDeposit) {
                 if (_targetAllocation > _currentAllocation) {
+                    // max weight
                     _diffAllocation = _targetAllocation.sub(_currentAllocation);
                 } else if (_currentAllocation >= _targetAllocation) {
                     _diffAllocation = 0;
                 }
             } else {
                 if (_currentAllocation > _targetAllocation) {
+                    // max weight
                     _diffAllocation = _currentAllocation.sub(_targetAllocation);
+                    defiProtocols[i].withdrawMax = true;
                 } else if (_targetAllocation >= _currentAllocation) {
-                    _diffAllocation = 0;
+                    // min weight
+                    _diffAllocation = _targetAllocation.sub(_currentAllocation);
+                    defiProtocols[i].withdrawMax = false;
                 }
             }
 
@@ -320,7 +342,11 @@ contract YieldGenerator is IYieldGenerator, OwnableUpgradeable, AbstractDependan
 
             if (
                 defiProtocols[i].rebalanceWeight > 0 &&
-                (isDeposit ? defiProtocols[i].whiteListed && defiProtocols[i].threshold : true)
+                (
+                    isDeposit
+                        ? defiProtocols[i].whiteListed && defiProtocols[i].threshold
+                        : _currentAllocation > 0
+                )
             ) {
                 availableProtocols.push(i);
             }
@@ -348,25 +374,67 @@ contract YieldGenerator is IYieldGenerator, OwnableUpgradeable, AbstractDependan
         return _protocolIndex;
     }
 
-    /// @notice update the current allocation of defi protocol after deposit or withdraw
-    /// @param _protocolIndex uint256 the predefined index of defi protocol
-    /// @param _amount uint256 the amount of stable coin will depsoit or withdraw
-    /// @param _isDeposit bool determine the rebalance is for deposit or withdraw
-    function _updateProtocolCurrentAllocation(
-        uint256 _protocolIndex,
-        uint256 _amount,
-        bool _isDeposit
-    ) internal {
-        uint256 _depositedAmount = defiProtocols[_protocolIndex].depositedAmount;
-        if (_isDeposit) {
-            _depositedAmount = _depositedAmount.add(_amount);
-        } else {
-            _depositedAmount = _depositedAmount.sub(_amount);
+    /// @notice get the defi protocol has min weight to deposit
+    /// @dev only select the negative weight from smallest to largest
+    function _getProtocolOfMinWeight() internal returns (uint256) {
+        uint256 _maxWeight;
+        for (uint256 i = 0; i < availableProtocols.length; i++) {
+            if (defiProtocols[availableProtocols[i]].rebalanceWeight > _maxWeight) {
+                _maxWeight = defiProtocols[availableProtocols[i]].rebalanceWeight;
+            }
         }
-        defiProtocols[_protocolIndex].depositedAmount = _depositedAmount;
-        defiProtocols[_protocolIndex].currentAllocation = _depositedAmount.mul(PERCENTAGE_100).div(
-            _getCurrentvSTBLVolume()
-        );
+
+        uint256 _smallest = _maxWeight;
+        uint256 _largest;
+        uint256 _maxProtocolIndex;
+        uint256 _maxIndexToDelete;
+        uint256 _minProtocolIndex;
+        uint256 _minIndexToDelete;
+
+        for (uint256 i = 0; i < availableProtocols.length; i++) {
+            if (
+                defiProtocols[availableProtocols[i]].rebalanceWeight <= _smallest &&
+                !defiProtocols[availableProtocols[i]].withdrawMax
+            ) {
+                _smallest = defiProtocols[availableProtocols[i]].rebalanceWeight;
+                _minProtocolIndex = availableProtocols[i];
+                _minIndexToDelete = i;
+            } else if (
+                defiProtocols[availableProtocols[i]].rebalanceWeight > _largest &&
+                defiProtocols[availableProtocols[i]].withdrawMax
+            ) {
+                _largest = defiProtocols[availableProtocols[i]].rebalanceWeight;
+                _maxProtocolIndex = availableProtocols[i];
+                _maxIndexToDelete = i;
+            }
+        }
+        if (_largest > 0) {
+            availableProtocols[_maxIndexToDelete] = availableProtocols[
+                availableProtocols.length - 1
+            ];
+            availableProtocols.pop();
+            return _maxProtocolIndex;
+        } else {
+            availableProtocols[_minIndexToDelete] = availableProtocols[
+                availableProtocols.length - 1
+            ];
+            availableProtocols.pop();
+            return _minProtocolIndex;
+        }
+    }
+
+    /// @notice calc the current allocation of defi protocol against current vstable volume
+    /// @param _protocolIndex uint256 the predefined index of defi protocol
+    function _calcProtocolCurrentAllocation(uint256 _protocolIndex)
+        internal
+        view
+        returns (uint256 _currentAllocation)
+    {
+        uint256 _depositedAmount = defiProtocols[_protocolIndex].depositedAmount;
+        uint256 _currentvSTBLVolume = _getCurrentvSTBLVolume();
+        if (_currentvSTBLVolume > 0) {
+            _currentAllocation = _depositedAmount.mul(PERCENTAGE_100).div(_currentvSTBLVolume);
+        }
     }
 
     /// @notice calc the rebelance allocation % for one protocol for deposit/withdraw
@@ -381,6 +449,50 @@ contract YieldGenerator is IYieldGenerator, OwnableUpgradeable, AbstractDependan
     }
 
     function _getCurrentvSTBLVolume() internal view returns (uint256) {
-        return capitalPool.virtualUsdtAccumulatedBalance();
+        return
+            capitalPool.virtualUsdtAccumulatedBalance().sub(capitalPool.liquidityCushionBalance());
+    }
+
+    function reevaluateDefiProtocolBalances()
+        external
+        override
+        returns (uint256 _totalDeposit, uint256 _lostAmount)
+    {
+        _totalDeposit = totalDeposit;
+
+        uint256 _totalValue;
+        uint256 _depositedAmount;
+        for (uint256 index = 0; index < PROTOCOLS_NUMBER; index++) {
+            if (index == uint256(DefiProtocols.COMPOUND)) {
+                IDefiProtocol(defiProtocolsAddresses[index]).updateTotalValue();
+            }
+            _totalValue = IDefiProtocol(defiProtocolsAddresses[index]).totalValue();
+            _depositedAmount = defiProtocols[index].depositedAmount;
+
+            if (_totalValue < _depositedAmount) {
+                _lostAmount += _depositedAmount.sub(_totalValue);
+            }
+        }
+    }
+
+    function defiHardRebalancing() external override onlyCapitalPool {
+        uint256 _totalValue;
+        uint256 _depositedAmount;
+        uint256 _lostAmount;
+        uint256 _totalLostAmount;
+        for (uint256 index = 0; index < PROTOCOLS_NUMBER; index++) {
+            _totalValue = IDefiProtocol(defiProtocolsAddresses[index]).totalValue();
+
+            _depositedAmount = defiProtocols[index].depositedAmount;
+
+            if (_totalValue < _depositedAmount) {
+                _lostAmount = _depositedAmount.sub(_totalValue);
+                defiProtocols[index].depositedAmount = _depositedAmount.sub(_lostAmount);
+                IDefiProtocol(defiProtocolsAddresses[index]).updateTotalDeposit(_lostAmount);
+                _totalLostAmount += _lostAmount;
+            }
+        }
+
+        totalDeposit -= _lostAmount;
     }
 }

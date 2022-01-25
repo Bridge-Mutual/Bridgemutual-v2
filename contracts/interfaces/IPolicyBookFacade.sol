@@ -80,6 +80,12 @@ interface IPolicyBookFacade {
     /// @param _liquidityAmount is amount of stable coin tokens to secure
     function addLiquidityFromDistributorFor(address _user, uint256 _liquidityAmount) external;
 
+    function addLiquidityAndStakeFor(
+        address _liquidityHolderAddr,
+        uint256 _liquidityAmount,
+        uint256 _stakeSTBLAmount
+    ) external;
+
     /// @notice Let user to add liquidity by supplying stable coin and stake it,
     /// @dev access: ANY
     function addLiquidityAndStake(uint256 _liquidityAmount, uint256 _stakeSTBLAmount) external;
@@ -114,6 +120,9 @@ interface IPolicyBookFacade {
     /// @param  deployedAmount uint256 the deployed amount to be added to the liquidity
     function deployVirtualFundsAfterRebalance(uint256 deployedAmount) external;
 
+    ///@dev in case ur changed of the pools by commit a claim or policy expired
+    function reevaluateProvidedLeverageStable() external;
+
     /// @notice set the MPL for the user leverage and the reinsurance leverage
     /// @param _userLeverageMPL uint256 value of the user leverage MPL
     /// @param _reinsuranceLeverageMPL uint256  value of the reinsurance leverage MPL
@@ -134,4 +143,11 @@ interface IPolicyBookFacade {
     /// @dev prevents adding a request if an already pending or ready request is open.
     /// @param _tokensToWithdraw uint256 amount of tokens to withdraw
     function requestWithdrawal(uint256 _tokensToWithdraw) external;
+
+    function listUserLeveragePools(uint256 offset, uint256 limit)
+        external
+        view
+        returns (address[] memory _userLeveragePools);
+
+    function countUserLeveragePools() external view returns (uint256);
 }

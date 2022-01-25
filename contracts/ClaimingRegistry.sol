@@ -12,6 +12,7 @@ import "./interfaces/IPolicyBook.sol";
 import "./interfaces/IPolicyRegistry.sol";
 
 import "./abstract/AbstractDependant.sol";
+import "./Globals.sol";
 
 contract ClaimingRegistry is IClaimingRegistry, Initializable, AbstractDependant {
     using SafeMath for uint256;
@@ -379,7 +380,7 @@ contract ClaimingRegistry is IClaimingRegistry, Initializable, AbstractDependant
         );
     }
 
-    /// @notice fetches the pending claims amounts
+    /// @notice fetches the pending claims amounts which is before awaiting for calculation by 24 hrs
     /// @return _totalClaimsAmount uint256 collect claim amounts from pending claims
     function getAllPendingClaimsAmount()
         external
@@ -390,8 +391,16 @@ contract ClaimingRegistry is IClaimingRegistry, Initializable, AbstractDependant
         uint256 index;
         for (uint256 i = 0; i < _pendingClaimsIndexes.length(); i++) {
             index = _pendingClaimsIndexes.at(i);
-
-            _totalClaimsAmount += _allClaimsByIndexInfo[index].claimAmount;
+            ///@dev exclude all calims until before awaiting calculation date by 24 hrs
+            /// + 1 hr (spare time for transaction execution time)
+            if (
+                block.timestamp >=
+                _allClaimsByIndexInfo[index].dateSubmitted.add(votingDuration(index)).sub(
+                    REBALANCE_DURATION.add(60 * 60)
+                )
+            ) {
+                _totalClaimsAmount += _allClaimsByIndexInfo[index].claimAmount;
+            }
         }
     }
 
@@ -425,12 +434,12 @@ contract ClaimingRegistry is IClaimingRegistry, Initializable, AbstractDependant
         } else if (!_allClaimsByIndexInfo[index].appeal) {
             _allClaimsByIndexInfo[index].status = ClaimStatus.REJECTED_CAN_APPEAL;
 
-            emit AppealRejected(claimer, policyBookAddress, index);
+            emit ClaimRejected(claimer, policyBookAddress, index);
         } else {
             _allClaimsByIndexInfo[index].status = ClaimStatus.REJECTED;
             delete _allClaimsToIndex[policyBookAddress][claimer];
 
-            emit ClaimRejected(claimer, policyBookAddress, index);
+            emit AppealRejected(claimer, policyBookAddress, index);
         }
 
         _allClaimsByIndexInfo[index].dateEnded = block.timestamp;

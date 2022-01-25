@@ -96,16 +96,17 @@ contract AaveProtocol is IDefiProtocol, OwnableUpgradeable, AbstractDependant {
 
             totalDeposit = totalDeposit.sub(actualAmountWithdrawn);
         }
-
-        return actualAmountWithdrawn;
     }
 
     /// @notice claim rewards and send it to reinsurance pool
     function claimRewards() external override onlyYieldGenerator {
         ILendingPool lendingPool = _getLendingPool();
 
-        uint256 _accumaltedAmount = _totalValue().sub(totalDeposit);
-        if (_accumaltedAmount > 0) {
+        uint256 _totalStblValue = _totalValue();
+
+        if (_totalStblValue > totalDeposit) {
+            uint256 _accumaltedAmount = _totalStblValue.sub(totalDeposit);
+
             uint256 _amountInUnderlying =
                 lendingPool.withdraw(address(stablecoin), _accumaltedAmount, capitalPoolAddress);
 
@@ -128,7 +129,16 @@ contract AaveProtocol is IDefiProtocol, OwnableUpgradeable, AbstractDependant {
     }
 
     function _totalValue() internal view returns (uint256) {
-        return aToken.balanceOf(address(this));
+        ILendingPool lendingPool = _getLendingPool();
+
+        uint256 aTokenBalance = aToken.balanceOf(address(this));
+
+        uint256 accumlatedUserBalance =
+            aTokenBalance.mul(lendingPool.getReserveNormalizedIncome(address(stablecoin))).div(
+                10**27
+            );
+
+        return accumlatedUserBalance;
     }
 
     /// @notice isable use the deposited asset as collateral at first deposit
@@ -136,5 +146,11 @@ contract AaveProtocol is IDefiProtocol, OwnableUpgradeable, AbstractDependant {
         ILendingPool lendingPool = _getLendingPool();
 
         lendingPool.setUserUseReserveAsCollateral(address(stablecoin), false);
+    }
+
+    function updateTotalValue() external override onlyYieldGenerator returns (uint256) {}
+
+    function updateTotalDeposit(uint256 _lostAmount) external override onlyYieldGenerator {
+        totalDeposit -= _lostAmount;
     }
 }

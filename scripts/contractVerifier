@@ -1,0 +1,54 @@
+#!/bin/bash
+#  Usage:
+#  ./scripts/cotnractVerifier
+#
+# If no deploy data can be found at build/contracts
+# You would need to edit the script to specify each 
+# contract's address
+# e.g. <contractName@0x00000000...
+
+
+# set -e
+set -x
+NETWORK_NAME=rinkeby
+
+npx truffle run verify AaveProtocol --network $NETWORK_NAME --license MIT
+npx truffle run verify BMICoverStaking --network $NETWORK_NAME --license MIT
+npx truffle run verify BMICoverStakingView --network $NETWORK_NAME --license MIT
+npx truffle run verify BMIMock --network $NETWORK_NAME --license MIT
+npx truffle run verify BMIStaking --network $NETWORK_NAME --license MIT
+npx truffle run verify BMIUtilityNFT --network $NETWORK_NAME --license MIT
+npx truffle run verify CapitalPool --network $NETWORK_NAME --license MIT
+npx truffle run verify ClaimVoting --network $NETWORK_NAME --license MIT
+npx truffle run verify ClaimingRegistry --network $NETWORK_NAME --license MIT
+npx truffle run verify CompoundProtocol --network $NETWORK_NAME --license MIT
+npx truffle run verify ContractsRegistry --network $NETWORK_NAME --license MIT
+npx truffle run verify LiquidityMining --network $NETWORK_NAME --license MIT
+npx truffle run verify LiquidityMiningStakingETH --network $NETWORK_NAME --license MIT
+npx truffle run verify LiquidityMiningStakingUSDT --network $NETWORK_NAME --license MIT
+npx truffle run verify LiquidityRegistry --network $NETWORK_NAME --license MIT
+npx truffle run verify LpBmiEthMock --network $NETWORK_NAME --license MIT
+npx truffle run verify LpBmiUsdtMock --network $NETWORK_NAME --license MIT
+npx truffle run verify NFTStaking --network $NETWORK_NAME --license MIT
+npx truffle run verify PolicyBookAdmin --network $NETWORK_NAME --license MIT
+npx truffle run verify PolicyBookFabric --network $NETWORK_NAME --license MIT
+npx truffle run verify PolicyBookImpl --network $NETWORK_NAME --license MIT
+npx truffle run verify PolicyBookRegistry --network $NETWORK_NAME --license MIT
+npx truffle run verify PolicyQuote --network $NETWORK_NAME --license MIT
+npx truffle run verify PolicyRegistry --network $NETWORK_NAME --license MIT
+npx truffle run verify PriceFeed --network $NETWORK_NAME --license MIT
+npx truffle run verify ReinsurancePool --network $NETWORK_NAME --license MIT
+npx truffle run verify ReputationSystem --network $NETWORK_NAME --license MIT
+npx truffle run verify RewardsGenerator --network $NETWORK_NAME --license MIT
+npx truffle run verify STBLMock --network $NETWORK_NAME --license MIT
+npx truffle run verify STKBMIToken --network $NETWORK_NAME --license MIT
+npx truffle run verify ShieldMiningController --network $NETWORK_NAME --license MIT
+npx truffle run verify ShieldMiningView --network $NETWORK_NAME --license MIT
+npx truffle run verify SushiswaprouterMock --network $NETWORK_NAME --license MIT
+npx truffle run verify TransparentUpgradeableProxy --network $NETWORK_NAME --license MIT
+npx truffle run verify UniswaprouterMock --network $NETWORK_NAME --license MIT
+npx truffle run verify UserLeveragePool --network $NETWORK_NAME --license MIT
+npx truffle run verify VBMI --network $NETWORK_NAME --license MIT
+npx truffle run verify WETHMock --network $NETWORK_NAME --license MIT
+npx truffle run verify YearnProtocol --network $NETWORK_NAME --license MIT
+npx truffle run verify YieldGenerator --network $NETWORK_NAME --license MIT

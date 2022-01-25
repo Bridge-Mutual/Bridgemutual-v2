@@ -6,7 +6,7 @@ import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 /// @notice Interface for defi protocols (Compound, Aave, bZx, etc.)
 interface IDefiProtocol {
     /// @return uint256 The total value locked in the defi protocol, in terms of the underlying stablecoin
-    function totalValue() external returns (uint256);
+    function totalValue() external view returns (uint256);
 
     /// @return ERC20 the erc20 stable coin which depoisted in the defi protocol
     function stablecoin() external view returns (ERC20);
@@ -25,4 +25,10 @@ interface IDefiProtocol {
     /// @notice set the address of receiving rewards
     /// @param newValue address the new address to recieve the rewards
     function setRewards(address newValue) external;
+
+    ///@dev update total value only for compound
+    function updateTotalValue() external returns (uint256);
+
+    ///@dev update total deposit in case of hard rebalancing
+    function updateTotalDeposit(uint256 _lostAmount) external;
 }

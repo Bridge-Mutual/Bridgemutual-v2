@@ -25,6 +25,10 @@ interface IUserLeveragePool {
     /// @return _type is type of contract
     function contractType() external view returns (IPolicyBookFabric.ContractType _type);
 
+    function userLiquidity(address account) external view returns (uint256);
+
+    function a2_ProtocolConstant() external view returns (uint256);
+
     function EPOCH_DURATION() external view returns (uint256);
 
     function READY_TO_WITHDRAW_PERIOD() external view returns (uint256);
@@ -96,6 +100,9 @@ interface IUserLeveragePool {
     /// @notice Let user to withdraw deposited liqiudity, access: ANY
     function withdrawLiquidity() external;
 
+    ///@notice for doing defi hard rebalancing, access: CapitalPool
+    function updateLiquidity(uint256 _newLiquidity) external;
+
     function getAPY() external view returns (uint256);
 
     function whitelisted() external view returns (bool);
@@ -105,6 +112,8 @@ interface IUserLeveragePool {
     /// @notice set max total liquidity for the pool
     /// @param _maxCapacities uint256 the max total liquidity
     function setMaxCapacities(uint256 _maxCapacities) external;
+
+    function setA2_ProtocolConstant(uint256 _a2_ProtocolConstant) external;
 
     /// @notice Getting number stats, access: ANY
     /// @return _maxCapacities is a max liquidity of the pool

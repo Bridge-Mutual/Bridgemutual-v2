@@ -12,11 +12,14 @@ interface IYieldGenerator {
         uint256 depositedAmount;
         bool whiteListed;
         bool threshold;
+        bool withdrawMax;
+        // new state post v2
+        uint256 totalValue;
     }
 
     /// @notice deposit stable coin into multiple defi protocols using formulas, access: capital pool
     /// @param amount uint256 the amount of stable coin to deposit
-    function deposit(uint256 amount) external;
+    function deposit(uint256 amount) external returns (uint256);
 
     /// @notice withdraw stable coin from mulitple defi protocols using formulas, access: capital pool
     /// @param amount uint256 the amount of stable coin to withdraw
@@ -38,4 +41,10 @@ interface IYieldGenerator {
     /// @notice returns defi protocol info by its index
     /// @param index uint256 the index of the defi protocol
     function defiProtocol(uint256 index) external view returns (DefiProtocol memory _defiProtocol);
+
+    function reevaluateDefiProtocolBalances()
+        external
+        returns (uint256 _totalDeposit, uint256 _lostAmount);
+
+    function defiHardRebalancing() external;
 }

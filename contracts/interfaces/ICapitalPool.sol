@@ -17,6 +17,8 @@ interface ICapitalPool {
 
     function virtualUsdtAccumulatedBalance() external view returns (uint256);
 
+    function liquidityCushionBalance() external view returns (uint256);
+
     /// @notice distributes the policybook premiums into pools (CP, ULP , RP)
     /// @dev distributes the balances acording to the established percentages
     /// @param _stblAmount amount hardSTBL ingressed into the system

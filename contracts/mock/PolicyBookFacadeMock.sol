@@ -5,6 +5,8 @@ pragma experimental ABIEncoderV2;
 import "../PolicyBookFacade.sol";
 
 contract PolicyBookFacadeMock is PolicyBookFacade {
+    using EnumerableSet for EnumerableSet.UintSet;
+
     function deployLeverageFundsByLP(address levragePool) external returns (uint256) {
         return
             ILeveragePortfolio(levragePool).deployLeverageStableToCoveragePools(

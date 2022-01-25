@@ -1,0 +1,20 @@
+#!/bin/sh
+. "$(dirname "$0")/_/husky.sh"
+
+set -e
+
+# npm run lint-fix
+
+# echo "Update contract sizes"
+
+# truffle run contract-size --checkMaxSize --ignoreMocks  > .contractSizes
+
+# find ./docs -iname "*.md" -exec rm {} \;
+# npm run docs
+
+# doc_changes=$(git diff docs | wc -l)
+
+# if [ ! -z "$doc_changes" ]; then
+#   git add docs
+#   git commit --amend --no-edit --no-verify
+# fi

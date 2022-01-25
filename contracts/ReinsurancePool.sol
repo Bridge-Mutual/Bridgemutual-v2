@@ -91,8 +91,6 @@ contract ReinsurancePool is AbstractLeveragePortfolio, IReinsurancePool, Ownable
     function addPolicyPremium(uint256, uint256 premiumAmount) external override onlyCapitalPool {
         totalLiquidity += premiumAmount;
 
-        _reevaluateProvidedLeverageStable(LeveragePortfolio.REINSURANCEPOOL, premiumAmount);
-
         emit PremiumAdded(premiumAmount);
     }
 

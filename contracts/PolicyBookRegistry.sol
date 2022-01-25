@@ -114,7 +114,7 @@ contract PolicyBookRegistry is IPolicyBookRegistry, AbstractDependant {
                 "PolicyBookRegistry: Not a PolicyBook"
             );
 
-            (_durations[i], _allowances[i]) = IPolicyBook(policyBooks[i]).getPolicyPrice(
+            (_durations[i], _allowances[i], ) = IPolicyBook(policyBooks[i]).getPolicyPrice(
                 epochsNumbers[i],
                 coversTokens[i],
                 msg.sender

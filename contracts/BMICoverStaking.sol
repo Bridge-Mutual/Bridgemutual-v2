@@ -21,6 +21,7 @@ import "./interfaces/ILiquidityMining.sol";
 import "./interfaces/IPolicyBook.sol";
 import "./interfaces/IBMIStaking.sol";
 import "./interfaces/ILiquidityRegistry.sol";
+import "./interfaces/IShieldMining.sol";
 
 import "./tokens/ERC1155Upgradeable.sol";
 
@@ -53,6 +54,8 @@ contract BMICoverStaking is
 
     mapping(address => EnumerableSet.UintSet) internal _nftHolderTokens; // holder -> nfts
     EnumerableMap.UintToAddressMap internal _nftTokenOwners; // index nft -> holder
+    // new state post v2
+    IShieldMining public shieldMining;
 
     event StakingNFTMinted(uint256 id, address policyBookAddress, address to);
     event StakingNFTBurned(uint256 id, address policyBookAddress);
@@ -90,6 +93,7 @@ contract BMICoverStaking is
         liquidityMining = ILiquidityMining(_contractsRegistry.getLiquidityMiningContract());
         bmiStaking = IBMIStaking(_contractsRegistry.getBMIStakingContract());
         liquidityRegistry = ILiquidityRegistry(_contractsRegistry.getLiquidityRegistryContract());
+        shieldMining = IShieldMining(_contractsRegistry.getShieldMiningContract());
     }
 
     /// @dev the output URI will be: "https://token-cdn-domain/<tokenId>"
@@ -381,6 +385,12 @@ contract BMICoverStaking is
 
     function withdrawStakerBMIProfit(address policyBookAddress) external override {
         _transferForEach(policyBookAddress, withdrawBMIProfit);
+
+        if (policyBookRegistry.isUserLeveragePool(policyBookAddress)) {
+            shieldMining.getRewardFor(_msgSender(), policyBookAddress);
+        } else {
+            shieldMining.getRewardFor(_msgSender(), policyBookAddress, address(0));
+        }
     }
 
     function withdrawFundsWithProfit(uint256 tokenId) public override {

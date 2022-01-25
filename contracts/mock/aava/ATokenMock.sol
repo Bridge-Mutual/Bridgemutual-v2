@@ -5,22 +5,21 @@ import "@openzeppelin/contracts/math/SafeMath.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/SafeERC20.sol";
 import "./LendingPoolMock.sol";
-import "./IncentivizedERC20.sol";
 
-contract ATokenMock is IncentivizedERC20 {
+contract ATokenMock is ERC20 {
     using SafeMath for uint256;
-    using SafeERC20 for IncentivizedERC20;
+    using SafeERC20 for ERC20;
 
     uint256 public constant PRECISION = 10**27;
 
     uint256 public liquidityIndex;
 
-    IncentivizedERC20 public usdt;
+    ERC20 public usdt;
     LendingPoolMock public lendingPool;
 
-    constructor(address _usdt, uint256 _liquidityIndex) IncentivizedERC20("aUSDT", "aUSDT") {
+    constructor(address _usdt, uint256 _liquidityIndex) ERC20("aUSDT", "aUSDT") {
         _setupDecimals(6);
-        usdt = IncentivizedERC20(_usdt);
+        usdt = ERC20(_usdt);
         liquidityIndex = _liquidityIndex;
     }
 
@@ -32,6 +31,7 @@ contract ATokenMock is IncentivizedERC20 {
         uint256 amountScaled = _amount.mul(PRECISION).div(index);
         require(amountScaled != 0, "LPM: Invalid mint amount");
         _mint(_user, amountScaled);
+        liquidityIndex += 10**25;
     }
 
     function burn(
@@ -45,13 +45,6 @@ contract ATokenMock is IncentivizedERC20 {
 
         _burn(_user, amountScaled);
         usdt.safeTransfer(receiverOfUnderlying, _amount);
-    }
-
-    function balanceOf(address user) public view override returns (uint256) {
-        return
-            super.balanceOf(user).mul(lendingPool.getReserveNormalizedIncome(address(usdt))).div(
-                PRECISION
-            );
     }
 
     function mintInterest(address user) external {

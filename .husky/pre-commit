@@ -1,0 +1,34 @@
+#!/bin/sh
+# . "$(dirname "$0")/_/husky.sh"
+
+# skip validatiosn
+# git commit -m "yolo!" --no-verify
+
+echo -e "\n >>> CHECKING contract Sizes "
+truffle run contract-size --checkMaxSize --ignoreMocks > .contractSizes
+MAX_SIZE_EXCEEDED=$?
+
+if [ $MAX_SIZE_EXCEEDED -ne 0 ];
+then
+  echo -e "\033[0;31m >>> A Non-mock Contract Exceeds size limit \033[0m"
+  echo -e "\033[0;31m >>> verify truffle-contract-size plugin is installed \033[0m"
+  grep "2[0-9]\.\|1[7,8,9]\." .contractSizes 
+  echo "Run: "
+  echo "truffle run contract-size --checkMaxSize --ignoreMocks"
+  exit 1
+fi;
+
+rm -f .contractSizes
+# npm run lint-check && git add -u
+echo -e "\n >>> CHECKING linter \033[0;32m(read-only) \033[0m"
+npm run lint-check 
+LINT_PASS=$?
+
+if [ $LINT_PASS -ne 0 ];
+then
+  echo -e "\033[0;31m >>> Lint check failed: \033[0m"
+  echo "1. Stage your changes; git add"
+  echo "2. Run lint fixer ; npm run lint-fix'"
+  exit 2
+fi;
+echo -e "\n \033[0;32m LINT CHECK PASSED,  \033[0m"

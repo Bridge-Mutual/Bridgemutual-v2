@@ -275,8 +275,14 @@ contract LiquidityRegistry is ILiquidityRegistry, AbstractDependant {
                     continue;
                 }
 
-                (uint256 _requestAmount, , ) = _currentPolicyBook.withdrawalsInfo(_userAddr);
-                _totalWithdrawlAmount += _currentPolicyBook.convertBMIXToSTBL(_requestAmount);
+                (uint256 _requestAmount, uint256 _readyToWithdrawDate, ) =
+                    _currentPolicyBook.withdrawalsInfo(_userAddr);
+
+                ///@dev exclude all ready request until before ready to withdraw date by 24 hrs
+                /// + 1 hr (spare time for transaction execution time)
+                if (block.timestamp >= _readyToWithdrawDate.sub(REBALANCE_DURATION.add(60 * 60))) {
+                    _totalWithdrawlAmount += _currentPolicyBook.convertBMIXToSTBL(_requestAmount);
+                }
             }
         }
     }

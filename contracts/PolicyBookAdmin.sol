@@ -16,6 +16,7 @@ import "./interfaces/IContractsRegistry.sol";
 import "./interfaces/IPolicyBook.sol";
 import "./interfaces/ILeveragePortfolio.sol";
 import "./interfaces/IUserLeveragePool.sol";
+import "./interfaces/IPolicyQuote.sol";
 
 import "./abstract/AbstractDependant.sol";
 
@@ -48,7 +49,9 @@ contract PolicyBookAdmin is IPolicyBookAdmin, OwnableUpgradeable, AbstractDepend
 
     uint256 public constant MAX_DISTRIBUTOR_FEE = 20 * PRECISION;
 
-    /// TODO can't init contract after upgrade , workaround to set policyfacade impl
+    // new state post v2 deployment
+    IPolicyQuote public policyQuote;
+
     function __PolicyBookAdmin_init(
         address _policyBookImplementationAddress,
         address _policyBookFacadeImplementationAddress,
@@ -78,6 +81,8 @@ contract PolicyBookAdmin is IPolicyBookAdmin, OwnableUpgradeable, AbstractDepend
             _contractsRegistry.getPolicyBookRegistryContract()
         );
         claimingRegistry = IClaimingRegistry(_contractsRegistry.getClaimingRegistryContract());
+
+        policyQuote = IPolicyQuote(_contractsRegistry.getPolicyQuoteContract());
     }
 
     function injectDependenciesToExistingPolicies(uint256 offset, uint256 limit)
@@ -291,7 +296,7 @@ contract PolicyBookAdmin is IPolicyBookAdmin, OwnableUpgradeable, AbstractDepend
             policyBookRegistry.listByType(IPolicyBookFabric.ContractType.VARIOUS, offset, limit);
 
         for (uint256 i = 0; i < _policies.length; i++) {
-            if (!policyBookRegistry.isUserLeveragePool(_policies[i])) {
+            if (policyBookRegistry.isUserLeveragePool(_policies[i])) {
                 if (bytes(functionSignature).length > 0) {
                     upgrader.upgradeAndCall(
                         _policies[i],
@@ -464,13 +469,13 @@ contract PolicyBookAdmin is IPolicyBookAdmin, OwnableUpgradeable, AbstractDepend
         address _LeveragePoolAddress,
         uint256 _targetUR,
         uint256 _d_ProtocolConstant,
-        uint256 _a_ProtocolConstant,
+        uint256 _a1_ProtocolConstant,
         uint256 _max_ProtocolConstant
     ) external override onlyOwner {
         ILeveragePortfolio(_LeveragePoolAddress).setProtocolConstant(
             _targetUR,
             _d_ProtocolConstant,
-            _a_ProtocolConstant,
+            _a1_ProtocolConstant,
             _max_ProtocolConstant
         );
     }
@@ -481,5 +486,40 @@ contract PolicyBookAdmin is IPolicyBookAdmin, OwnableUpgradeable, AbstractDepend
         onlyOwner
     {
         IUserLeveragePool(_userLeverageAddress).setMaxCapacities(_maxCapacities);
+    }
+
+    function setUserLeverageA2_ProtocolConstant(
+        address _userLeverageAddress,
+        uint256 _a2_ProtocolConstant
+    ) external override onlyOwner {
+        IUserLeveragePool(_userLeverageAddress).setA2_ProtocolConstant(_a2_ProtocolConstant);
+    }
+
+    /// @notice setup all pricing model varlues
+    ///@param _riskyAssetThresholdPercentage URRp Utilization ration for pricing model when the assets is considered risky, %
+    ///@param _minimumCostPercentage MC minimum cost of cover (Premium), %;
+    ///@param _minimumInsuranceCost minimum cost of insurance (Premium) , (10**18)
+    ///@param _lowRiskMaxPercentPremiumCost TMCI target maximum cost of cover when the asset is not considered risky (Premium)
+    ///@param _lowRiskMaxPercentPremiumCost100Utilization MCI not risky
+    ///@param _highRiskMaxPercentPremiumCost TMCI target maximum cost of cover when the asset is considered risky (Premium)
+    ///@param _highRiskMaxPercentPremiumCost100Utilization MCI risky
+    function setupPricingModel(
+        uint256 _riskyAssetThresholdPercentage,
+        uint256 _minimumCostPercentage,
+        uint256 _minimumInsuranceCost,
+        uint256 _lowRiskMaxPercentPremiumCost,
+        uint256 _lowRiskMaxPercentPremiumCost100Utilization,
+        uint256 _highRiskMaxPercentPremiumCost,
+        uint256 _highRiskMaxPercentPremiumCost100Utilization
+    ) external override onlyOwner {
+        policyQuote.setupPricingModel(
+            _riskyAssetThresholdPercentage,
+            _minimumCostPercentage,
+            _minimumInsuranceCost,
+            _lowRiskMaxPercentPremiumCost,
+            _lowRiskMaxPercentPremiumCost100Utilization,
+            _highRiskMaxPercentPremiumCost,
+            _highRiskMaxPercentPremiumCost100Utilization
+        );
     }
 }

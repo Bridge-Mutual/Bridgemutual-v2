@@ -1,0 +1,17 @@
+.idea
+.vscode
+.env
+*.iml
+*.ipr
+*.iws
+node_modules
+.DS_Store
+coverage
+coverage.json
+yarn-error.log
+build/
+cache/
+*.orig
+docs/ContractSizes
+.contractSizes
+extracted

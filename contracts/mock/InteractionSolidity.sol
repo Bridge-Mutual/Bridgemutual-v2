@@ -87,7 +87,7 @@ contract InteractionSolidity {
         IPolicyBookFacade policyBookFacade = policyBook.policyBookFacade();
 
         // FUNCTION CALL
-        (, uint256 totalPrice) =
+        (, uint256 totalPrice, ) =
             policyBook.getPolicyPrice(_epochsNumber, _coverTokens, msg.sender);
         uint256 stblPrice = totalPrice / 10**12;
         stablecoin.safeTransferFrom(msg.sender, address(this), stblPrice);

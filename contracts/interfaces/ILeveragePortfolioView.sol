@@ -10,7 +10,7 @@ interface ILeveragePortfolioView {
 
     function calcMaxLevFunds(ILeveragePortfolio.LevFundsFactors memory factors)
         external
-        pure
+        view
         returns (uint256);
 
     function calcBMIMultiplier(IUserLeveragePool.BMIMultiplierFactors memory factors)

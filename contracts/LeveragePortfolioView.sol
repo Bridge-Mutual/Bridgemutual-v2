@@ -6,9 +6,11 @@ import "@openzeppelin/contracts/math/Math.sol";
 import "@openzeppelin/contracts/math/SafeMath.sol";
 
 import "./interfaces/ILeveragePortfolioView.sol";
+import "./interfaces/IUserLeveragePool.sol";
 import "./interfaces/IPolicyBookFacade.sol";
 import "./interfaces/IPolicyBookRegistry.sol";
 import "./interfaces/IContractsRegistry.sol";
+import "./interfaces/IPolicyQuote.sol";
 
 import "./abstract/AbstractDependant.sol";
 import "./Globals.sol";
@@ -16,9 +18,10 @@ import "./Globals.sol";
 contract LeveragePortfolioView is ILeveragePortfolioView, AbstractDependant {
     using SafeMath for uint256;
 
-    uint256 public constant MIN_UR = 2 * PRECISION;
-
     IPolicyBookRegistry public policyBookRegistry;
+
+    //new state post v2 deployment
+    IPolicyQuote public policyQuote;
 
     function setDependencies(IContractsRegistry _contractsRegistry)
         external
@@ -28,8 +31,13 @@ contract LeveragePortfolioView is ILeveragePortfolioView, AbstractDependant {
         policyBookRegistry = IPolicyBookRegistry(
             _contractsRegistry.getPolicyBookRegistryContract()
         );
+
+        policyQuote = IPolicyQuote(_contractsRegistry.getPolicyQuoteContract());
     }
 
+    /// @notice calc M factor by formual M = min( abs((1/ (Tur-UR))*d) /a, max)
+    /// @param poolUR uint256 utitilization ratio for a coverage pool
+    /// @return uint256 M facotr
     function calcM(uint256 poolUR, address leveragePoolAddress)
         external
         view
@@ -58,25 +66,41 @@ contract LeveragePortfolioView is ILeveragePortfolioView, AbstractDependant {
         return _multiplier;
     }
 
+    /// @dev If Formula 1 < 0 or Formula 1 causes dividing by 0, then the system will use Formula 2.
+    /// Otherwise, it is always the lowest amount calculated by Formula1 or Formula2.
     function calcMaxLevFunds(ILeveragePortfolio.LevFundsFactors memory factors)
         public
-        pure
+        view
         override
         returns (uint256)
     {
-        uint256 _res = factors.poolUR.mul(factors.poolTotalLiquidity).div(PERCENTAGE_100);
-        uint256 _ur = Math.max(factors.poolUR, MIN_UR);
+        IPolicyBook _coveragepool = IPolicyBook(factors.policyBookAddr);
+
+        uint256 _poolTotalLiquidity = _coveragepool.totalLiquidity();
+        uint256 _totalCoverTokens = _coveragepool.totalCoverTokens();
+        uint256 _poolUR;
+        if (_poolTotalLiquidity > 0) {
+            _poolUR = _totalCoverTokens.mul(PERCENTAGE_100).div(_poolTotalLiquidity);
+        }
+        uint256 _minUR = _getPoolMINUR(factors.policyBookAddr);
+
         uint256 _formula2;
-        uint256 _res2 = _ur.mul(factors.poolTotalLiquidity).div(MIN_UR);
-        if (_res2 > factors.poolTotalLiquidity) {
-            _formula2 = (_res2.sub(factors.poolTotalLiquidity)).mul(factors.netMPL).div(
+
+        uint256 _ur = Math.max(_poolUR, _minUR);
+
+        uint256 _res1 = _poolUR.mul(_poolTotalLiquidity).div(PERCENTAGE_100);
+        uint256 _res2 = _ur.mul(_poolTotalLiquidity).div(_minUR);
+
+        if (_res2 > _poolTotalLiquidity && factors.netMPL > 0) {
+            _formula2 = (_res2.sub(_poolTotalLiquidity)).mul(factors.netMPL).div(
                 factors.netMPL.add(factors.netMPLn)
             );
         }
 
-        if (_res > factors.netMPL) {
-            uint256 _formula1 = _res.sub(factors.netMPL);
-            _formula1 = factors.netMPL.mul(factors.poolTotalLiquidity).div(_formula1);
+        if (_res1 > factors.netMPL) {
+            uint256 _formula1 = _res1.sub(factors.netMPL);
+            _formula1 = factors.netMPL.mul(_poolTotalLiquidity).div(_formula1);
+
             return Math.min(_formula1, _formula2);
         } else {
             return _formula2;
@@ -127,17 +151,15 @@ contract LeveragePortfolioView is ILeveragePortfolioView, AbstractDependant {
         override
         returns (uint256)
     {
-        //ILeveragePortfolio leveragePool = ILeveragePortfolio(leveragePoolAddress);
         return
             factors
                 .poolMultiplier
-                .mul(10**25)
                 .mul(factors.leverageProvided)
-                .div(10**28)
                 .mul(factors.multiplier)
                 .div(PERCENTAGE_100)
-                .mul(ILeveragePortfolio(msg.sender).a_ProtocolConstant())
-                .div(PERCENTAGE_100);
+                .mul(IUserLeveragePool(msg.sender).a2_ProtocolConstant())
+                .div(PERCENTAGE_100)
+                .div(10**3);
     }
 
     /// @notice Returns the policybook facade that stores the leverage storage from a policybook
@@ -184,8 +206,6 @@ contract LeveragePortfolioView is ILeveragePortfolioView, AbstractDependant {
         IPolicyBookFacade _policyBookFacade = getPolicyBookFacade(policyBookAddress);
         uint256 _mpl = _policyBookFacade.reinsurancePoolMPL();
 
-        uint256 _poolTotalLiquidity = IPolicyBook(policyBookAddress).totalLiquidity();
-        uint256 _totalCoverTokens = IPolicyBook(policyBookAddress).totalCoverTokens();
         uint256 _netMPL =
             _mpl.mul(ILeveragePortfolio(msg.sender).totalLiquidity()).div(PERCENTAGE_100);
 
@@ -196,12 +216,7 @@ contract LeveragePortfolioView is ILeveragePortfolioView, AbstractDependant {
             );
 
         _maxAmount = calcMaxLevFunds(
-            ILeveragePortfolio.LevFundsFactors(
-                _netMPL,
-                _netMPLn,
-                _poolTotalLiquidity,
-                _totalCoverTokens.mul(PERCENTAGE_100).div(_poolTotalLiquidity)
-            )
+            ILeveragePortfolio.LevFundsFactors(_netMPL, _netMPLn, policyBookAddress)
         );
 
         uint256 result1 = calcvStableFormulaforOnePool(policyBookAddress);
@@ -213,5 +228,10 @@ contract LeveragePortfolioView is ILeveragePortfolioView, AbstractDependant {
                 result2
             );
         }
+    }
+
+    function _getPoolMINUR(address policyBookAddr) internal view returns (uint256 _minUR) {
+        IPolicyBookFacade _policyBookFacade = getPolicyBookFacade(policyBookAddr);
+        _minUR = policyQuote.getMINUR(_policyBookFacade.safePricingModel());
     }
 }

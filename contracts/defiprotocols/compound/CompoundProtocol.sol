@@ -38,6 +38,10 @@ contract CompoundProtocol is IDefiProtocol, OwnableUpgradeable, AbstractDependan
     address public yieldGeneratorAddress;
     address public capitalPoolAddress;
 
+    //new state post v2
+    /// @notice setting or update of totalStableValue after call _totalValue() function
+    uint256 public totalStableValue;
+
     modifier onlyYieldGenerator() {
         require(_msgSender() == yieldGeneratorAddress, "CP: Not a yield generator contract");
         _;
@@ -88,16 +92,19 @@ contract CompoundProtocol is IDefiProtocol, OwnableUpgradeable, AbstractDependan
             if (res == ERRCODE_OK) {
                 stablecoin.safeTransfer(capitalPoolAddress, amountInUnderlying);
 
-                totalDeposit = totalDeposit.sub(amountInUnderlying);
+                actualAmountWithdrawn = amountInUnderlying;
+
+                totalDeposit = totalDeposit.sub(actualAmountWithdrawn);
             }
         }
-        return amountInUnderlying;
     }
 
     function claimRewards() external override onlyYieldGenerator {
-        uint256 _accumaltedAmount = _totalValue().sub(totalDeposit);
+        uint256 _totalStblValue = _totalValue();
 
-        if (_accumaltedAmount > 0) {
+        if (_totalStblValue > totalDeposit) {
+            uint256 _accumaltedAmount = _totalStblValue.sub(totalDeposit);
+
             uint256 res = cToken.redeemUnderlying(_accumaltedAmount);
 
             if (res == ERRCODE_OK) {
@@ -116,8 +123,8 @@ contract CompoundProtocol is IDefiProtocol, OwnableUpgradeable, AbstractDependan
         }
     }
 
-    function totalValue() external override returns (uint256) {
-        return _totalValue();
+    function totalValue() external view override returns (uint256) {
+        return totalStableValue;
     }
 
     function setRewards(address newValue) external override onlyYieldGenerator {}
@@ -127,6 +134,19 @@ contract CompoundProtocol is IDefiProtocol, OwnableUpgradeable, AbstractDependan
         // Amount of stablecoin units that 1 unit of cToken can be exchanged for, scaled by 10^18
         uint256 cTokenPrice = cToken.exchangeRateCurrent();
 
-        return cTokenBalance.mul(cTokenPrice).div(COMPOUND_EXCHANGE_RATE_PRECISION);
+        uint256 _totalStableValue =
+            cTokenBalance.mul(cTokenPrice).div(COMPOUND_EXCHANGE_RATE_PRECISION);
+
+        totalStableValue = _totalStableValue;
+
+        return _totalStableValue;
+    }
+
+    function updateTotalValue() external override onlyYieldGenerator returns (uint256) {
+        return _totalValue();
+    }
+
+    function updateTotalDeposit(uint256 _lostAmount) external override onlyYieldGenerator {
+        totalDeposit -= _lostAmount;
     }
 }

@@ -284,6 +284,12 @@ contract RewardsGenerator is IRewardsGenerator, OwnableUpgradeable, AbstractDepe
     {
         uint256 policyBookRewardMultiplier =
             _policyBooksRewards[policyBookAddress].rewardMultiplier;
+
+        ///@dev in case called by user leverage pool and no leveraged pools invested
+        if (policyBookRewardMultiplier == 0) {
+            return 0;
+        }
+
         uint256 totalStakedPolicyBook =
             _policyBooksRewards[policyBookAddress].totalStaked.add(APY_TOKENS);
 

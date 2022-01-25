@@ -137,7 +137,14 @@ interface IPolicyBook {
         uint256 _epochsNumber,
         uint256 _coverTokens,
         address _buyer
-    ) external view returns (uint256 totalSeconds, uint256 totalPrice);
+    )
+        external
+        view
+        returns (
+            uint256 totalSeconds,
+            uint256 totalPrice,
+            uint256 pricePercentage
+        );
 
     /// @notice Let user to buy policy by supplying stable coin, access: ANY
     /// @param _buyer who is transferring funds
@@ -153,7 +160,7 @@ interface IPolicyBook {
         uint256 _coverTokens,
         uint256 _distributorFee,
         address _distributor
-    ) external returns (uint256);
+    ) external returns (uint256, uint256);
 
     function updateEpochsInfo() external;
 
@@ -174,7 +181,7 @@ interface IPolicyBook {
         address _liquidityHolderAddr,
         uint256 _liquidityAmount,
         uint256 _stakeSTBLAmount
-    ) external;
+    ) external returns (uint256);
 
     function getAvailableBMIXWithdrawableAmount(address _userAddr) external view returns (uint256);
 
@@ -193,6 +200,9 @@ interface IPolicyBook {
 
     /// @notice Let user to withdraw deposited liqiudity, access: ANY
     function withdrawLiquidity(address sender) external returns (uint256);
+
+    ///@notice for doing defi hard rebalancing, access: policyBookFacade
+    function updateLiquidity(uint256 _newLiquidity) external;
 
     function getAPY() external view returns (uint256);
 

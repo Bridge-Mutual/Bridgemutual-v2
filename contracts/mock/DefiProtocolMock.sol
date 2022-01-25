@@ -51,7 +51,11 @@ contract DefiProtocolMock is IDefiProtocol {
 
     function claimRewards() external override onlyYieldGenerator {}
 
-    function totalValue() external override returns (uint256) {}
+    function totalValue() external view override returns (uint256) {}
 
     function setRewards(address newValue) external override onlyYieldGenerator {}
+
+    function updateTotalValue() external override onlyYieldGenerator returns (uint256) {}
+
+    function updateTotalDeposit(uint256 _lostAmount) external override onlyYieldGenerator {}
 }

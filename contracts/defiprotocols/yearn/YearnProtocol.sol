@@ -94,10 +94,12 @@ contract YearnProtocol is IDefiProtocol, OwnableUpgradeable, AbstractDependant {
             // get the price for a single share
             uint256 sharePrice = vault.pricePerShare();
             // convert amountInUnderlying to withdraw in shares
-            uint256 amountInShares = amountInUnderlying.div(sharePrice).mul(PRECESSION);
+            uint256 amountInShares = amountInUnderlying.mul(PRECESSION).div(sharePrice);
             // withdraw the underlying stablecoin and send it to the capitalPool
-            actualAmountWithdrawn = vault.withdraw(amountInShares, capitalPoolAddress);
-            totalDeposit = totalDeposit.sub(actualAmountWithdrawn);
+            if (amountInShares > 0) {
+                actualAmountWithdrawn = vault.withdraw(amountInShares, capitalPoolAddress);
+                totalDeposit = totalDeposit.sub(actualAmountWithdrawn);
+            }
         }
     }
 
@@ -111,19 +113,20 @@ contract YearnProtocol is IDefiProtocol, OwnableUpgradeable, AbstractDependant {
         The reward in shares is sent to the Vault in exchange of an amount of underlying stablecoin sent directly to the reinsurancePool.
     */
     function claimRewards() external override onlyYieldGenerator {
+        uint256 _totalStblValue = _totalValue();
         // the gain is the difference between the totalValue and the totalDeposit
-        uint256 _accumaltedAmount = _totalValue().sub(totalDeposit);
-        if (_accumaltedAmount > 0) {
+        if (_totalStblValue > totalDeposit) {
+            uint256 _accumaltedAmount = _totalStblValue.sub(totalDeposit);
             // get the price for a single share
             uint256 sharePrice = vault.pricePerShare();
             // convert rewards in share value
-            uint256 rewardsInShares = _accumaltedAmount.div(sharePrice).mul(PRECESSION);
+            uint256 rewardsInShares = _accumaltedAmount.mul(PRECESSION).div(sharePrice);
             // withdraw the reward and send it to the reinsurancePool
-            uint256 _amountInUnderlying = vault.withdraw(rewardsInShares, capitalPoolAddress);
-
-            reinsurancePool.addInterestFromDefiProtocols(_amountInUnderlying);
-
-            totalRewards = totalRewards.add(_amountInUnderlying);
+            if (rewardsInShares > 0) {
+                uint256 _amountInUnderlying = vault.withdraw(rewardsInShares, capitalPoolAddress);
+                reinsurancePool.addInterestFromDefiProtocols(_amountInUnderlying);
+                totalRewards = totalRewards.add(_amountInUnderlying);
+            }
         }
     }
 
@@ -150,4 +153,10 @@ contract YearnProtocol is IDefiProtocol, OwnableUpgradeable, AbstractDependant {
     }
 
     function setRewards(address newValue) external override onlyYieldGenerator {}
+
+    function updateTotalValue() external override onlyYieldGenerator returns (uint256) {}
+
+    function updateTotalDeposit(uint256 _lostAmount) external override onlyYieldGenerator {
+        totalDeposit -= _lostAmount;
+    }
 }

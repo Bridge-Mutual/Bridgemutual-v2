@@ -1,0 +1,36 @@
+# `{{name}}`
+{{natspec.userdoc}}
+{{natspec.devdoc}}
+
+{{#each events}}
+## Event {{name}}
+## Signature `event` {{signature}}
+
+{{natspec.userdoc}}
+{{natspec.devdoc}}
+
+**Params**
+{{#each natspec.params}}
+ - `{{param}}`: {{description}}
+{{/each}}
+
+{{/each}}
+
+{{#each functions}}
+# Function {{name}}
+{{natspec.userdoc}}
+Dev {{natspec.devdoc}}
+## Signature {{signature}}
+## `{{name}}({{args}}){{#if outputs}} → {{outputs}}{{/if}}` ({{visibility}})
+*Params**
+{{#each natspec.params}}
+ - `{{param}}`: {{description}}
+{{/each}}
+
+**Returns**
+{{#each natspec.returns}}
+ - `{{param}}`: {{description}}
+{{/each}}
+-----
+{{/each}}
+

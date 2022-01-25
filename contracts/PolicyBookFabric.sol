@@ -29,7 +29,7 @@ contract PolicyBookFabric is IPolicyBookFabric, OwnableUpgradeable, AbstractDepe
     using SafeERC20 for ERC20;
     using Address for address;
 
-    uint256 public constant MINIMAL_INITIAL_DEPOSIT = 1000 * DECIMALS18; // 1000 STBL
+    uint256 public constant MINIMAL_INITIAL_DEPOSIT = 100 * DECIMALS18; // 100 STBL
 
     IContractsRegistry public contractsRegistry;
     IPolicyBookRegistry public policyBookRegistry;

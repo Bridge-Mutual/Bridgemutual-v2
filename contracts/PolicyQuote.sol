@@ -8,32 +8,44 @@ import "./interfaces/IPolicyBook.sol";
 import "./interfaces/IPolicyQuote.sol";
 import "./interfaces/IPolicyBookFacade.sol";
 
+import "./abstract/AbstractDependant.sol";
+
 import "./Globals.sol";
 
-contract PolicyQuote is IPolicyQuote {
+contract PolicyQuote is IPolicyQuote, AbstractDependant {
     using Math for uint256;
     using SafeMath for uint256;
 
-    uint256 public constant RISKY_ASSET_THRESHOLD_PERCENTAGE = 80 * PRECISION;
+    // new state post v2 deployment
+    address public policyBookAdminAddress;
+    // URRp Utilization ration for pricing model when the assets is considered risky, %;
+    uint256 public riskyAssetThresholdPercentage;
+    // MC – minimum cost of cover (Premium) %
+    uint256 public minimumCostPercentage;
+    uint256 public minimumInsuranceCost;
+    // TMCI target maximum cost of cover when the asset is not considered risky %
+    uint256 public lowRiskMaxPercentPremiumCost;
+    uint256 public lowRiskMaxPercentPremiumCost100Utilization;
+    // TMCI target maximum cost of cover when the asset is considered risky %
+    uint256 public highRiskMaxPercentPremiumCost;
+    uint256 public highRiskMaxPercentPremiumCost100Utilization;
 
-    uint256 public constant MINIMUM_COST_PERCENTAGE = 2 * PRECISION;
-
-    uint256 public constant MINIMUM_INSURANCE_COST = 10 * DECIMALS18; // 10 STBL (10 * 10**18)
-
-    uint256 public constant LOW_RISK_MAX_PERCENT_PREMIUM_COST = 10 * PRECISION;
-    uint256 public constant LOW_RISK_MAX_PERCENT_PREMIUM_COST_100_UTILIZATION = 50 * PRECISION;
-
-    uint256 public constant HIGH_RISK_MAX_PERCENT_PREMIUM_COST = 25 * PRECISION;
-    uint256 public constant HIGH_RISK_MAX_PERCENT_PREMIUM_COST_100_UTILIZATION = 100 * PRECISION;
+    function setDependencies(IContractsRegistry _contractsRegistry)
+        external
+        override
+        onlyInjectorOrZero
+    {
+        policyBookAdminAddress = _contractsRegistry.getPolicyBookAdminContract();
+    }
 
     function calculateWhenNotRisky(
         uint256 _utilizationRatioPercentage,
         uint256 _maxPercentPremiumCost
-    ) private pure returns (uint256) {
+    ) private view returns (uint256) {
         // % CoC = UR*URRp*TMCC
         return
             (_utilizationRatioPercentage.mul(_maxPercentPremiumCost)).div(
-                RISKY_ASSET_THRESHOLD_PERCENTAGE
+                riskyAssetThresholdPercentage
             );
     }
 
@@ -41,11 +53,11 @@ contract PolicyQuote is IPolicyQuote {
         uint256 _utilizationRatioPercentage,
         uint256 _maxPercentPremiumCost,
         uint256 _maxPercentPremiumCost100Utilization
-    ) private pure returns (uint256) {
+    ) private view returns (uint256) {
         // %CoC =  TMCC+(UR-URRp100%-URRp)*(MCC-TMCC)
         uint256 riskyRelation =
-            (PRECISION.mul(_utilizationRatioPercentage.sub(RISKY_ASSET_THRESHOLD_PERCENTAGE))).div(
-                (PERCENTAGE_100.sub(RISKY_ASSET_THRESHOLD_PERCENTAGE))
+            (PRECISION.mul(_utilizationRatioPercentage.sub(riskyAssetThresholdPercentage))).div(
+                (PERCENTAGE_100.sub(riskyAssetThresholdPercentage))
             );
 
         // %CoC =  TMCC+(riskyRelation*(MCC-TMCC))
@@ -67,7 +79,7 @@ contract PolicyQuote is IPolicyQuote {
         uint256 _totalLiquidity,
         uint256 _totalLeveragedLiquidity,
         bool _safePricingModel
-    ) external pure override returns (uint256) {
+    ) external view override returns (uint256, uint256) {
         return
             _getQuote(
                 _durationSeconds,
@@ -84,7 +96,7 @@ contract PolicyQuote is IPolicyQuote {
         uint256 _tokens,
         address _policyBookAddr
     ) external view override returns (uint256) {
-        return
+        (uint256 price, ) =
             _getQuote(
                 _durationSeconds,
                 _tokens,
@@ -95,6 +107,7 @@ contract PolicyQuote is IPolicyQuote {
                 IPolicyBookFacade(address(IPolicyBook(_policyBookAddr).policyBookFacade()))
                     .safePricingModel()
             );
+        return price;
     }
 
     function _getQuote(
@@ -104,7 +117,7 @@ contract PolicyQuote is IPolicyQuote {
         uint256 _totalLiquidity,
         uint256 _totalLeveragedLiquidity,
         bool _safePricingModel
-    ) internal pure returns (uint256) {
+    ) internal view returns (uint256 price, uint256 actualInsuranceCostPercentage) {
         require(
             _durationSeconds > 0 && _durationSeconds <= SECONDS_IN_THE_YEAR,
             "PolicyQuote: Invalid duration"
@@ -122,17 +135,16 @@ contract PolicyQuote is IPolicyQuote {
 
         uint256 annualInsuranceCostPercentage;
 
-        uint256 maxPercentPremiumCost = HIGH_RISK_MAX_PERCENT_PREMIUM_COST;
+        uint256 maxPercentPremiumCost = highRiskMaxPercentPremiumCost;
 
-        uint256 maxPercentPremiumCost100Utilization =
-            HIGH_RISK_MAX_PERCENT_PREMIUM_COST_100_UTILIZATION;
+        uint256 maxPercentPremiumCost100Utilization = highRiskMaxPercentPremiumCost100Utilization;
 
         if (_safePricingModel) {
-            maxPercentPremiumCost = LOW_RISK_MAX_PERCENT_PREMIUM_COST;
-            maxPercentPremiumCost100Utilization = LOW_RISK_MAX_PERCENT_PREMIUM_COST_100_UTILIZATION;
+            maxPercentPremiumCost = lowRiskMaxPercentPremiumCost;
+            maxPercentPremiumCost100Utilization = lowRiskMaxPercentPremiumCost100Utilization;
         }
 
-        if (utilizationRatioPercentage < RISKY_ASSET_THRESHOLD_PERCENTAGE) {
+        if (utilizationRatioPercentage < riskyAssetThresholdPercentage) {
             annualInsuranceCostPercentage = calculateWhenNotRisky(
                 utilizationRatioPercentage,
                 maxPercentPremiumCost
@@ -148,17 +160,59 @@ contract PolicyQuote is IPolicyQuote {
         // %CoC  final =max{% Col, MC}
         annualInsuranceCostPercentage = Math.max(
             annualInsuranceCostPercentage,
-            MINIMUM_COST_PERCENTAGE
+            minimumCostPercentage
         );
 
         // $PoC   = the size of the coverage *%CoC  final
-        uint256 actualInsuranceCostPercentage =
-            (_durationSeconds.mul(annualInsuranceCostPercentage)).div(SECONDS_IN_THE_YEAR);
+        actualInsuranceCostPercentage = (_durationSeconds.mul(annualInsuranceCostPercentage)).div(
+            SECONDS_IN_THE_YEAR
+        );
 
-        return
-            Math.max(
-                (_tokens.mul(actualInsuranceCostPercentage)).div(PERCENTAGE_100),
-                MINIMUM_INSURANCE_COST
-            );
+        price = Math.max(
+            (_tokens.mul(actualInsuranceCostPercentage)).div(PERCENTAGE_100),
+            minimumInsuranceCost
+        );
+    }
+
+    ///@notice return min ur under the current pricing model
+    ///@param _safePricingModel pricing model of the pool wethere it is safe or risky model
+    function getMINUR(bool _safePricingModel) external view override returns (uint256 _minUR) {
+        uint256 maxPercentPremiumCost = highRiskMaxPercentPremiumCost;
+
+        if (_safePricingModel) {
+            maxPercentPremiumCost = lowRiskMaxPercentPremiumCost;
+        }
+
+        _minUR = minimumCostPercentage.mul(riskyAssetThresholdPercentage).div(
+            maxPercentPremiumCost
+        );
+    }
+
+    /// @notice setup all pricing model varlues
+    ///@param _riskyAssetThresholdPercentage URRp Utilization ration for pricing model when the assets is considered risky, %
+    ///@param _minimumCostPercentage MC minimum cost of cover (Premium), %;
+    ///@param _minimumInsuranceCost minimum cost of insurance (Premium) , (10**18)
+    ///@param _lowRiskMaxPercentPremiumCost TMCI target maximum cost of cover when the asset is not considered risky (Premium)
+    ///@param _lowRiskMaxPercentPremiumCost100Utilization MCI not risky
+    ///@param _highRiskMaxPercentPremiumCost TMCI target maximum cost of cover when the asset is considered risky (Premium)
+    ///@param _highRiskMaxPercentPremiumCost100Utilization MCI risky
+    function setupPricingModel(
+        uint256 _riskyAssetThresholdPercentage,
+        uint256 _minimumCostPercentage,
+        uint256 _minimumInsuranceCost,
+        uint256 _lowRiskMaxPercentPremiumCost,
+        uint256 _lowRiskMaxPercentPremiumCost100Utilization,
+        uint256 _highRiskMaxPercentPremiumCost,
+        uint256 _highRiskMaxPercentPremiumCost100Utilization
+    ) external override {
+        require(msg.sender == policyBookAdminAddress, "PQ: Not a PBA");
+
+        riskyAssetThresholdPercentage = _riskyAssetThresholdPercentage;
+        minimumCostPercentage = _minimumCostPercentage;
+        minimumInsuranceCost = _minimumInsuranceCost;
+        lowRiskMaxPercentPremiumCost = _lowRiskMaxPercentPremiumCost;
+        lowRiskMaxPercentPremiumCost100Utilization = _lowRiskMaxPercentPremiumCost100Utilization;
+        highRiskMaxPercentPremiumCost = _highRiskMaxPercentPremiumCost;
+        highRiskMaxPercentPremiumCost100Utilization = _highRiskMaxPercentPremiumCost100Utilization;
     }
 }

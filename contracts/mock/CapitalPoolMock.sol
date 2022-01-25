@@ -11,6 +11,7 @@ import "../interfaces/IPolicyBook.sol";
 import "../interfaces/IPolicyBookFacade.sol";
 
 contract CapitalPoolMock is CapitalPool {
+    using SafeERC20 for ERC20;
     uint256 public makeTransaction;
 
     constructor() public {
@@ -25,12 +26,13 @@ contract CapitalPoolMock is CapitalPool {
 
     function deposit(uint256 amount) external {
         // deployFundsToDefi(amount);
-        // stblToken.approve(address(yieldGenerator), amount);
-        // yieldGenerator.deposit(amount);
+        stblToken.safeApprove(address(yieldGenerator), 0);
+        stblToken.safeApprove(address(yieldGenerator), amount);
+        yieldGenerator.deposit(amount);
     }
 
-    function withdraw(uint256 amount) external {
-        yieldGenerator.withdraw(amount);
+    function withdraw(uint256 amount) external returns (uint256) {
+        return yieldGenerator.withdraw(amount);
     }
 
     function addPremium(uint256 premiumAmount) external {

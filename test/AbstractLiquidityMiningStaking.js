@@ -4,7 +4,6 @@ const BMIMock = artifacts.require("BMIMock");
 const LpBmiEthMock = artifacts.require("LpBmiEthMock");
 const BMIStaking = artifacts.require("BMIStaking");
 const StkBMIToken = artifacts.require("STKBMIToken");
-const LiquidityMiningMock = artifacts.require("LiquidityMiningMock");
 const SushiswapMock = artifacts.require("SushiswapMock");
 const NFTStaking = artifacts.require("NFTStaking");
 const BMIUtilityNFT = artifacts.require("BMIUtilityNFT");
@@ -43,7 +42,6 @@ contract("AbstractLiquidityMiningStaking", async (accounts) => {
   let rewardToken;
   let rewardStaking;
   let rewardStakingToken;
-  let liquidityMiningMock;
   let nftStaking;
   let bmiUtilityNFT;
   let sushiswapMock;
@@ -79,18 +77,17 @@ contract("AbstractLiquidityMiningStaking", async (accounts) => {
     const _rewardStaking = await BMIStaking.new();
     const _rewardStakingToken = await StkBMIToken.new();
     const _stakingMock = await LiquidityMiningStakingMock.new();
-    const _liquidityMiningMock = await LiquidityMiningMock.new();
     const _nftStaking = await NFTStaking.new();
     const _bmiUtilityNFT = await BMIUtilityNFT.new();
 
     await contractsRegistry.__ContractsRegistry_init();
 
-    await contractsRegistry.addContract(await contractsRegistry.LEGACY_BMI_STAKING_NAME(), NOTHING);
     await contractsRegistry.addContract(await contractsRegistry.BMI_COVER_STAKING_NAME(), NOTHING);
     await contractsRegistry.addContract(await contractsRegistry.BMI_UTILITY_NFT_NAME(), NOTHING);
     await contractsRegistry.addContract(await contractsRegistry.POLICY_BOOK_REGISTRY_NAME(), NOTHING);
-    await contractsRegistry.addContract(await contractsRegistry.VBMI_NAME(), NOTHING);
-    await contractsRegistry.addContract(await contractsRegistry.SUSHISWAP_BMI_TO_ETH_PAIR_NAME(), stakingToken.address);
+    await contractsRegistry.addContract(await contractsRegistry.STKBMI_STAKING_NAME(), NOTHING);
+    await contractsRegistry.addContract(await contractsRegistry.LIQUIDITY_BRIDGE_NAME(), NOTHING);
+    await contractsRegistry.addContract(await contractsRegistry.AMM_BMI_TO_ETH_PAIR_NAME(), stakingToken.address);
     await contractsRegistry.addContract(await contractsRegistry.BMI_NAME(), rewardToken.address);
 
     await contractsRegistry.addProxyContract(await contractsRegistry.BMI_STAKING_NAME(), _rewardStaking.address);
@@ -102,10 +99,6 @@ contract("AbstractLiquidityMiningStaking", async (accounts) => {
     await contractsRegistry.addProxyContract(
       await contractsRegistry.LIQUIDITY_MINING_STAKING_USDT_NAME(),
       _stakingMock.address
-    );
-    await contractsRegistry.addProxyContract(
-      await contractsRegistry.LIQUIDITY_MINING_NAME(),
-      _liquidityMiningMock.address
     );
     await contractsRegistry.addProxyContract(await contractsRegistry.NFT_STAKING_NAME(), _nftStaking.address);
     await contractsRegistry.addProxyContract(await contractsRegistry.BMI_UTILITY_NFT_NAME(), _bmiUtilityNFT.address);
@@ -120,7 +113,6 @@ contract("AbstractLiquidityMiningStaking", async (accounts) => {
     rewardStakingToken = await StkBMIToken.at(await contractsRegistry.getSTKBMIContract());
     staking = await LiquidityMiningStakingMock.at(await contractsRegistry.getLiquidityMiningStakingETHContract());
     stakingUSDT = await LiquidityMiningStakingMock.at(await contractsRegistry.getLiquidityMiningStakingUSDTContract());
-    liquidityMiningMock = await LiquidityMiningMock.at(await contractsRegistry.getLiquidityMiningContract());
     nftStaking = await NFTStaking.at(await contractsRegistry.getNFTStakingContract());
     bmiUtilityNFT = await BMIUtilityNFT.at(await contractsRegistry.getBMIUtilityNFTContract());
 
@@ -128,7 +120,6 @@ contract("AbstractLiquidityMiningStaking", async (accounts) => {
     await rewardStakingToken.__STKBMIToken_init();
     await staking.__LiquidityMiningStakingETH_init();
     await stakingUSDT.__LiquidityMiningStakingETH_init();
-    await liquidityMiningMock.__LiquidityMining_init();
     await nftStaking.__NFTStaking_init();
     await bmiUtilityNFT.__BMIUtilityNFT_init();
 
@@ -136,13 +127,10 @@ contract("AbstractLiquidityMiningStaking", async (accounts) => {
     await contractsRegistry.injectDependencies(await contractsRegistry.STKBMI_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.LIQUIDITY_MINING_STAKING_ETH_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.LIQUIDITY_MINING_STAKING_USDT_NAME());
-    await contractsRegistry.injectDependencies(await contractsRegistry.LIQUIDITY_MINING_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.NFT_STAKING_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.BMI_UTILITY_NFT_NAME());
 
     const stakingTokensAmount = web3.utils.toWei("100");
-
-    await liquidityMiningMock.setStartTime(1);
 
     await setCurrentTime(200 * 24 * 60 * 60);
 
@@ -678,7 +666,7 @@ contract("AbstractLiquidityMiningStaking", async (accounts) => {
       await setCurrentTime(1);
 
       assert.equal((await staking.earned(FIRST_ADDRESS)).toString(), web3.utils.toWei("200"));
-      assert.equal((await staking.earnedSlashed(FIRST_ADDRESS)).toString(), web3.utils.toWei("20"));
+      assert.equal((await staking.earnedSlashed(FIRST_ADDRESS)).toString(), web3.utils.toWei("160")); // 200 - 20%
     });
 
     it("end in the middle of calculation", async () => {
@@ -747,7 +735,7 @@ contract("AbstractLiquidityMiningStaking", async (accounts) => {
       );
       assert.closeTo(
         toBN(await staking.earnedSlashed(FIRST_ADDRESS)).toNumber(),
-        toBN(web3.utils.toWei("19.999999999999999992")).toNumber(),
+        toBN(web3.utils.toWei("160")).toNumber(), // 200 - 20%
         toBN(web3.utils.toWei("0.0000000001")).toNumber()
       );
     });

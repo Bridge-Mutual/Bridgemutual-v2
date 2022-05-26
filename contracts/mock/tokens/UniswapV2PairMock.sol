@@ -11,7 +11,7 @@ import "@uniswap/v2-core/contracts/interfaces/IUniswapV2ERC20.sol";
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
-interface IUniswapV2Pair {
+interface IUniswapV2PairMock {
     event Mint(address indexed sender, uint256 amount0, uint256 amount1);
     event Burn(address indexed sender, uint256 amount0, uint256 amount1, address indexed to);
     event Swap(
@@ -286,7 +286,7 @@ interface IUniswapV2Callee {
 
 // File: contracts/UniswapV2Pair.sol
 
-contract UniswapV2PairMock is IUniswapV2Pair, UniswapV2ERC20 {
+contract UniswapV2PairMock is IUniswapV2PairMock, UniswapV2ERC20 {
     using SafeMath_US for uint256;
     using UQ112x112 for uint224;
 

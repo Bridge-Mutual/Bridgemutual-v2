@@ -55,4 +55,8 @@ contract PolicyBookMock is PolicyBook {
     function getUserAvailableSTBL(address _user) public view returns (uint256) {
         return _getUserAvailableSTBL(_user);
     }
+
+    function hasProcedureOngoing(address poolAddress) public view returns (bool hasProcedure) {
+        hasProcedure = claimingRegistry.hasProcedureOngoing(poolAddress);
+    }
 }

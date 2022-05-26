@@ -30,7 +30,6 @@ contract BMICoverStakingView is IBMICoverStakingView, AbstractDependant {
         onlyInjectorOrZero
     {
         rewardsGenerator = IRewardsGenerator(_contractsRegistry.getRewardsGeneratorContract());
-        liquidityMining = ILiquidityMining(_contractsRegistry.getLiquidityMiningContract());
         bmiCoverStaking = IBMICoverStaking(_contractsRegistry.getBMICoverStakingContract());
     }
 

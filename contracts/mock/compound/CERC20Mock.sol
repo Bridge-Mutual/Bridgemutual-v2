@@ -14,6 +14,7 @@ contract CERC20Mock is ERC20 {
 
     uint256 public constant CTOKEN_DECIMALS = 8;
     ERC20 public stblToken;
+    uint256 public supplyRatePerBlock;
 
     uint256 internal exchangeRate;
     mapping(address => uint256) public userDeposited;
@@ -23,13 +24,14 @@ contract CERC20Mock is ERC20 {
         stblToken = ERC20(_stblToken);
         // default exchange rate
         exchangeRate = 20070 * 10**10; // 0.020070
+        supplyRatePerBlock = 12199322261;
     }
 
     function mint(uint256 amount) public returns (uint256) {
         stblToken.safeTransferFrom(msg.sender, address(this), amount);
         userDeposited[msg.sender] = userDeposited[msg.sender].add(amount);
         _mint(msg.sender, amount.mul(COMPOUND_EXCHANGE_RATE_PRECISION).div(exchangeRate));
-        exchangeRate += 1000 * 10**10;
+        exchangeRate = exchangeRate.add(1521 * 10**10);
         return 0;
     }
 
@@ -40,21 +42,15 @@ contract CERC20Mock is ERC20 {
         return 0;
     }
 
-    function mintInterest(address user) external {
-        uint256 cTokenUserBalance = super.balanceOf(user);
-        uint256 accumlatedUserBalance =
-            cTokenUserBalance.mul(exchangeRate).div(COMPOUND_EXCHANGE_RATE_PRECISION);
-
-        uint256 rewards = accumlatedUserBalance.sub(userDeposited[user]);
-
-        stblToken.safeTransferFrom(msg.sender, address(this), rewards);
-    }
-
     function exchangeRateCurrent() external view returns (uint256) {
         return exchangeRate;
     }
 
-    function setExchangeRateStored(uint256 _rate) external {
-        exchangeRate = _rate;
+    function setSupplyRatePerBlock(uint256 _supplyRatePerBlock) public {
+        supplyRatePerBlock = _supplyRatePerBlock;
+    }
+
+    function getSupplyRatePerBlock() external view returns (uint256) {
+        return supplyRatePerBlock;
     }
 }

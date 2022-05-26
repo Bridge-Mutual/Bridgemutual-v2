@@ -7,7 +7,7 @@ const ClaimVoting = artifacts.require("ClaimVoting");
 const ReputationSystem = artifacts.require("ReputationSystem");
 const ReinsurancePool = artifacts.require("ReinsurancePool");
 const CapitalPool = artifacts.require("CapitalPool");
-const VBMI = artifacts.require("VBMI");
+const StkBMIStaking = artifacts.require("StkBMIStaking");
 
 module.exports = async (deployer) => {
   const contractsRegistry = await ContractsRegistry.at((await Proxy.deployed()).address);
@@ -18,14 +18,8 @@ module.exports = async (deployer) => {
   await deployer.deploy(ReputationSystem);
   const reputationSystem = await ReputationSystem.deployed();
 
-  await deployer.deploy(ReinsurancePool);
-  const reinsurancePool = await ReinsurancePool.deployed();
-
-  await deployer.deploy(CapitalPool);
-  const capitalPool = await CapitalPool.deployed();
-
-  await deployer.deploy(VBMI);
-  const vBMIToken = await VBMI.deployed();
+  await deployer.deploy(StkBMIStaking);
+  const stkBMIStaking = await StkBMIStaking.deployed();
 
   logTransaction(
     await contractsRegistry.addProxyContract(await contractsRegistry.CLAIM_VOTING_NAME(), claimVoting.address),
@@ -38,16 +32,9 @@ module.exports = async (deployer) => {
     ),
     "AddProxy ReputationSystem"
   );
+
   logTransaction(
-    await contractsRegistry.addProxyContract(await contractsRegistry.REINSURANCE_POOL_NAME(), reinsurancePool.address),
-    "AddProxy ReinsurancePool"
-  );
-  logTransaction(
-    await contractsRegistry.addProxyContract(await contractsRegistry.CAPITAL_POOL_NAME(), capitalPool.address),
-    "AddProxy CapitalPool"
-  );
-  logTransaction(
-    await contractsRegistry.addProxyContract(await contractsRegistry.VBMI_NAME(), vBMIToken.address),
-    "AddProxy VBMI"
+    await contractsRegistry.addProxyContract(await contractsRegistry.STKBMI_STAKING_NAME(), stkBMIStaking.address),
+    "AddProxy StkBMIStaking"
   );
 };

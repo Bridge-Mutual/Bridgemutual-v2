@@ -19,13 +19,9 @@ contract ContractsRegistry is IContractsRegistry, AccessControlUpgradeable {
 
     bytes32 public constant REGISTRY_ADMIN_ROLE = keccak256("REGISTRY_ADMIN_ROLE");
 
-    bytes32 public constant UNISWAP_ROUTER_NAME = keccak256("UNI_ROUTER");
-    bytes32 public constant UNISWAP_BMI_TO_ETH_PAIR_NAME = keccak256("UNI_BMI_ETH_PAIR");
-    bytes32 public constant UNISWAP_BMI_TO_USDT_PAIR_NAME = keccak256("UNI_BMI_USDT_PAIR");
-
-    bytes32 public constant SUSHISWAP_ROUTER_NAME = keccak256("SUSHI_ROUTER");
-    bytes32 public constant SUSHISWAP_BMI_TO_ETH_PAIR_NAME = keccak256("SUSHI_BMI_ETH_PAIR");
-    bytes32 public constant SUSHISWAP_BMI_TO_USDT_PAIR_NAME = keccak256("SUSHI_BMI_USDT_PAIR");
+    bytes32 public constant AMM_ROUTER_NAME = keccak256("AMM_ROUTER");
+    bytes32 public constant AMM_BMI_TO_ETH_PAIR_NAME = keccak256("AMM_BMI_ETH_PAIR");
+    bytes32 public constant AMM_BMI_TO_USDT_PAIR_NAME = keccak256("AMM_BMI_USDT_PAIR");
 
     bytes32 public constant SUSHI_SWAP_MASTER_CHEF_V2_NAME =
         keccak256("SUSHI_SWAP_MASTER_CHEF_V2");
@@ -36,15 +32,15 @@ contract ContractsRegistry is IContractsRegistry, AccessControlUpgradeable {
     bytes32 public constant POLICY_BOOK_FABRIC_NAME = keccak256("FABRIC");
     bytes32 public constant POLICY_BOOK_ADMIN_NAME = keccak256("POLICY_BOOK_ADMIN");
 
-    bytes32 public constant LEGACY_BMI_STAKING_NAME = keccak256("LEG_BMI_STAKING");
     bytes32 public constant BMI_STAKING_NAME = keccak256("BMI_STAKING");
+    bytes32 public constant STKBMI_STAKING_NAME = keccak256("STKBMI_STAKING");
 
     bytes32 public constant BMI_COVER_STAKING_NAME = keccak256("BMI_COVER_STAKING");
     bytes32 public constant BMI_COVER_STAKING_VIEW_NAME = keccak256("BMI_COVER_STAKING_VIEW");
-    bytes32 public constant LEGACY_REWARDS_GENERATOR_NAME = keccak256("LEG_REWARDS_GENERATOR");
+    bytes32 public constant BMI_TREASURY_NAME = keccak256("BMI_TREASURY");
     bytes32 public constant REWARDS_GENERATOR_NAME = keccak256("REWARDS_GENERATOR");
 
-    bytes32 public constant WETH_NAME = keccak256("WETH");
+    bytes32 public constant WRAPPEDTOKEN_NAME = keccak256("WRAPPEDTOKEN");
     bytes32 public constant USDT_NAME = keccak256("USDT");
     bytes32 public constant BMI_NAME = keccak256("BMI");
     bytes32 public constant STKBMI_NAME = keccak256("STK_BMI");
@@ -52,10 +48,7 @@ contract ContractsRegistry is IContractsRegistry, AccessControlUpgradeable {
 
     bytes32 public constant BMI_UTILITY_NFT_NAME = keccak256("BMI_UTILITY_NFT");
     bytes32 public constant NFT_STAKING_NAME = keccak256("NFT_STAKING");
-    bytes32 public constant LIQUIDITY_MINING_NAME = keccak256("LIQ_MINING");
 
-    bytes32 public constant LEGACY_LIQUIDITY_MINING_STAKING_NAME =
-        keccak256("LEG_LIQ_MINING_STAKING");
     bytes32 public constant LIQUIDITY_MINING_STAKING_ETH_NAME = keccak256("LIQ_MINING_STAKING");
     bytes32 public constant LIQUIDITY_MINING_STAKING_USDT_NAME =
         keccak256("LIQ_MINING_STAKING_USDT");
@@ -72,19 +65,20 @@ contract ContractsRegistry is IContractsRegistry, AccessControlUpgradeable {
     bytes32 public constant CAPITAL_POOL_NAME = keccak256("CAPITAL_POOL");
     bytes32 public constant YIELD_GENERATOR_NAME = keccak256("YIELD_GENERATOR");
 
-    bytes32 public constant AAVE_PROTOCOL_NAME = keccak256("AAVE_PROTOCOL");
+    bytes32 public constant DEFI_PROTOCOL_1_NAME = keccak256("DEFI_PROTOCOL_1");
     bytes32 public constant AAVE_LENDPOOL_ADDRESS_PROVIDER_NAME =
         keccak256("AAVE_LENDPOOL_ADDRESS_PROVIDER_NAME");
     bytes32 public constant AAVE_ATOKEN_NAME = keccak256("AAVE_ATOKEN");
 
-    bytes32 public constant COMPOUND_PROTOCOL_NAME = keccak256("COMPOUND_PROTOCOL");
+    bytes32 public constant DEFI_PROTOCOL_2_NAME = keccak256("DEFI_PROTOCOL_2");
     bytes32 public constant COMPOUND_CTOKEN_NAME = keccak256("COMPOUND_CTOKEN");
     bytes32 public constant COMPOUND_COMPTROLLER_NAME = keccak256("COMPOUND_COMPTROLLER");
 
-    bytes32 public constant YEARN_PROTOCOL_NAME = keccak256("YEARN_PROTOCOL");
+    bytes32 public constant DEFI_PROTOCOL_3_NAME = keccak256("DEFI_PROTOCOL_3");
     bytes32 public constant YEARN_VAULT_NAME = keccak256("YEARN_VAULT");
 
     bytes32 public constant SHIELD_MINING_NAME = keccak256("SHIELD_MINING");
+    bytes32 public constant LIQUIDITY_BRIDGE_NAME = keccak256("LIQUIDITY_BRIDGE");
 
     modifier onlyAdmin() {
         require(
@@ -103,36 +97,24 @@ contract ContractsRegistry is IContractsRegistry, AccessControlUpgradeable {
         upgrader = new Upgrader();
     }
 
-    function getUniswapRouterContract() external view override returns (address) {
-        return getContract(UNISWAP_ROUTER_NAME);
+    function getAMMRouterContract() external view override returns (address) {
+        return getContract(AMM_ROUTER_NAME);
     }
 
-    function getUniswapBMIToETHPairContract() external view override returns (address) {
-        return getContract(UNISWAP_BMI_TO_ETH_PAIR_NAME);
+    function getAMMBMIToETHPairContract() external view override returns (address) {
+        return getContract(AMM_BMI_TO_ETH_PAIR_NAME);
     }
 
-    function getUniswapBMIToUSDTPairContract() external view override returns (address) {
-        return getContract(UNISWAP_BMI_TO_USDT_PAIR_NAME);
-    }
-
-    function getSushiswapRouterContract() external view override returns (address) {
-        return getContract(SUSHISWAP_ROUTER_NAME);
-    }
-
-    function getSushiswapBMIToETHPairContract() external view override returns (address) {
-        return getContract(SUSHISWAP_BMI_TO_ETH_PAIR_NAME);
-    }
-
-    function getSushiswapBMIToUSDTPairContract() external view override returns (address) {
-        return getContract(SUSHISWAP_BMI_TO_USDT_PAIR_NAME);
+    function getAMMBMIToUSDTPairContract() external view override returns (address) {
+        return getContract(AMM_BMI_TO_USDT_PAIR_NAME);
     }
 
     function getSushiSwapMasterChefV2Contract() external view override returns (address) {
         return getContract(SUSHI_SWAP_MASTER_CHEF_V2_NAME);
     }
 
-    function getWETHContract() external view override returns (address) {
-        return getContract(WETH_NAME);
+    function getWrappedTokenContract() external view override returns (address) {
+        return getContract(WRAPPEDTOKEN_NAME);
     }
 
     function getUSDTContract() external view override returns (address) {
@@ -163,8 +145,8 @@ contract ContractsRegistry is IContractsRegistry, AccessControlUpgradeable {
         return getContract(BMI_COVER_STAKING_VIEW_NAME);
     }
 
-    function getLegacyRewardsGeneratorContract() external view override returns (address) {
-        return getContract(LEGACY_REWARDS_GENERATOR_NAME);
+    function getBMITreasury() external view override returns (address) {
+        return getContract(BMI_TREASURY_NAME);
     }
 
     function getRewardsGeneratorContract() external view override returns (address) {
@@ -179,8 +161,8 @@ contract ContractsRegistry is IContractsRegistry, AccessControlUpgradeable {
         return getContract(NFT_STAKING_NAME);
     }
 
-    function getLiquidityMiningContract() external view override returns (address) {
-        return getContract(LIQUIDITY_MINING_NAME);
+    function getLiquidityBridgeContract() external view override returns (address) {
+        return getContract(LIQUIDITY_BRIDGE_NAME);
     }
 
     function getClaimingRegistryContract() external view override returns (address) {
@@ -227,20 +209,16 @@ contract ContractsRegistry is IContractsRegistry, AccessControlUpgradeable {
         return getContract(POLICY_QUOTE_NAME);
     }
 
-    function getLegacyBMIStakingContract() external view override returns (address) {
-        return getContract(LEGACY_BMI_STAKING_NAME);
-    }
-
     function getBMIStakingContract() external view override returns (address) {
         return getContract(BMI_STAKING_NAME);
     }
 
-    function getSTKBMIContract() external view override returns (address) {
-        return getContract(STKBMI_NAME);
+    function getStkBMIStakingContract() external view override returns (address) {
+        return getContract(STKBMI_STAKING_NAME);
     }
 
-    function getLegacyLiquidityMiningStakingContract() external view override returns (address) {
-        return getContract(LEGACY_LIQUIDITY_MINING_STAKING_NAME);
+    function getSTKBMIContract() external view override returns (address) {
+        return getContract(STKBMI_NAME);
     }
 
     function getLiquidityMiningStakingETHContract() external view override returns (address) {
@@ -255,8 +233,8 @@ contract ContractsRegistry is IContractsRegistry, AccessControlUpgradeable {
         return getContract(VBMI_NAME);
     }
 
-    function getAaveProtocolContract() external view override returns (address) {
-        return getContract(AAVE_PROTOCOL_NAME);
+    function getDefiProtocol1Contract() external view override returns (address) {
+        return getContract(DEFI_PROTOCOL_1_NAME);
     }
 
     function getAaveLendPoolAddressProvdierContract() external view override returns (address) {
@@ -267,8 +245,8 @@ contract ContractsRegistry is IContractsRegistry, AccessControlUpgradeable {
         return getContract(AAVE_ATOKEN_NAME);
     }
 
-    function getCompoundProtocolContract() external view override returns (address) {
-        return getContract(COMPOUND_PROTOCOL_NAME);
+    function getDefiProtocol2Contract() external view override returns (address) {
+        return getContract(DEFI_PROTOCOL_2_NAME);
     }
 
     function getCompoundCTokenContract() external view override returns (address) {
@@ -279,8 +257,8 @@ contract ContractsRegistry is IContractsRegistry, AccessControlUpgradeable {
         return getContract(COMPOUND_COMPTROLLER_NAME);
     }
 
-    function getYearnProtocolContract() external view override returns (address) {
-        return getContract(YEARN_PROTOCOL_NAME);
+    function getDefiProtocol3Contract() external view override returns (address) {
+        return getContract(DEFI_PROTOCOL_3_NAME);
     }
 
     function getYearnVaultContract() external view override returns (address) {

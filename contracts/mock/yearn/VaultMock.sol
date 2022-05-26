@@ -18,12 +18,8 @@ contract VaultMock is ERC20 {
 
     constructor(address _usdt) ERC20("yToken", "yToken") {
         _setupDecimals(6);
-        _pricePerShare = 10**6;
+        _pricePerShare = 1047129;
         usdt = ERC20(_usdt);
-    }
-
-    function setPricePerShare(uint256 pricePerShare_) public {
-        _pricePerShare = pricePerShare_.mul(PRECESSION);
     }
 
     function pricePerShare() external view returns (uint256 singleShareValue) {
@@ -43,7 +39,7 @@ contract VaultMock is ERC20 {
         // Mint issued amount of shares yToken
         _mint(msg.sender, issuedShares);
 
-        _pricePerShare += 1000;
+        _pricePerShare = _pricePerShare.add(10000);
     }
 
     function withdraw(uint256 shares, address pool) external returns (uint256 value) {
@@ -66,10 +62,7 @@ contract VaultMock is ERC20 {
         return value;
     }
 
-    function mintInterest(address account) external {
-        uint256 sharesBefore = balanceOf(account);
-        uint256 sharesAfter = sharesBefore.mul(_pricePerShare).div(PRECESSION);
-        uint256 accumulatedShares = sharesAfter.sub(sharesBefore);
-        usdt.safeTransferFrom(msg.sender, address(this), accumulatedShares);
+    function setPricePerShare(uint256 newPricePerShare) public {
+        _pricePerShare = newPricePerShare;
     }
 }

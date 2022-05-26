@@ -5,6 +5,8 @@ pragma experimental ABIEncoderV2;
 import "../ReinsurancePool.sol";
 
 contract ReinsurancePoolMock is ReinsurancePool {
+    using EnumerableSet for EnumerableSet.AddressSet;
+
     function setVtotalLiquidity(uint256 _vStableTotalLiquidity) external {
         totalLiquidity = _vStableTotalLiquidity;
     }
@@ -15,5 +17,9 @@ contract ReinsurancePoolMock is ReinsurancePool {
 
     function addLiquidity(uint256 amount) external {
         capitalPool.addReinsurancePoolHardSTBL(amount);
+    }
+
+    function addInvestedPools(address policyBookAddress) external {
+        leveragedCoveragePools.add(policyBookAddress);
     }
 }

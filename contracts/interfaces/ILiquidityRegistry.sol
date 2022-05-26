@@ -30,6 +30,8 @@ interface ILiquidityRegistry {
 
     function tryToRemovePolicyBook(address _userAddr, address _policyBookAddr) external;
 
+    function removeExpiredWithdrawalRequest(address _userAddr, address _policyBookAddr) external;
+
     function getPolicyBooksArrLength(address _userAddr) external view returns (uint256);
 
     function getPolicyBooksArr(address _userAddr)
@@ -49,15 +51,15 @@ interface ILiquidityRegistry {
         uint256 _limit
     ) external view returns (uint256 _arrLength, WithdrawalRequestInfo[] memory _resultArr);
 
-    function getWithdrawalSet(
-        address _userAddr,
-        uint256 _offset,
-        uint256 _limit
-    ) external view returns (uint256 _arrLength, WithdrawalSetInfo[] memory _resultArr);
-
     function registerWithdrawl(address _policyBook, address _users) external;
 
     function getAllPendingWithdrawalRequestsAmount()
         external
+        view
+        returns (uint256 _totalWithdrawlAmount);
+
+    function getPendingWithdrawalAmountByPolicyBook(address _policyBook)
+        external
+        view
         returns (uint256 _totalWithdrawlAmount);
 }

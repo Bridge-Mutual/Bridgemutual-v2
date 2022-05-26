@@ -2,6 +2,8 @@
 pragma solidity ^0.7.4;
 pragma experimental ABIEncoderV2;
 
+import "../libraries/DecimalsConverter.sol";
+
 import "../interfaces/IContractsRegistry.sol";
 
 import "../interfaces/IPolicyRegistry.sol";
@@ -25,11 +27,14 @@ contract InteractionSolidity {
     IPolicyBookRegistry public policyBookRegistry;
     ERC20 public stablecoin;
 
+    uint256 public stblDecimals;
+
     constructor(address contractRegistryAddress) {
         contractRegistry = IContractsRegistry(contractRegistryAddress);
         policyRegistry = IPolicyRegistry(contractRegistry.getPolicyRegistryContract());
         policyBookRegistry = IPolicyBookRegistry(contractRegistry.getPolicyBookRegistryContract());
         stablecoin = ERC20(contractRegistry.getUSDTContract());
+        stblDecimals = stablecoin.decimals();
     }
 
     function getWhiteListedPolicies()
@@ -88,8 +93,8 @@ contract InteractionSolidity {
 
         // FUNCTION CALL
         (, uint256 totalPrice, ) =
-            policyBook.getPolicyPrice(_epochsNumber, _coverTokens, msg.sender);
-        uint256 stblPrice = totalPrice / 10**12;
+            policyBookFacade.getPolicyPrice(_epochsNumber, _coverTokens, msg.sender);
+        uint256 stblPrice = DecimalsConverter.convertFrom18(totalPrice, stblDecimals);
         stablecoin.safeTransferFrom(msg.sender, address(this), stblPrice);
 
         uint256 _currentApproval = stablecoin.allowance(address(this), address(policyBook));
@@ -110,7 +115,7 @@ contract InteractionSolidity {
         IPolicyBookFacade policyBookFacade = policyBook.policyBookFacade();
 
         // FUNCTION CALL
-        uint256 stblAmount = _liquidityAmount / 10**12;
+        uint256 stblAmount = DecimalsConverter.convertFrom18(_liquidityAmount, stblDecimals);
         stablecoin.safeTransferFrom(msg.sender, address(this), stblAmount);
 
         uint256 _currentApproval = stablecoin.allowance(address(this), address(policyBook));

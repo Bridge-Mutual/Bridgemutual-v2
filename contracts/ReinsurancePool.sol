@@ -6,9 +6,12 @@ import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import "./abstract/AbstractLeveragePortfolio.sol";
 import "./interfaces/IReinsurancePool.sol";
 import "./interfaces/IBMIStaking.sol";
+import "./interfaces/IYieldGenerator.sol";
 
 contract ReinsurancePool is AbstractLeveragePortfolio, IReinsurancePool, OwnableUpgradeable {
     using SafeERC20 for ERC20;
+    using SafeMath for uint256;
+    using Math for uint256;
 
     IERC20 public bmiToken;
     ERC20 public stblToken;
@@ -18,9 +21,9 @@ contract ReinsurancePool is AbstractLeveragePortfolio, IReinsurancePool, Ownable
 
     uint256 public stblDecimals;
 
-    address public aaveProtocol;
-    address public compoundProtocol;
-    address public yearnProtocol;
+    address public defiProtocol1;
+    address public defiProtocol2;
+    address public defiProtocol3;
 
     event Recovered(address tokenAddress, uint256 tokenAmount);
     event STBLWithdrawn(address user, uint256 amount);
@@ -33,9 +36,9 @@ contract ReinsurancePool is AbstractLeveragePortfolio, IReinsurancePool, Ownable
 
     modifier onlyDefiProtocols() {
         require(
-            aaveProtocol == _msgSender() ||
-                compoundProtocol == _msgSender() ||
-                yearnProtocol == _msgSender(),
+            defiProtocol1 == _msgSender() ||
+                defiProtocol2 == _msgSender() ||
+                defiProtocol3 == _msgSender(),
             "RP: Caller is not a defi protocols contract"
         );
         _;
@@ -52,16 +55,25 @@ contract ReinsurancePool is AbstractLeveragePortfolio, IReinsurancePool, Ownable
         onlyInjectorOrZero
     {
         stblToken = ERC20(_contractsRegistry.getUSDTContract());
-        bmiStaking = IBMIStaking(_contractsRegistry.getBMIStakingContract());
         bmiToken = IERC20(_contractsRegistry.getBMIContract());
         capitalPool = ICapitalPool(_contractsRegistry.getCapitalPoolContract());
         claimVotingAddress = _contractsRegistry.getClaimVotingContract();
         policyBookRegistry = IPolicyBookRegistry(
             _contractsRegistry.getPolicyBookRegistryContract()
         );
-        compoundProtocol = _contractsRegistry.getCompoundProtocolContract();
-        aaveProtocol = _contractsRegistry.getAaveProtocolContract();
-        yearnProtocol = _contractsRegistry.getYearnProtocolContract();
+
+        IYieldGenerator yieldGenerator =
+            IYieldGenerator(_contractsRegistry.getYieldGeneratorContract());
+        uint256 _protocolNo = yieldGenerator.protocolsNumber();
+        if (_protocolNo >= 1) {
+            defiProtocol1 = _contractsRegistry.getDefiProtocol1Contract();
+        }
+        if (_protocolNo >= 2) {
+            defiProtocol2 = _contractsRegistry.getDefiProtocol2Contract();
+        }
+        if (_protocolNo >= 3) {
+            defiProtocol3 = _contractsRegistry.getDefiProtocol3Contract();
+        }
         leveragePortfolioView = ILeveragePortfolioView(
             _contractsRegistry.getLeveragePortfolioViewContract()
         );
@@ -89,7 +101,7 @@ contract ReinsurancePool is AbstractLeveragePortfolio, IReinsurancePool, Ownable
     /// @dev access CapitalPool
     /// @param  premiumAmount uint256 the premium amount which is 20% of premium + portion of 80%
     function addPolicyPremium(uint256, uint256 premiumAmount) external override onlyCapitalPool {
-        totalLiquidity += premiumAmount;
+        totalLiquidity = totalLiquidity.add(premiumAmount);
 
         emit PremiumAdded(premiumAmount);
     }
@@ -102,7 +114,7 @@ contract ReinsurancePool is AbstractLeveragePortfolio, IReinsurancePool, Ownable
         onlyDefiProtocols
     {
         uint256 amount = DecimalsConverter.convertTo18(interestAmount, stblDecimals);
-        totalLiquidity += amount;
+        totalLiquidity = totalLiquidity.add(amount);
 
         capitalPool.addReinsurancePoolHardSTBL(interestAmount);
 
@@ -110,4 +122,15 @@ contract ReinsurancePool is AbstractLeveragePortfolio, IReinsurancePool, Ownable
 
         emit DefiInterestAdded(amount);
     }
+
+    function updateLiquidity(uint256 _lostLiquidity) external override onlyCapitalPool {
+        uint256 _newLiquidity = totalLiquidity.sub(_lostLiquidity);
+        totalLiquidity = _newLiquidity;
+
+        _reevaluateProvidedLeverageStable(LeveragePortfolio.REINSURANCEPOOL, _lostLiquidity);
+
+        emit LiquidityWithdrawn(_msgSender(), _lostLiquidity, _newLiquidity);
+    }
+
+    function forceUpdateBMICoverStakingRewardMultiplier() external override {}
 }

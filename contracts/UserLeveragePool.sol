@@ -7,7 +7,7 @@ import "./tokens/erc20permit-upgradeable/ERC20PermitUpgradeable.sol";
 import "./abstract/AbstractLeveragePortfolio.sol";
 import "./interfaces/IBMICoverStaking.sol";
 import "./interfaces/IBMICoverStakingView.sol";
-//import "./interfaces/ILiquidityMining.sol";
+import "./interfaces/IClaimingRegistry.sol";
 import "./interfaces/IRewardsGenerator.sol";
 import "./interfaces/ILiquidityRegistry.sol";
 import "./interfaces/IUserLeveragePool.sol";
@@ -24,9 +24,8 @@ contract UserLeveragePool is AbstractLeveragePortfolio, IUserLeveragePool, ERC20
 
     uint256 public constant override EPOCH_DURATION = 1 weeks;
     uint256 public constant MAXIMUM_EPOCHS = SECONDS_IN_THE_YEAR / EPOCH_DURATION;
-    uint256 public constant VIRTUAL_EPOCHS = 2;
+    uint256 public constant VIRTUAL_EPOCHS = 1;
 
-    uint256 public constant WITHDRAWAL_PERIOD = 8 days;
     uint256 public constant override READY_TO_WITHDRAW_PERIOD = 2 days;
 
     uint256 public override epochStartTime;
@@ -58,6 +57,7 @@ contract UserLeveragePool is AbstractLeveragePortfolio, IUserLeveragePool, ERC20
 
     // new state post v2
     uint256 public override a2_ProtocolConstant;
+    IClaimingRegistry public claimingRegistry;
 
     event LiquidityAdded(
         address _liquidityHolder,
@@ -69,16 +69,6 @@ contract UserLeveragePool is AbstractLeveragePortfolio, IUserLeveragePool, ERC20
         uint256 _tokensToWithdraw,
         uint256 _readyToWithdrawDate
     );
-    event LiquidityWithdrawn(
-        address _liquidityHolder,
-        uint256 _tokensToWithdraw,
-        uint256 _newTotalLiquidity
-    );
-
-    // modifier onlyLiquidityAdders() {
-    //     require(_msgSender() == address(liquidityMining), "LP: Not allowed");
-    //     _;
-    // }
 
     modifier updateBMICoverStakingReward() {
         _;
@@ -122,7 +112,6 @@ contract UserLeveragePool is AbstractLeveragePortfolio, IUserLeveragePool, ERC20
         );
         rewardsGenerator = IRewardsGenerator(_contractsRegistry.getRewardsGeneratorContract());
         policyBookAdmin = _contractsRegistry.getPolicyBookAdminContract();
-        //liquidityMining = ILiquidityMining(_contractsRegistry.getLiquidityMiningContract());
         capitalPool = ICapitalPool(_contractsRegistry.getCapitalPoolContract());
         liquidityRegistry = ILiquidityRegistry(_contractsRegistry.getLiquidityRegistryContract());
         policyBookRegistry = IPolicyBookRegistry(
@@ -134,6 +123,7 @@ contract UserLeveragePool is AbstractLeveragePortfolio, IUserLeveragePool, ERC20
         reinsurancePoolAddress = _contractsRegistry.getReinsurancePoolContract();
         stblDecimals = stblToken.decimals();
         shieldMining = IShieldMining(_contractsRegistry.getShieldMiningContract());
+        claimingRegistry = IClaimingRegistry(_contractsRegistry.getClaimingRegistryContract());
     }
 
     function getEpoch(uint256 time) public view override returns (uint256) {
@@ -245,16 +235,18 @@ contract UserLeveragePool is AbstractLeveragePortfolio, IUserLeveragePool, ERC20
                 _coveragepool.totalLiquidity()
             );
 
-            _totalBmiMultiplier += leveragePortfolioView.calcBMIMultiplier(
-                BMIMultiplierFactors(
-                    _poolMultiplier,
-                    _leverageProvided,
-                    leveragePortfolioView.calcM(_poolUR, address(this))
+            _totalBmiMultiplier = _totalBmiMultiplier.add(
+                leveragePortfolioView.calcBMIMultiplier(
+                    BMIMultiplierFactors(
+                        _poolMultiplier,
+                        _leverageProvided,
+                        leveragePortfolioView.calcM(_poolUR, address(this))
+                    )
                 )
             );
         }
 
-        rewardsGenerator.updatePolicyBookShare(_totalBmiMultiplier.div(10**22)); // 5 decimal places or zero
+        rewardsGenerator.updatePolicyBookShare(_totalBmiMultiplier.div(10**22), address(this)); // 5 decimal places or zero
     }
 
     function getNewCoverAndLiquidity()
@@ -401,9 +393,13 @@ contract UserLeveragePool is AbstractLeveragePortfolio, IUserLeveragePool, ERC20
 
         if (liquidityProvider != address(0)) {
             if (isWithdraw) {
-                userLiquidity[liquidityProvider] -= liquidityAmount;
+                userLiquidity[liquidityProvider] = userLiquidity[liquidityProvider].sub(
+                    liquidityAmount
+                );
             } else {
-                userLiquidity[liquidityProvider] += liquidityAmount;
+                userLiquidity[liquidityProvider] = userLiquidity[liquidityProvider].add(
+                    liquidityAmount
+                );
             }
         }
     }
@@ -424,12 +420,6 @@ contract UserLeveragePool is AbstractLeveragePortfolio, IUserLeveragePool, ERC20
             convertBMIXToSTBL(
                 balanceOf(_userAddr).add(withdrawalsInfo[_userAddr].withdrawalAmount)
             );
-
-        // if (block.timestamp < liquidityMining.getEndLMTime()) {
-        //     uint256 lmLiquidity = liquidityFromLM[_userAddr];
-
-        //     availableSTBL = availableSTBL <= lmLiquidity ? 0 : availableSTBL - lmLiquidity;
-        // }
 
         return availableSTBL;
     }
@@ -476,14 +466,20 @@ contract UserLeveragePool is AbstractLeveragePortfolio, IUserLeveragePool, ERC20
         override
         withPremiumsDistribution
     {
+        require(_tokensToWithdraw > 0, "LP: Amount is zero");
+
         WithdrawalStatus _withdrawlStatus = getWithdrawalStatus(msg.sender);
+
         require(
             _withdrawlStatus == WithdrawalStatus.NONE ||
                 _withdrawlStatus == WithdrawalStatus.EXPIRED,
             "LP: ongoing withdrawl request"
         );
 
-        require(_tokensToWithdraw > 0, "LP: Amount is zero");
+        require(
+            !claimingRegistry.hasProcedureOngoing(address(this)),
+            "LP: ongoing claim procedure"
+        );
 
         uint256 _stblTokensToWithdraw = convertBMIXToSTBL(_tokensToWithdraw);
         uint256 _availableSTBLBalance = _getUserAvailableSTBL(_msgSender());
@@ -492,21 +488,19 @@ contract UserLeveragePool is AbstractLeveragePortfolio, IUserLeveragePool, ERC20
 
         updateEpochsInfo();
 
-        require(totalLiquidity >= _stblTokensToWithdraw, "LP: Not enough free liquidity");
-
         _lockTokens(_msgSender(), _tokensToWithdraw);
-
-        uint256 _readyToWithdrawDate = block.timestamp.add(WITHDRAWAL_PERIOD);
-
-        withdrawalsInfo[_msgSender()] = WithdrawalInfo(
-            _tokensToWithdraw,
-            _readyToWithdrawDate,
-            false
-        );
 
         liquidityRegistry.registerWithdrawl(address(this), _msgSender());
 
-        emit WithdrawalRequested(_msgSender(), _tokensToWithdraw, _readyToWithdrawDate);
+        _requestWithdrawal(_tokensToWithdraw, _msgSender());
+    }
+
+    function _requestWithdrawal(uint256 _tokensToWithdraw, address _user) internal {
+        uint256 _readyToWithdrawDate = block.timestamp.add(capitalPool.getWithdrawPeriod());
+
+        withdrawalsInfo[_user] = WithdrawalInfo(_tokensToWithdraw, _readyToWithdrawDate, false);
+
+        emit WithdrawalRequested(_user, _tokensToWithdraw, _readyToWithdrawDate);
     }
 
     function _lockTokens(address _userAddr, uint256 _neededTokensToLock) internal {
@@ -530,6 +524,7 @@ contract UserLeveragePool is AbstractLeveragePortfolio, IUserLeveragePool, ERC20
 
         this.transfer(_msgSender(), _lockedAmount);
         delete withdrawalsInfo[_msgSender()];
+        liquidityRegistry.removeExpiredWithdrawalRequest(_msgSender(), address(this));
     }
 
     function withdrawLiquidity()
@@ -552,11 +547,20 @@ contract UserLeveragePool is AbstractLeveragePortfolio, IUserLeveragePool, ERC20
 
         uint256 _stblTokensToWithdraw = convertBMIXToSTBL(_tokensToWithdraw);
 
-        capitalPool.withdrawLiquidity(
-            _msgSender(),
-            DecimalsConverter.convertFrom18(_stblTokensToWithdraw, stblDecimals),
-            true
-        );
+        uint256 _stblTokensToWithdrawConverted =
+            DecimalsConverter.convertFrom18(_stblTokensToWithdraw, stblDecimals);
+
+        uint256 _actualStblTokensToWithdraw =
+            capitalPool.withdrawLiquidity(_msgSender(), _stblTokensToWithdrawConverted, true);
+
+        if (_stblTokensToWithdrawConverted != _actualStblTokensToWithdraw) {
+            _actualStblTokensToWithdraw = DecimalsConverter.convertTo18(
+                _actualStblTokensToWithdraw,
+                stblDecimals
+            );
+            _tokensToWithdraw = convertSTBLToBMIX(_actualStblTokensToWithdraw);
+            _stblTokensToWithdraw = _actualStblTokensToWithdraw;
+        }
 
         _burn(address(this), _tokensToWithdraw);
         liquidity = liquidity.sub(_stblTokensToWithdraw);
@@ -567,8 +571,7 @@ contract UserLeveragePool is AbstractLeveragePortfolio, IUserLeveragePool, ERC20
             delete withdrawalsInfo[_msgSender()];
             liquidityRegistry.tryToRemovePolicyBook(_msgSender(), address(this));
         } else {
-            withdrawalsInfo[_msgSender()].withdrawalAllowed = true;
-            withdrawalsInfo[_msgSender()].withdrawalAmount = _currentWithdrawalAmount;
+            _requestWithdrawal(_currentWithdrawalAmount, _msgSender());
         }
 
         totalLiquidity = liquidity;
@@ -582,15 +585,13 @@ contract UserLeveragePool is AbstractLeveragePortfolio, IUserLeveragePool, ERC20
         emit LiquidityWithdrawn(_msgSender(), _stblTokensToWithdraw, liquidity);
     }
 
-    function updateLiquidity(uint256 _newLiquidity) external override onlyCapitalPool {
+    function updateLiquidity(uint256 _lostLiquidity) external override onlyCapitalPool {
         updateEpochsInfo();
 
-        uint256 _lostLiquidity = totalLiquidity.sub(_newLiquidity);
-
+        uint256 _newLiquidity = totalLiquidity.sub(_lostLiquidity);
         totalLiquidity = _newLiquidity;
 
         _reevaluateProvidedLeverageStable(LeveragePortfolio.USERLEVERAGEPOOL, _lostLiquidity);
-
         _updateShieldMining(address(0), _lostLiquidity, true);
 
         emit LiquidityWithdrawn(_msgSender(), _lostLiquidity, _newLiquidity);
@@ -620,6 +621,7 @@ contract UserLeveragePool is AbstractLeveragePortfolio, IUserLeveragePool, ERC20
 
     /// @notice Getting number stats, access: ANY
     /// @return _maxCapacities is a max liquidity of the pool
+    /// @return _buyPolicyCapacity is becuase to follow the same function in policy book
     /// @return _totalSTBLLiquidity is PolicyBook's liquidity
     /// @return _totalLeveragedLiquidity is becuase to follow the same function in policy book
     /// @return _stakedSTBL is how much stable coin are staked on this PolicyBook
@@ -632,6 +634,7 @@ contract UserLeveragePool is AbstractLeveragePortfolio, IUserLeveragePool, ERC20
         override
         returns (
             uint256 _maxCapacities,
+            uint256 _buyPolicyCapacity,
             uint256 _totalSTBLLiquidity,
             uint256 _totalLeveragedLiquidity,
             uint256 _stakedSTBL,
@@ -644,8 +647,6 @@ contract UserLeveragePool is AbstractLeveragePortfolio, IUserLeveragePool, ERC20
         _maxCapacities = maxCapacities;
         _stakedSTBL = rewardsGenerator.getStakedPolicyBookSTBL(address(this));
         _annualProfitYields = getAPY().add(bmiCoverStakingView.getPolicyBookAPY(address(this)));
-        _annualInsuranceCost = 0;
-        _totalLeveragedLiquidity = 0;
         _bmiXRatio = convertBMIXToSTBL(10**18);
     }
 

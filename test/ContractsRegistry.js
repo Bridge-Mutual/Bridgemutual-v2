@@ -3,11 +3,14 @@ const RewardsGeneratorMock = artifacts.require("RewardsGeneratorMock");
 const ContractsRegistry = artifacts.require("ContractsRegistry");
 const Proxy = artifacts.require("TransparentUpgradeableProxy");
 const STBLMock = artifacts.require("STBLMock");
+const BSCSTBLMock = artifacts.require("BSCSTBLMock");
+const MATICSTBLMock = artifacts.require("MATICSTBLMock");
 
 const { assert } = require("chai");
 const BigNumber = require("bignumber.js");
 const truffleAssert = require("truffle-assertions");
 const Reverter = require("./helpers/reverter");
+const { getStableAmount, getNetwork, Networks } = require("./helpers/utils");
 
 function toBN(number) {
   return new BigNumber(number);
@@ -23,10 +26,20 @@ contract("ContractsRegistry", async (accounts) => {
 
   let contractsRegistry;
 
+  let network;
+
   before("setup", async () => {
+    network = await getNetwork();
     const contractsRegistryImpl = await ContractsRegistry.new();
     const proxy = await Proxy.new(contractsRegistryImpl.address, PROXY_ADMIN, []);
-    const stbl = await STBLMock.new("stbl", "stbl", 6);
+    if (network == Networks.ETH) {
+      stbl = await STBLMock.new("stbl", "stbl", 6);
+    } else if (network == Networks.BSC) {
+      stbl = await BSCSTBLMock.new();
+    } else if (network == Networks.POL) {
+      stbl = await MATICSTBLMock.new();
+      await stbl.initialize("stbl", "stbl", 6, accounts[0]);
+    }
     const _rewardsGenerator = await RewardsGenerator.new();
 
     contractsRegistry = await ContractsRegistry.at(proxy.address);
@@ -39,7 +52,8 @@ contract("ContractsRegistry", async (accounts) => {
     await contractsRegistry.addContract(await contractsRegistry.BMI_COVER_STAKING_VIEW_NAME(), NOTHING);
     await contractsRegistry.addContract(await contractsRegistry.PRICE_FEED_NAME(), NOTHING);
     await contractsRegistry.addContract(await contractsRegistry.POLICY_BOOK_REGISTRY_NAME(), NOTHING);
-    await contractsRegistry.addContract(await contractsRegistry.LEGACY_REWARDS_GENERATOR_NAME(), NOTHING);
+
+    await contractsRegistry.addContract(await contractsRegistry.LIQUIDITY_BRIDGE_NAME(), NOTHING);
 
     await contractsRegistry.addContract(await contractsRegistry.USDT_NAME(), stbl.address);
 

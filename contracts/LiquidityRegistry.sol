@@ -12,6 +12,7 @@ import "./interfaces/IPolicyBookRegistry.sol";
 import "./interfaces/IContractsRegistry.sol";
 import "./interfaces/ILiquidityRegistry.sol";
 import "./interfaces/IBMICoverStaking.sol";
+import "./interfaces/ICapitalPool.sol";
 
 import "./abstract/AbstractDependant.sol";
 
@@ -93,7 +94,25 @@ contract LiquidityRegistry is ILiquidityRegistry, AbstractDependant {
         ) {
             _policyBooks[_userAddr].remove(_policyBookAddr);
 
+            // remove user withdraw request from the list
+            _withdrawlRequestsList[_userAddr].remove(_policyBookAddr);
+            if (_withdrawlRequestsList[_userAddr].length() == 0) {
+                _withdrawlRequestUsersList.remove(_userAddr);
+            }
+
             emit PolicyBookRemoved(_userAddr, _policyBookAddr);
+        }
+    }
+
+    function removeExpiredWithdrawalRequest(address _userAddr, address _policyBookAddr)
+        external
+        override
+        onlyEligibleContracts
+    {
+        // remove user withdraw request from the list
+        _withdrawlRequestsList[_userAddr].remove(_policyBookAddr);
+        if (_withdrawlRequestsList[_userAddr].length() == 0) {
+            _withdrawlRequestUsersList.remove(_userAddr);
         }
     }
 
@@ -162,13 +181,13 @@ contract LiquidityRegistry is ILiquidityRegistry, AbstractDependant {
         for (uint256 i = _offset; i < _to; i++) {
             IPolicyBook _currentPolicyBook = IPolicyBook(_policyBooks[_userAddr].at(i));
 
-            (uint256 _requestAmount, uint256 _readyToWithdrawDate, bool withdrawalAllowed) =
+            (uint256 _requestAmount, uint256 _readyToWithdrawDate, ) =
                 _currentPolicyBook.withdrawalsInfo(_userAddr);
 
             IPolicyBook.WithdrawalStatus _currentStatus =
                 _currentPolicyBook.getWithdrawalStatus(_userAddr);
 
-            if (withdrawalAllowed || _currentStatus == IPolicyBook.WithdrawalStatus.NONE) {
+            if (_currentStatus == IPolicyBook.WithdrawalStatus.NONE) {
                 continue;
             }
 
@@ -196,39 +215,6 @@ contract LiquidityRegistry is ILiquidityRegistry, AbstractDependant {
         }
     }
 
-    function getWithdrawalSet(
-        address _userAddr,
-        uint256 _offset,
-        uint256 _limit
-    ) external view override returns (uint256 _arrLength, WithdrawalSetInfo[] memory _resultArr) {
-        uint256 _to = (_offset.add(_limit)).min(_policyBooks[_userAddr].length()).max(_offset);
-
-        _resultArr = new WithdrawalSetInfo[](_to - _offset);
-
-        for (uint256 i = _offset; i < _to; i++) {
-            IPolicyBook _currentPolicyBook = IPolicyBook(_policyBooks[_userAddr].at(i));
-
-            (uint256 _requestAmount, , bool withdrawalAllowed) =
-                _currentPolicyBook.withdrawalsInfo(_userAddr);
-
-            if (!withdrawalAllowed) {
-                continue;
-            }
-
-            (uint256 coverTokens, uint256 liquidity) =
-                _currentPolicyBook.getNewCoverAndLiquidity();
-
-            _resultArr[_arrLength] = WithdrawalSetInfo(
-                address(_currentPolicyBook),
-                _requestAmount,
-                _currentPolicyBook.convertBMIXToSTBL(_requestAmount),
-                liquidity.sub(coverTokens)
-            );
-
-            _arrLength++;
-        }
-    }
-
     /// @notice Register's Withdrawals for all pools
     /// @dev Requires withdrawls to be serialized
     /// @param _policyBook address of the policybook with requested withdrawl
@@ -246,6 +232,7 @@ contract LiquidityRegistry is ILiquidityRegistry, AbstractDependant {
     /// @return _totalWithdrawlAmount uint256 collected withdrawl amount
     function getAllPendingWithdrawalRequestsAmount()
         external
+        view
         override
         returns (uint256 _totalWithdrawlAmount)
     {
@@ -257,10 +244,6 @@ contract LiquidityRegistry is ILiquidityRegistry, AbstractDependant {
         for (uint256 i = 0; i < _withdrawlRequestUsersList.length(); i++) {
             _userAddr = _withdrawlRequestUsersList.at(i);
 
-            if (_withdrawlRequestsList[_userAddr].length() == 0) {
-                _withdrawlRequestUsersList.remove(_userAddr);
-                continue;
-            }
             for (uint256 j = 0; j < _withdrawlRequestsList[_userAddr].length(); j++) {
                 policyBookAddr = _withdrawlRequestsList[_userAddr].at(j);
                 IPolicyBook _currentPolicyBook = IPolicyBook(policyBookAddr);
@@ -271,7 +254,6 @@ contract LiquidityRegistry is ILiquidityRegistry, AbstractDependant {
                     _currentStatus == IPolicyBook.WithdrawalStatus.NONE ||
                     _currentStatus == IPolicyBook.WithdrawalStatus.EXPIRED
                 ) {
-                    _withdrawlRequestsList[_userAddr].remove(policyBookAddr);
                     continue;
                 }
 
@@ -280,8 +262,54 @@ contract LiquidityRegistry is ILiquidityRegistry, AbstractDependant {
 
                 ///@dev exclude all ready request until before ready to withdraw date by 24 hrs
                 /// + 1 hr (spare time for transaction execution time)
-                if (block.timestamp >= _readyToWithdrawDate.sub(REBALANCE_DURATION.add(60 * 60))) {
-                    _totalWithdrawlAmount += _currentPolicyBook.convertBMIXToSTBL(_requestAmount);
+                if (
+                    block.timestamp >=
+                    _readyToWithdrawDate.sub(
+                        ICapitalPool(capitalPool).rebalanceDuration().add(60 * 60)
+                    )
+                ) {
+                    _totalWithdrawlAmount = _totalWithdrawlAmount.add(
+                        _currentPolicyBook.convertBMIXToSTBL(_requestAmount)
+                    );
+                }
+            }
+        }
+    }
+
+    /// @notice fetches the withdrawal data and amounts by policybook
+    /// @param _policyBook address of the policybook with requested withdrawl
+    /// @return _totalWithdrawlAmount uint256 collected withdrawl amount
+    function getPendingWithdrawalAmountByPolicyBook(address _policyBook)
+        external
+        view
+        override
+        returns (uint256 _totalWithdrawlAmount)
+    {
+        IPolicyBook.WithdrawalStatus _currentStatus;
+
+        address _userAddr;
+
+        for (uint256 i = 0; i < _withdrawlRequestUsersList.length(); i++) {
+            _userAddr = _withdrawlRequestUsersList.at(i);
+
+            for (uint256 j = 0; j < _withdrawlRequestsList[_userAddr].length(); j++) {
+                if (_policyBook == _withdrawlRequestsList[_userAddr].at(j)) {
+                    IPolicyBook _currentPolicyBook = IPolicyBook(_policyBook);
+
+                    _currentStatus = _currentPolicyBook.getWithdrawalStatus(_userAddr);
+
+                    if (
+                        _currentStatus == IPolicyBook.WithdrawalStatus.NONE ||
+                        _currentStatus == IPolicyBook.WithdrawalStatus.EXPIRED
+                    ) {
+                        continue;
+                    }
+
+                    (uint256 _requestAmount, , ) = _currentPolicyBook.withdrawalsInfo(_userAddr);
+
+                    _totalWithdrawlAmount = _totalWithdrawlAmount.add(
+                        _currentPolicyBook.convertBMIXToSTBL(_requestAmount)
+                    );
                 }
             }
         }

@@ -4,6 +4,14 @@ const { time } = require("@openzeppelin/test-helpers");
 function toBN(number) {
   return new BigNumber(number);
 }
+const wei = web3.utils.toWei;
+
+const Networks = {
+  ETH: 0,
+  BSC: 1,
+  POL: 2,
+};
+let network;
 
 async function setTetherAllowance(spender, amount, holder, stblContract) {
   let currentAllowance = BigNumber(await stblContract.allowance(holder, spender));
@@ -79,8 +87,33 @@ async function setCurrentTime(nbSeconds) {
   await time.increase(newTime.toString());
 }
 
+function getStableAmount(amount) {
+  if (network == Networks.ETH || network == Networks.POL) {
+    return toBN(wei(amount, "mwei"));
+  } else if (network == Networks.BSC) {
+    return toBN(wei(amount));
+  }
+}
+
+async function getNetwork() {
+  networkId = await web3.eth.net.getId();
+  if (networkId == "80001") {
+    network = Networks.ETH;
+    return Networks.ETH;
+  } else if (networkId == "80002") {
+    network = Networks.BSC;
+    return Networks.BSC;
+  } else if (networkId == "80003") {
+    network = Networks.POL;
+    return Networks.POL;
+  }
+}
+
 module.exports = {
   setTetherAllowance,
   getRegisteredContracts,
   setCurrentTime,
+  Networks,
+  getNetwork,
+  getStableAmount,
 };

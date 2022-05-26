@@ -184,19 +184,7 @@ contract ShieldMining is IShieldMining, OwnableUpgradeable, ReentrancyGuard, Abs
 
         uint256 _userLeveragePoolsCount = _policyFacade.countUserLeveragePools();
 
-        // call from user leverage pool
-        if (_userLeveragePool != address(0)) {
-            _participatedLeverageAmounts = clacParticipatedLeverageAmount(
-                _userLeveragePool,
-                _coveragePool
-            );
-
-            userleveragepoolsParticipatedAmounts[_userLeveragePool] = _participatedLeverageAmounts;
-            userleveragepoolsTotalSupply[_userLeveragePool] = IERC20(_userLeveragePool)
-                .totalSupply();
-        }
-        // call from coverage pool
-        else if (_userLeveragePoolsCount > 0) {
+        if (_userLeveragePoolsCount > 0) {
             address[] memory _userLeverageArr =
                 _policyFacade.listUserLeveragePools(0, _userLeveragePoolsCount);
             uint256 _participatedLeverageAmount;
@@ -206,9 +194,13 @@ contract ShieldMining is IShieldMining, OwnableUpgradeable, ReentrancyGuard, Abs
                     _coveragePool
                 );
                 userleveragepoolsParticipatedAmounts[
-                    _userLeveragePool
+                    _userLeverageArr[i]
                 ] = _participatedLeverageAmount;
-                _participatedLeverageAmounts += _participatedLeverageAmount;
+                _participatedLeverageAmounts = _participatedLeverageAmounts.add(
+                    _participatedLeverageAmount
+                );
+                userleveragepoolsTotalSupply[_userLeverageArr[i]] = IERC20(_userLeverageArr[i])
+                    .totalSupply();
             }
         }
 
@@ -283,7 +275,9 @@ contract ShieldMining is IShieldMining, OwnableUpgradeable, ReentrancyGuard, Abs
             tokenLiquidity
         );
 
-        shieldMiningInfo[_policyBook].rewardTokensLocked += _amount;
+        shieldMiningInfo[_policyBook].rewardTokensLocked = shieldMiningInfo[_policyBook]
+            .rewardTokensLocked
+            .add(_amount);
 
         uint256 _lastBlockWithReward =
             _setRewards(_policyBook, _rewardPerBlock, block.number, _blocksAmount);
@@ -385,7 +379,9 @@ contract ShieldMining is IShieldMining, OwnableUpgradeable, ReentrancyGuard, Abs
                 DecimalsConverter.convertFrom18(reward, _tokenDecimals)
             );
 
-            shieldMiningInfo[_policyBook].rewardTokensLocked -= reward;
+            shieldMiningInfo[_policyBook].rewardTokensLocked = shieldMiningInfo[_policyBook]
+                .rewardTokensLocked
+                .sub(reward);
 
             emit ShieldMiningClaimed(_user, _policyBook, reward);
         }
@@ -494,7 +490,11 @@ contract ShieldMining is IShieldMining, OwnableUpgradeable, ReentrancyGuard, Abs
             shieldMiningInfo[_policyBook].lastBlockWithReward = _lastBlockWithReward;
         }
 
-        shieldMiningInfo[_policyBook].rewardPerBlock[_lastBlockWithReward] += _rewardPerBlock;
+        shieldMiningInfo[_policyBook].rewardPerBlock[_lastBlockWithReward] = shieldMiningInfo[
+            _policyBook
+        ]
+            .rewardPerBlock[_lastBlockWithReward]
+            .add(_rewardPerBlock);
         lastBlockWithRewardList[_policyBook].add(_lastBlockWithReward);
     }
 
@@ -545,9 +545,9 @@ contract ShieldMining is IShieldMining, OwnableUpgradeable, ReentrancyGuard, Abs
             uint256 _lastBlockWithReward = lastBlockWithRewardList[_policyBook].at(i);
             uint256 _firstBlockWithReward = lastBlockWithRewardList[_policyBook].at(i);
             if (_lastBlockWithReward > _lastUpdateBlock && _firstBlockWithReward != block.number) {
-                _rewardPerBlock += shieldMiningInfo[_policyBook].rewardPerBlock[
-                    _lastBlockWithReward
-                ];
+                _rewardPerBlock = _rewardPerBlock.add(
+                    shieldMiningInfo[_policyBook].rewardPerBlock[_lastBlockWithReward]
+                );
             }
         }
     }
@@ -580,8 +580,12 @@ contract ShieldMining is IShieldMining, OwnableUpgradeable, ReentrancyGuard, Abs
 
             uint256 blocksLeft = _calculateBlocksLeft(_lastUpdateBlock, _lastBlockWithReward);
 
-            _futureRewardTokens += blocksLeft.mul(
-                shieldMiningInfo[_policyBook].rewardPerBlock[_lastBlockWithReward]
+            _futureRewardTokens = _futureRewardTokens.add(
+                (
+                    blocksLeft.mul(
+                        shieldMiningInfo[_policyBook].rewardPerBlock[_lastBlockWithReward]
+                    )
+                )
             );
         }
     }

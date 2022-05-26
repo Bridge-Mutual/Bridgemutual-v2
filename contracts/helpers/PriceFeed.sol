@@ -9,9 +9,9 @@ import "../interfaces/helpers/IPriceFeed.sol";
 import "../abstract/AbstractDependant.sol";
 
 contract PriceFeed is IPriceFeed, AbstractDependant {
-    IUniswapV2Router02 public sushiswapRouter;
+    IUniswapV2Router02 public ammRouter;
 
-    address public wethToken;
+    address public wrappedToken;
     address public bmiToken;
     address public usdtToken;
 
@@ -20,8 +20,8 @@ contract PriceFeed is IPriceFeed, AbstractDependant {
         override
         onlyInjectorOrZero
     {
-        sushiswapRouter = IUniswapV2Router02(_contractsRegistry.getSushiswapRouterContract());
-        wethToken = _contractsRegistry.getWETHContract();
+        ammRouter = IUniswapV2Router02(_contractsRegistry.getAMMRouterContract());
+        wrappedToken = _contractsRegistry.getWrappedTokenContract();
         bmiToken = _contractsRegistry.getBMIContract();
         usdtToken = _contractsRegistry.getUSDTContract();
     }
@@ -33,10 +33,10 @@ contract PriceFeed is IPriceFeed, AbstractDependant {
 
         address[] memory pairs = new address[](3);
         pairs[0] = usdtToken;
-        pairs[1] = wethToken;
+        pairs[1] = wrappedToken;
         pairs[2] = bmiToken;
 
-        uint256[] memory amounts = sushiswapRouter.getAmountsOut(usdtAmount, pairs);
+        uint256[] memory amounts = ammRouter.getAmountsOut(usdtAmount, pairs);
 
         return amounts[amounts.length - 1];
     }
@@ -48,10 +48,10 @@ contract PriceFeed is IPriceFeed, AbstractDependant {
 
         address[] memory pairs = new address[](3);
         pairs[0] = bmiToken;
-        pairs[1] = wethToken;
+        pairs[1] = wrappedToken;
         pairs[2] = usdtToken;
 
-        uint256[] memory amounts = sushiswapRouter.getAmountsOut(bmiAmount, pairs);
+        uint256[] memory amounts = ammRouter.getAmountsOut(bmiAmount, pairs);
 
         return amounts[amounts.length - 1];
     }

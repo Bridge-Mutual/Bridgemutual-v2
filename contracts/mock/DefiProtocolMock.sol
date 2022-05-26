@@ -19,10 +19,19 @@ contract DefiProtocolMock is IDefiProtocol {
 
     ERC20 public override stablecoin;
     address public yieldGeneratorAddress;
+    address public capitalPool;
+    bool private isProfitable;
 
-    constructor(address _yieldGeneratorAddress, address _stablecoin) {
+    constructor(
+        address _yieldGeneratorAddress,
+        address _capitalPool,
+        address _stablecoin,
+        bool _isProfitable
+    ) {
         yieldGeneratorAddress = _yieldGeneratorAddress;
         stablecoin = ERC20(_stablecoin);
+        capitalPool = _capitalPool;
+        isProfitable = _isProfitable;
     }
 
     modifier onlyYieldGenerator() {
@@ -42,7 +51,7 @@ contract DefiProtocolMock is IDefiProtocol {
         onlyYieldGenerator
         returns (uint256 actualAmountWithdrawn)
     {
-        stablecoin.safeTransfer(msg.sender, amount);
+        stablecoin.safeTransfer(capitalPool, amount);
 
         totalDeposit = totalDeposit.sub(amount);
 
@@ -51,11 +60,25 @@ contract DefiProtocolMock is IDefiProtocol {
 
     function claimRewards() external override onlyYieldGenerator {}
 
-    function totalValue() external view override returns (uint256) {}
+    function totalValue() external view override returns (uint256) {
+        if (isProfitable) return totalDeposit.add(10 * 10**6);
+        else {
+            if (totalDeposit > 0) {
+                // 500 stable as lost amount for each protocol
+                return totalDeposit.sub(500 * 10**6);
+            }
+        }
+    }
 
     function setRewards(address newValue) external override onlyYieldGenerator {}
 
+    function getOneDayGain() external pure override returns (uint256) {
+        return 843779409435308892532;
+    }
+
     function updateTotalValue() external override onlyYieldGenerator returns (uint256) {}
 
-    function updateTotalDeposit(uint256 _lostAmount) external override onlyYieldGenerator {}
+    function updateTotalDeposit(uint256 _lostAmount) external override onlyYieldGenerator {
+        totalDeposit = totalDeposit.sub(_lostAmount);
+    }
 }

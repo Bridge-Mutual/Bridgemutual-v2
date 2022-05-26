@@ -1,13 +1,15 @@
 const PolicyQuote = artifacts.require("PolicyQuote");
 const PolicyBookFabric = artifacts.require("PolicyBookFabric");
 const STBLMock = artifacts.require("STBLMock");
+const BSCSTBLMock = artifacts.require("BSCSTBLMock");
+const MATICSTBLMock = artifacts.require("MATICSTBLMock");
+
 const BMIMock = artifacts.require("BMIMock");
-const WETHMock = artifacts.require("WETHMock");
+const WETHMock = artifacts.require("WrappedTokenMock");
 const SushiswapRouterMock = artifacts.require("UniswapRouterMock");
 const PriceFeed = artifacts.require("PriceFeed");
 const ContractsRegistry = artifacts.require("ContractsRegistry");
 const BMICoverStaking = artifacts.require("BMICoverStaking");
-const LiquidityMining = artifacts.require("LiquidityMining");
 const PolicyRegistry = artifacts.require("PolicyRegistry");
 const ClaimingRegistry = artifacts.require("ClaimingRegistry");
 const LiquidityRegistry = artifacts.require("LiquidityRegistry");
@@ -24,6 +26,7 @@ const BMICoverStakingView = artifacts.require("BMICoverStakingView");
 const ShieldMining = artifacts.require("ShieldMining");
 const UserLeveragePool = artifacts.require("UserLeveragePool");
 const LeveragePortfolioView = artifacts.require("LeveragePortfolioView");
+const YieldGenerator = artifacts.require("YieldGenerator");
 
 const PolicyBookMock = artifacts.require("PolicyBookMock");
 const PolicyBookFacade = artifacts.require("PolicyBookFacade");
@@ -33,6 +36,7 @@ const BigNumber = require("bignumber.js");
 const { setCurrentTime } = require("./helpers/ganacheTimeTraveler");
 const { assert } = require("chai");
 const { time } = require("@openzeppelin/test-helpers");
+const { getStableAmount, getNetwork, Networks } = require("./helpers/utils");
 
 function toBN(number) {
   return new BigNumber(number);
@@ -73,24 +77,38 @@ contract("LiquidityRegistry", async (accounts) => {
   let policyBookFabric;
   let policyBookAdmin;
   let nftStaking;
+  let network;
+  let capitalPool;
 
-  const insuranceContract = accounts[9];
+  let initialDeposit, stblInitialDeposit;
+
+  const insuranceContract = "0x0000000000000000000000000000000000000001";
+  const insuranceContract2 = "0x0000000000000000000000000000000000000002";
   const USER1 = accounts[1];
   const USER2 = accounts[2];
   const TOKEN = "0x0000000000000000000000000000000000000000";
 
-  const oneToken = toBN(wei("1"));
-  const withdrawalPeriod = 8 * 24 * 60 * 60; // 8 days
+  let oneToken;
+  let withdrawalPeriod;
   const readyToWithdrawPeriod = 2 * 24 * 60 * 60; // 2 days
 
   const NOTHING = accounts[9];
+  const PRECISION = toBN(10).pow(25);
 
   before("setup", async () => {
+    network = await getNetwork();
     contractsRegistry = await ContractsRegistry.new();
     const weth = await WETHMock.new("weth", "weth");
     const sushiswapRouterMock = await SushiswapRouterMock.new();
     bmi = await BMIMock.new(USER1);
-    stbl = await STBLMock.new("stbl", "stbl", 6);
+    if (network == Networks.ETH) {
+      stbl = await STBLMock.new("stbl", "stbl", 6);
+    } else if (network == Networks.BSC) {
+      stbl = await BSCSTBLMock.new();
+    } else if (network == Networks.POL) {
+      stbl = await MATICSTBLMock.new();
+      await stbl.initialize("stbl", "stbl", 6, accounts[0]);
+    }
 
     const _policyBookAdmin = await PolicyBookAdmin.new();
     const _priceFeed = await PriceFeed.new();
@@ -101,7 +119,6 @@ contract("LiquidityRegistry", async (accounts) => {
     const _policyRegistry = await PolicyRegistry.new();
     const _rewardsGenerator = await RewardsGenerator.new();
     const _bmiCoverStaking = await BMICoverStaking.new();
-    const _liquidityMining = await LiquidityMining.new();
     const _claimingRegistry = await ClaimingRegistry.new();
     const _liquidityRegistry = await LiquidityRegistry.new();
     const _claimVoting = await ClaimVoting.new();
@@ -112,6 +129,7 @@ contract("LiquidityRegistry", async (accounts) => {
     const _bmiCoverStakingView = await BMICoverStakingView.new();
     const _shieldMining = await ShieldMining.new();
     const _leveragePortfolioView = await LeveragePortfolioView.new();
+    const _yieldGenerator = await YieldGenerator.new();
 
     const _policyBookImpl = await PolicyBookMock.new();
     const _policyBookFacadeImpl = await PolicyBookFacade.new();
@@ -119,21 +137,21 @@ contract("LiquidityRegistry", async (accounts) => {
 
     await contractsRegistry.__ContractsRegistry_init();
 
-    await contractsRegistry.addContract(await contractsRegistry.VBMI_NAME(), NOTHING);
+    await contractsRegistry.addContract(await contractsRegistry.STKBMI_STAKING_NAME(), NOTHING);
     await contractsRegistry.addContract(await contractsRegistry.BMI_UTILITY_NFT_NAME(), NOTHING);
     await contractsRegistry.addContract(await contractsRegistry.REPUTATION_SYSTEM_NAME(), NOTHING);
     await contractsRegistry.addContract(await contractsRegistry.BMI_STAKING_NAME(), NOTHING);
-    await contractsRegistry.addContract(await contractsRegistry.LEGACY_REWARDS_GENERATOR_NAME(), NOTHING);
+    await contractsRegistry.addContract(await contractsRegistry.BMI_TREASURY_NAME(), NOTHING);
 
-    await contractsRegistry.addContract(await contractsRegistry.YIELD_GENERATOR_NAME(), NOTHING);
-    await contractsRegistry.addContract(await contractsRegistry.AAVE_PROTOCOL_NAME(), NOTHING);
-    await contractsRegistry.addContract(await contractsRegistry.COMPOUND_PROTOCOL_NAME(), NOTHING);
-    await contractsRegistry.addContract(await contractsRegistry.YEARN_PROTOCOL_NAME(), NOTHING);
+    await contractsRegistry.addContract(await contractsRegistry.DEFI_PROTOCOL_1_NAME(), NOTHING);
+    await contractsRegistry.addContract(await contractsRegistry.DEFI_PROTOCOL_2_NAME(), NOTHING);
+    await contractsRegistry.addContract(await contractsRegistry.DEFI_PROTOCOL_3_NAME(), NOTHING);
+    await contractsRegistry.addContract(await contractsRegistry.LIQUIDITY_BRIDGE_NAME(), NOTHING);
 
-    await contractsRegistry.addContract(await contractsRegistry.WETH_NAME(), weth.address);
+    await contractsRegistry.addContract(await contractsRegistry.WRAPPEDTOKEN_NAME(), weth.address);
     await contractsRegistry.addContract(await contractsRegistry.USDT_NAME(), stbl.address);
     await contractsRegistry.addContract(await contractsRegistry.BMI_NAME(), bmi.address);
-    await contractsRegistry.addContract(await contractsRegistry.SUSHISWAP_ROUTER_NAME(), sushiswapRouterMock.address);
+    await contractsRegistry.addContract(await contractsRegistry.AMM_ROUTER_NAME(), sushiswapRouterMock.address);
 
     await contractsRegistry.addProxyContract(
       await contractsRegistry.POLICY_BOOK_ADMIN_NAME(),
@@ -142,7 +160,6 @@ contract("LiquidityRegistry", async (accounts) => {
     await contractsRegistry.addProxyContract(await contractsRegistry.PRICE_FEED_NAME(), _priceFeed.address);
     await contractsRegistry.addProxyContract(await contractsRegistry.CLAIM_VOTING_NAME(), _claimVoting.address);
     await contractsRegistry.addProxyContract(await contractsRegistry.REINSURANCE_POOL_NAME(), _reinsurancePool.address);
-    await contractsRegistry.addProxyContract(await contractsRegistry.LIQUIDITY_MINING_NAME(), _liquidityMining.address);
     await contractsRegistry.addProxyContract(
       await contractsRegistry.BMI_COVER_STAKING_NAME(),
       _bmiCoverStaking.address
@@ -189,6 +206,7 @@ contract("LiquidityRegistry", async (accounts) => {
       await contractsRegistry.LEVERAGE_PORTFOLIO_VIEW_NAME(),
       _leveragePortfolioView.address
     );
+    await contractsRegistry.addProxyContract(await contractsRegistry.YIELD_GENERATOR_NAME(), _yieldGenerator.address);
 
     policyBookFabric = await PolicyBookFabric.at(await contractsRegistry.getPolicyBookFabricContract());
     policyBookAdmin = await PolicyBookAdmin.at(await contractsRegistry.getPolicyBookAdminContract());
@@ -204,10 +222,10 @@ contract("LiquidityRegistry", async (accounts) => {
     const policyRegistry = await PolicyRegistry.at(await contractsRegistry.getPolicyRegistryContract());
     const policyBookRegistry = await PolicyBookRegistry.at(await contractsRegistry.getPolicyBookRegistryContract());
     const policyQuote = await PolicyQuote.at(await contractsRegistry.getPolicyQuoteContract());
-    const liquidityMining = await LiquidityMining.at(await contractsRegistry.getLiquidityMiningContract());
-    const capitalPool = await CapitalPool.at(await contractsRegistry.getCapitalPoolContract());
+    capitalPool = await CapitalPool.at(await contractsRegistry.getCapitalPoolContract());
     const bmiCoverStakingView = await BMICoverStakingView.at(await contractsRegistry.getBMICoverStakingViewContract());
     const shieldMining = await ShieldMining.at(await contractsRegistry.getShieldMiningContract());
+    const yieldGenerator = await YieldGenerator.at(await contractsRegistry.getYieldGeneratorContract());
 
     await claimingRegistry.__ClaimingRegistry_init();
     await claimVoting.__ClaimVoting_init();
@@ -222,8 +240,8 @@ contract("LiquidityRegistry", async (accounts) => {
       _userLeveragePoolImpl.address
     );
     await policyBookFabric.__PolicyBookFabric_init();
-    await liquidityMining.__LiquidityMining_init();
     await capitalPool.__CapitalPool_init();
+    await yieldGenerator.__YieldGenerator_init(network);
 
     await contractsRegistry.injectDependencies(await contractsRegistry.PRICE_FEED_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.POLICY_REGISTRY_NAME());
@@ -238,19 +256,36 @@ contract("LiquidityRegistry", async (accounts) => {
     await contractsRegistry.injectDependencies(await contractsRegistry.POLICY_BOOK_ADMIN_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.NFT_STAKING_NAME());
 
-    await contractsRegistry.injectDependencies(await contractsRegistry.LIQUIDITY_MINING_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.CAPITAL_POOL_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.BMI_COVER_STAKING_VIEW_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.SHIELD_MINING_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.LEVERAGE_PORTFOLIO_VIEW_NAME());
+    await contractsRegistry.injectDependencies(await contractsRegistry.POLICY_QUOTE_NAME());
 
-    await sushiswapRouterMock.setReserve(stbl.address, wei(toBN(10 ** 3).toString()));
+    if (network == Networks.ETH || network == Networks.POL) {
+      await sushiswapRouterMock.setReserve(stbl.address, wei(toBN(10 ** 3).toString()));
+    } else if (network == Networks.BSC) {
+      await sushiswapRouterMock.setReserve(stbl.address, wei(toBN(10 ** 15).toString()));
+    }
     await sushiswapRouterMock.setReserve(weth.address, wei(toBN(10 ** 15).toString()));
     await sushiswapRouterMock.setReserve(bmi.address, wei(toBN(10 ** 15).toString()));
 
-    const initialDeposit = wei("1000");
+    await policyBookAdmin.setupPricingModel(
+      PRECISION.times(80),
+      PRECISION.times(80),
+      PRECISION.times(2),
+      PRECISION.times(2),
+      wei("10"),
+      PRECISION.times(10),
+      PRECISION.times(50),
+      PRECISION.times(25),
+      PRECISION.times(100)
+    );
 
-    await stbl.approve(policyBookFabric.address, initialDeposit);
+    initialDeposit = wei("1000");
+    stblInitialDeposit = getStableAmount("1000");
+
+    await stbl.approve(policyBookFabric.address, stblInitialDeposit);
 
     await setCurrentTime(1);
 
@@ -271,7 +306,12 @@ contract("LiquidityRegistry", async (accounts) => {
 
     await policyBookAdmin.whitelist(policyBookAddr, true);
 
-    const tx = await policyBookFabric.createLeveragePools(ContractType.VARIOUS, "User Leverage Pool", "USDT");
+    const tx = await policyBookFabric.createLeveragePools(
+      insuranceContract2,
+      ContractType.VARIOUS,
+      "User Leverage Pool",
+      "USDT"
+    );
     const userLeveragePoolAddress = tx.logs[0].args.at;
     userLeveragePool = await UserLeveragePool.at(userLeveragePoolAddress);
     await policyBookAdmin.whitelist(userLeveragePoolAddress, true);
@@ -279,6 +319,8 @@ contract("LiquidityRegistry", async (accounts) => {
     await rewardsGenerator.setRewardPerBlock(wei("100"));
 
     await capitalPool.setliquidityCushionBalance(toBN(wei("100000")));
+
+    withdrawalPeriod = toBN(await capitalPool.getWithdrawPeriod());
 
     await reverter.snapshot();
   });
@@ -294,7 +336,7 @@ contract("LiquidityRegistry", async (accounts) => {
       /// @dev When interacting with BMI contracts use 18 decimal amounts
       const initialDeposit = toBN(wei("1000"));
       await stbl.approve(policyBookFabric.address, 0);
-      await stbl.approve(policyBookFabric.address, initialDeposit);
+      await stbl.approve(policyBookFabric.address, stblInitialDeposit);
 
       //await setCurrentTime(1);
 
@@ -323,10 +365,13 @@ contract("LiquidityRegistry", async (accounts) => {
   }
 
   describe("tryToAddPolicyBook", async () => {
-    const stblAmount = oneToken.times(100).idiv(10 ** 12);
-    const liquidityAmount = oneToken.times(10);
+    let stblAmount;
+    let liquidityAmount;
 
     beforeEach("setup", async () => {
+      oneToken = getStableAmount("1");
+      stblAmount = oneToken.times(100);
+      liquidityAmount = toBN(wei("1")).times(10);
       await stbl.transfer(USER1, stblAmount);
       await stbl.approve(policyBook.address, stblAmount, { from: USER1 });
     });
@@ -375,10 +420,13 @@ contract("LiquidityRegistry", async (accounts) => {
   });
 
   describe("tryToRemovePolicyBook", async () => {
-    const stblAmount = oneToken.times(10000).idiv(10 ** 12);
-    const liquidityAmount = oneToken.times(1000);
+    let stblAmount;
+    let liquidityAmount;
 
     beforeEach("setup", async () => {
+      oneToken = getStableAmount("1");
+      stblAmount = oneToken.times(10000);
+      liquidityAmount = toBN(wei("1")).times(1000);
       await stbl.transfer(USER1, stblAmount);
       await stbl.approve(policyBook.address, stblAmount, { from: USER1 });
 
@@ -395,7 +443,7 @@ contract("LiquidityRegistry", async (accounts) => {
       assert.deepEqual(await liquidityRegistry.getPolicyBooksArr(USER1), [policyBook.address]);
 
       const timestamp = await getBlockTimestamp();
-      await setCurrentTime(timestamp + withdrawalPeriod + 10);
+      await setCurrentTime(toBN(timestamp).plus(withdrawalPeriod).plus(10));
 
       await policyBookFacade.withdrawLiquidity({ from: USER1 });
 
@@ -408,7 +456,7 @@ contract("LiquidityRegistry", async (accounts) => {
     });
 
     it("should not remove policy book address if user have staking", async () => {
-      const stakeAmount = oneToken.times(4);
+      const stakeAmount = toBN(wei("1")).times(4);
 
       await policyBook.approve(policyBook.address, liquidityAmount, { from: USER1 });
       await policyBook.approve(bmiCoverStaking.address, stakeAmount, { from: USER1 });
@@ -418,7 +466,7 @@ contract("LiquidityRegistry", async (accounts) => {
       await policyBookFacade.requestWithdrawal(liquidityAmount.minus(stakeAmount), { from: USER1 });
 
       const timestamp = await getBlockTimestamp();
-      await setCurrentTime(timestamp + withdrawalPeriod + 10);
+      await setCurrentTime(toBN(timestamp).plus(withdrawalPeriod).plus(10));
 
       await policyBookFacade.withdrawLiquidity({ from: USER1 });
 
@@ -435,11 +483,12 @@ contract("LiquidityRegistry", async (accounts) => {
       await policyBookFacade.requestWithdrawal(liquidityAmount, { from: USER1 });
 
       const epochsNumber = 5;
-      const coverTokensAmount = oneToken.times(1005);
+      const coverTokensAmount = toBN(wei("1")).times(1000);
       await policyBookFacade.buyPolicy(epochsNumber, coverTokensAmount, { from: USER1 });
-
+      await capitalPool.setliquidityCushionBalance(getStableAmount("1000"));
+      await capitalPool.sethardUsdtAccumulatedBalance(0);
       const timestamp = await getBlockTimestamp();
-      await setCurrentTime(timestamp + withdrawalPeriod + 10);
+      await setCurrentTime(toBN(timestamp).plus(withdrawalPeriod).plus(10));
 
       await policyBookFacade.withdrawLiquidity({ from: USER1 });
 
@@ -450,17 +499,23 @@ contract("LiquidityRegistry", async (accounts) => {
   });
 
   describe("getLiquidityInfos", async () => {
-    const stblAmount = oneToken.times(100).idiv(10 ** 12);
-    const liquidityAmount = oneToken.times(10);
-    const requestAmount = oneToken.times(4);
-    const policyBooksCount = 3;
+    let stblAmount;
+    let liquidityAmount;
+    let requestAmount;
+    let policyBooksCount = 3;
 
-    let stakeAmount = oneToken.times(3);
+    let stakeAmount;
     let policyBooks;
     let policyBookFacades;
     let policyBooksAddresses;
 
     before("setup", async () => {
+      oneToken = getStableAmount("1");
+      stblAmount = oneToken.times(100);
+      liquidityAmount = toBN(wei("1")).times(10);
+      requestAmount = toBN(wei("1")).times(4);
+      policyBooksCount = 3;
+      stakeAmount = toBN(wei("1")).times(3);
       await stbl.mintArbitrary(USER1, stblAmount.times(policyBooksCount));
       await stbl.approve(policyBook.address, stblAmount, { from: USER1 });
 
@@ -513,15 +568,20 @@ contract("LiquidityRegistry", async (accounts) => {
   });
 
   describe("getWithdrawalRequests", async () => {
-    const stblAmount = oneToken.times(10000).idiv(10 ** 12);
-    const liquidityAmount = oneToken.times(1000);
-    const requestAmount = oneToken.times(400);
-    const policyBooksCount = 3;
+    let stblAmount;
+    let liquidityAmount;
+    let requestAmount;
+    let policyBooksCount;
 
     let policyBooks, policyBookFacades;
     let policyBooksAddresses;
 
     beforeEach("setup", async () => {
+      oneToken = getStableAmount("1");
+      stblAmount = oneToken.times(10000);
+      liquidityAmount = toBN(wei("1")).times(1000);
+      requestAmount = toBN(wei("1")).times(400);
+      policyBooksCount = 3;
       await stbl.mintArbitrary(USER1, stblAmount.times(policyBooksCount));
       await stbl.approve(policyBook.address, 0, { from: USER1 });
       await stbl.approve(policyBook.address, stblAmount, { from: USER1 });
@@ -561,7 +621,13 @@ contract("LiquidityRegistry", async (accounts) => {
       assert.equal(toBN(firstInfo.requestAmount).toString(), requestAmount.toString());
       assert.equal(toBN(firstInfo.requestSTBLAmount).toString(), requestAmount.toString());
       assert.equal(toBN(firstInfo.availableLiquidity).toString(), liquidityAmount.plus(wei("1000")).toString());
-      assert.closeTo(Number(firstInfo.readyToWithdrawDate), (await time.latest()).toNumber() + withdrawalPeriod, 1); // more or less one seconde
+      assert.closeTo(
+        toBN(firstInfo.readyToWithdrawDate).toNumber(),
+        toBN(await time.latest())
+          .plus(withdrawalPeriod)
+          .toNumber(),
+        1
+      ); // more or less one seconde
       assert.equal(toBN(firstInfo.endWithdrawDate).toString(), 0);
 
       const secondInfo = requestsArr[1];
@@ -576,7 +642,7 @@ contract("LiquidityRegistry", async (accounts) => {
       await policyBookFacades[0].requestWithdrawal(requestAmount, { from: USER1 });
 
       const timestamp = await getBlockTimestamp();
-      await setCurrentTime(timestamp + withdrawalPeriod + 10);
+      await setCurrentTime(toBN(timestamp).plus(withdrawalPeriod).plus(10));
 
       const resultArr = await liquidityRegistry.getWithdrawalRequests(USER1, 0, 5);
 
@@ -599,92 +665,23 @@ contract("LiquidityRegistry", async (accounts) => {
       );
     });
 
-    it("should return correct array if user have allowed withdraw", async () => {
+    it("should return correct array if user have second wirhdraw request", async () => {
       await policyBookFacades[0].requestWithdrawal(requestAmount, { from: USER1 });
       await policyBookFacades[1].requestWithdrawal(requestAmount, { from: USER1 });
 
       const epochsNumber = 5;
-      const coverTokensAmount = oneToken.times(1800);
+      const coverTokensAmount = toBN(wei("1")).times(1600);
 
       await policyBookFacades[1].buyPolicy(epochsNumber, coverTokensAmount, { from: USER1 });
-
+      await capitalPool.setliquidityCushionBalance(getStableAmount("200"));
+      await capitalPool.sethardUsdtAccumulatedBalance(0);
       const timestamp = await getBlockTimestamp();
-      await setCurrentTime(timestamp + withdrawalPeriod + 10);
-
+      await setCurrentTime(toBN(timestamp).plus(withdrawalPeriod).plus(10));
       await policyBookFacades[1].withdrawLiquidity({ from: USER1 });
 
-      assert.equal(await policyBooks[1].getWithdrawalStatus(USER1), WithdrawalStatus.READY);
+      assert.equal(await policyBooks[1].getWithdrawalStatus(USER1), WithdrawalStatus.PENDING);
 
       const resultArr = await liquidityRegistry.getWithdrawalRequests(USER1, 0, 5);
-
-      const arrLength = resultArr[0];
-      const requestsArr = resultArr[1];
-
-      assert.equal(arrLength, 1);
-
-      const firstInfo = requestsArr[0];
-
-      assert.equal(firstInfo.policyBookAddr, policyBooksAddresses[0]);
-    });
-  });
-
-  describe("getWithdrawalSet", async () => {
-    const stblAmount = oneToken.times(10000).idiv(10 ** 12);
-    const liquidityAmount = oneToken.times(1000);
-    const requestAmount = oneToken.times(400);
-    const coverTokensAmount = oneToken.times(1800);
-    const epochsNumber = 5;
-    const policyBooksCount = 3;
-
-    let policyBooks, policyBookFacades;
-    let policyBooksAddresses;
-
-    beforeEach("setup", async () => {
-      await stbl.transfer(USER1, stblAmount);
-      await stbl.approve(policyBook.address, stblAmount, { from: USER1 });
-
-      [policyBooks, policyBookFacades] = await createPolicyBooks(policyBooksCount, true);
-      policyBooksAddresses = [];
-
-      for (let i = 0; i < policyBooksCount; i++) {
-        await stbl.approve(policyBooks[i].address, 0, { from: USER1 });
-        await stbl.approve(policyBooks[i].address, stblAmount, { from: USER1 });
-
-        await policyBooks[i].approve(policyBooks[i].address, 0, { from: USER1 });
-        await policyBooks[i].approve(policyBooks[i].address, liquidityAmount.plus(requestAmount), { from: USER1 });
-        await policyBookFacades[i].addLiquidity(liquidityAmount, { from: USER1 });
-
-        policyBooksAddresses.push(policyBooks[i].address);
-      }
-    });
-
-    it("should return correct values", async () => {
-      await policyBookFacades[0].requestWithdrawal(requestAmount, { from: USER1 });
-      await policyBookFacades[2].requestWithdrawal(requestAmount.times(2), { from: USER1 });
-
-      await policyBookFacades[0].buyPolicy(epochsNumber, coverTokensAmount, { from: USER1 });
-      await policyBookFacades[2].buyPolicy(epochsNumber, coverTokensAmount, { from: USER1 });
-
-      const timestamp = await getBlockTimestamp();
-      await setCurrentTime(timestamp + withdrawalPeriod + 10);
-
-      const withdrawal1Amount = BigNumber.min(
-        requestAmount,
-        toBN(await policyBooks[0].getAvailableBMIXWithdrawableAmount(USER1))
-      );
-
-      const withdrawal2Amount = BigNumber.min(
-        requestAmount.times(2),
-        toBN(await policyBooks[2].getAvailableBMIXWithdrawableAmount(USER1))
-      );
-
-      await policyBookFacades[0].withdrawLiquidity({ from: USER1 });
-      await policyBookFacades[2].withdrawLiquidity({ from: USER1 });
-
-      await policyBookFacades[0].addLiquidity(liquidityAmount, { from: USER1 });
-      await policyBookFacades[2].addLiquidity(liquidityAmount, { from: USER1 });
-
-      const resultArr = await liquidityRegistry.getWithdrawalSet(USER1, 0, 5);
 
       const arrLength = resultArr[0];
       const requestsArr = resultArr[1];
@@ -692,54 +689,101 @@ contract("LiquidityRegistry", async (accounts) => {
       assert.equal(arrLength, 2);
 
       const firstInfo = requestsArr[0];
-
-      assert.equal(firstInfo.policyBookAddr, policyBooksAddresses[0]);
-      assert.equal(toBN(firstInfo.requestAmount).toString(), requestAmount.minus(withdrawal1Amount).toString());
-      assert.equal(toBN(firstInfo.availableSTBLAmount).toString(), liquidityAmount.plus(1).toString());
-
       const secondInfo = requestsArr[1];
 
-      assert.equal(secondInfo.policyBookAddr, policyBooksAddresses[2]);
-      assert.closeTo(
-        toBN(secondInfo.requestAmount).toNumber(),
-        requestAmount.times(2).minus(withdrawal2Amount).toNumber(),
-        toBN(wei("0.0000001")).toNumber()
-      );
-      assert.equal(toBN(secondInfo.availableSTBLAmount).toString(), liquidityAmount.plus(1).toString());
+      assert.equal(firstInfo.policyBookAddr, policyBooksAddresses[0]);
+      assert.equal(secondInfo.policyBookAddr, policyBooksAddresses[1]);
+    });
+  });
+
+  describe("getPendingWithdrawalRequestAmount", async () => {
+    let stblAmount;
+    let liquidityAmount;
+    let requestAmount;
+    let policyBooksCount;
+
+    let policyBooks, policyBookFacades;
+    let policyBooksAddresses;
+
+    beforeEach("setup", async () => {
+      oneToken = getStableAmount("1");
+      stblAmount = oneToken.times(10000);
+      liquidityAmount = toBN(wei("1")).times(1000);
+      requestAmount = toBN(wei("1")).times(400);
+      policyBooksCount = 3;
+      await stbl.mintArbitrary(USER1, stblAmount.times(policyBooksCount));
+      await stbl.mintArbitrary(USER2, stblAmount.times(policyBooksCount));
+
+      [policyBooks, policyBookFacades] = await createPolicyBooks(policyBooksCount, true);
+      policyBooksAddresses = [];
+
+      for (let i = 0; i < policyBooksCount; i++) {
+        await stbl.approve(policyBooks[i].address, 0, { from: USER1 });
+        await stbl.approve(policyBooks[i].address, stblAmount, { from: USER1 });
+        await stbl.approve(policyBooks[i].address, 0, { from: USER2 });
+        await stbl.approve(policyBooks[i].address, stblAmount, { from: USER2 });
+
+        await policyBooks[i].approve(policyBooks[i].address, liquidityAmount.plus(requestAmount.times(2)), {
+          from: USER1,
+        });
+        await policyBookFacades[i].addLiquidity(liquidityAmount, { from: USER1 });
+        await policyBooks[i].approve(policyBooks[i].address, liquidityAmount.plus(requestAmount.times(2)), {
+          from: USER2,
+        });
+        await policyBookFacades[i].addLiquidity(liquidityAmount, { from: USER2 });
+
+        policyBooksAddresses.push(policyBooks[i].address);
+      }
     });
 
-    it("should return correct values if only one user in withdrawal set", async () => {
+    it("should return the right amount of pending withdrawal (pending)", async () => {
       await policyBookFacades[0].requestWithdrawal(requestAmount, { from: USER1 });
-      await policyBookFacades[1].requestWithdrawal(requestAmount, { from: USER1 });
-      await policyBookFacades[2].requestWithdrawal(requestAmount, { from: USER1 });
-
-      await policyBookFacades[0].buyPolicy(epochsNumber, coverTokensAmount, { from: USER1 });
+      await policyBookFacades[0].requestWithdrawal(requestAmount, { from: USER2 });
+      await policyBookFacades[2].requestWithdrawal(requestAmount.times(2), { from: USER1 });
 
       const timestamp = await getBlockTimestamp();
-      await setCurrentTime(timestamp + withdrawalPeriod + 10);
+      const rebalanceDuration = (await capitalPool.rebalanceDuration()).toNumber();
+      await setCurrentTime(timestamp + withdrawalPeriod.toNumber() - rebalanceDuration + 10);
 
-      const withdrawal1Amount = BigNumber.min(
-        requestAmount,
-        toBN(await policyBooks[0].getAvailableBMIXWithdrawableAmount(USER1))
-      );
+      assert.equal(await liquidityRegistry.getPolicyBooksArrLength(USER1), 3);
 
-      await policyBookFacades[0].withdrawLiquidity({ from: USER1 });
-      await policyBookFacades[2].withdrawLiquidity({ from: USER1 });
+      const result = await liquidityRegistry.getAllPendingWithdrawalRequestsAmount();
 
-      await policyBookFacades[0].addLiquidity(liquidityAmount, { from: USER1 });
+      assert.equal(toBN(result).toString(), requestAmount.times(4).toString());
+    });
 
-      const resultArr = await liquidityRegistry.getWithdrawalSet(USER1, 0, 5);
+    it("should return the right amount of pending withdrawal (ready)", async () => {
+      await policyBookFacades[0].requestWithdrawal(requestAmount, { from: USER1 });
+      await policyBookFacades[0].requestWithdrawal(requestAmount, { from: USER2 });
+      await policyBookFacades[2].requestWithdrawal(requestAmount.times(2), { from: USER1 });
 
-      const arrLength = resultArr[0];
-      const requestsArr = resultArr[1];
+      const timestamp = await getBlockTimestamp();
+      await setCurrentTime(toBN(timestamp).plus(withdrawalPeriod).plus(10));
 
-      assert.equal(arrLength, 1);
+      const result = await liquidityRegistry.getAllPendingWithdrawalRequestsAmount();
 
-      const firstInfo = requestsArr[0];
+      assert.equal(toBN(result).toString(), requestAmount.times(4).toString());
 
-      assert.equal(firstInfo.policyBookAddr, policyBooksAddresses[0]);
-      assert.equal(toBN(firstInfo.requestAmount).toString(), requestAmount.minus(withdrawal1Amount).toString());
-      assert.equal(toBN(firstInfo.availableSTBLAmount).toString(), liquidityAmount.plus(1).toString());
+      const result1 = await liquidityRegistry.getPendingWithdrawalAmountByPolicyBook(policyBooksAddresses[0]);
+      const result2 = await liquidityRegistry.getPendingWithdrawalAmountByPolicyBook(policyBooksAddresses[2]);
+
+      assert.equal(toBN(result1).toString(), requestAmount.times(2).toString());
+      assert.equal(toBN(result2).toString(), requestAmount.times(2).toString());
+    });
+
+    it("should return the right amount of pending withdrawal (expired)", async () => {
+      await policyBookFacades[0].requestWithdrawal(requestAmount, { from: USER1 });
+      await policyBookFacades[0].requestWithdrawal(requestAmount, { from: USER2 });
+      await policyBookFacades[2].requestWithdrawal(requestAmount.times(2), { from: USER1 });
+
+      const timestamp = await getBlockTimestamp();
+      await setCurrentTime(timestamp + withdrawalPeriod.toNumber() + readyToWithdrawPeriod + 10);
+
+      const result1 = await liquidityRegistry.getPendingWithdrawalAmountByPolicyBook(policyBooksAddresses[0]);
+      const result2 = await liquidityRegistry.getPendingWithdrawalAmountByPolicyBook(policyBooksAddresses[2]);
+
+      assert.equal(result1.toString(), 0);
+      assert.equal(result2.toString(), 0);
     });
   });
 });

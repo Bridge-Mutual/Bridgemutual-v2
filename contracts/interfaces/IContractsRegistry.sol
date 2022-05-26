@@ -3,21 +3,15 @@ pragma solidity ^0.7.4;
 pragma experimental ABIEncoderV2;
 
 interface IContractsRegistry {
-    function getUniswapRouterContract() external view returns (address);
+    function getAMMRouterContract() external view returns (address);
 
-    function getUniswapBMIToETHPairContract() external view returns (address);
+    function getAMMBMIToETHPairContract() external view returns (address);
 
-    function getUniswapBMIToUSDTPairContract() external view returns (address);
-
-    function getSushiswapRouterContract() external view returns (address);
-
-    function getSushiswapBMIToETHPairContract() external view returns (address);
-
-    function getSushiswapBMIToUSDTPairContract() external view returns (address);
+    function getAMMBMIToUSDTPairContract() external view returns (address);
 
     function getSushiSwapMasterChefV2Contract() external view returns (address);
 
-    function getWETHContract() external view returns (address);
+    function getWrappedTokenContract() external view returns (address);
 
     function getUSDTContract() external view returns (address);
 
@@ -33,7 +27,7 @@ interface IContractsRegistry {
 
     function getBMICoverStakingViewContract() external view returns (address);
 
-    function getLegacyRewardsGeneratorContract() external view returns (address);
+    function getBMITreasury() external view returns (address);
 
     function getRewardsGeneratorContract() external view returns (address);
 
@@ -41,7 +35,7 @@ interface IContractsRegistry {
 
     function getNFTStakingContract() external view returns (address);
 
-    function getLiquidityMiningContract() external view returns (address);
+    function getLiquidityBridgeContract() external view returns (address);
 
     function getClaimingRegistryContract() external view returns (address);
 
@@ -61,15 +55,13 @@ interface IContractsRegistry {
 
     function getPolicyQuoteContract() external view returns (address);
 
-    function getLegacyBMIStakingContract() external view returns (address);
-
     function getBMIStakingContract() external view returns (address);
 
     function getSTKBMIContract() external view returns (address);
 
-    function getVBMIContract() external view returns (address);
+    function getStkBMIStakingContract() external view returns (address);
 
-    function getLegacyLiquidityMiningStakingContract() external view returns (address);
+    function getVBMIContract() external view returns (address);
 
     function getLiquidityMiningStakingETHContract() external view returns (address);
 
@@ -77,19 +69,19 @@ interface IContractsRegistry {
 
     function getReputationSystemContract() external view returns (address);
 
-    function getAaveProtocolContract() external view returns (address);
+    function getDefiProtocol1Contract() external view returns (address);
 
     function getAaveLendPoolAddressProvdierContract() external view returns (address);
 
     function getAaveATokenContract() external view returns (address);
 
-    function getCompoundProtocolContract() external view returns (address);
+    function getDefiProtocol2Contract() external view returns (address);
 
     function getCompoundCTokenContract() external view returns (address);
 
     function getCompoundComptrollerContract() external view returns (address);
 
-    function getYearnProtocolContract() external view returns (address);
+    function getDefiProtocol3Contract() external view returns (address);
 
     function getYearnVaultContract() external view returns (address);
 

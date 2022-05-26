@@ -65,4 +65,8 @@ interface ILeveragePortfolio {
 
     /// @notice get count of coverage pools which get leveraged
     function countleveragedCoveragePools() external view returns (uint256);
+
+    function updateLiquidity(uint256 _lostLiquidity) external;
+
+    function forceUpdateBMICoverStakingRewardMultiplier() external;
 }

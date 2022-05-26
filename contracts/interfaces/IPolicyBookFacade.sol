@@ -2,6 +2,7 @@
 pragma solidity ^0.7.4;
 
 import "./IPolicyBook.sol";
+import "./IPolicyBookFabric.sol";
 import "./ILeveragePortfolio.sol";
 
 interface IPolicyBookFacade {
@@ -22,6 +23,30 @@ interface IPolicyBookFacade {
     function policyBook() external view returns (IPolicyBook);
 
     function userLiquidity(address account) external view returns (uint256);
+
+    /// @notice forces an update of RewardsGenerator multiplier
+    function forceUpdateBMICoverStakingRewardMultiplier() external;
+
+    /// @notice view function to get precise policy price
+    /// @param _epochsNumber is number of epochs to cover
+    /// @param _coverTokens is number of tokens to cover
+    /// @param _buyer address of the user who buy the policy
+    /// @return totalSeconds is number of seconds to cover
+    /// @return totalPrice is the policy price which will pay by the buyer
+    function getPolicyPrice(
+        uint256 _epochsNumber,
+        uint256 _coverTokens,
+        address _buyer
+    )
+        external
+        view
+        returns (
+            uint256 totalSeconds,
+            uint256 totalPrice,
+            uint256 pricePercentage
+        );
+
+    function secondsToEndCurrentEpoch() external view returns (uint256);
 
     /// @notice virtual funds deployed by reinsurance pool
     function VUreinsurnacePool() external view returns (uint256);
@@ -93,21 +118,6 @@ interface IPolicyBookFacade {
     /// @notice Let user to withdraw deposited liqiudity, access: ANY
     function withdrawLiquidity() external;
 
-    /// @notice fetches all the pools data
-    /// @return uint256 VUreinsurnacePool
-    /// @return uint256 LUreinsurnacePool
-    /// @return uint256 LUleveragePool
-    /// @return uint256 user leverage pool address
-    function getPoolsData()
-        external
-        view
-        returns (
-            uint256,
-            uint256,
-            uint256,
-            address
-        );
-
     /// @notice deploy leverage funds (RP lStable, ULP lStable)
     /// @param  deployedAmount uint256 the deployed amount to be added or substracted from the total liquidity
     /// @param leveragePool whether user leverage or reinsurance leverage
@@ -150,4 +160,19 @@ interface IPolicyBookFacade {
         returns (address[] memory _userLeveragePools);
 
     function countUserLeveragePools() external view returns (uint256);
+
+    /// @notice Getting info, access: ANY
+    /// @return _symbol is the symbol of PolicyBook (bmiXCover)
+    /// @return _insuredContract is an addres of insured contract
+    /// @return _contractType is a type of insured contract
+    /// @return _whitelisted is a state of whitelisting
+    function info()
+        external
+        view
+        returns (
+            string memory _symbol,
+            address _insuredContract,
+            IPolicyBookFabric.ContractType _contractType,
+            bool _whitelisted
+        );
 }

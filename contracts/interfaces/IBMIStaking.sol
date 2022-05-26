@@ -27,10 +27,6 @@ interface IBMIStaking {
 
     function stake(uint256 _amountBMI) external;
 
-    function maturityAt() external view returns (uint256);
-
-    function isBMIRewardUnlocked() external view returns (bool);
-
     function whenCanWithdrawBMIReward(address _address) external view returns (uint256);
 
     function unlockTokensToWithdraw(uint256 _amountBMIUnlock) external;

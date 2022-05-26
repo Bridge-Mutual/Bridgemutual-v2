@@ -7,6 +7,7 @@ import "@openzeppelin/contracts/math/Math.sol";
 import "@openzeppelin/contracts/math/SafeMath.sol";
 
 import "./interfaces/IPolicyBook.sol";
+import "./interfaces/IPolicyBookFacade.sol";
 import "./interfaces/IPolicyBookRegistry.sol";
 import "./interfaces/IContractsRegistry.sol";
 
@@ -114,11 +115,10 @@ contract PolicyBookRegistry is IPolicyBookRegistry, AbstractDependant {
                 "PolicyBookRegistry: Not a PolicyBook"
             );
 
-            (_durations[i], _allowances[i], ) = IPolicyBook(policyBooks[i]).getPolicyPrice(
-                epochsNumbers[i],
-                coversTokens[i],
-                msg.sender
-            );
+            (_durations[i], _allowances[i], ) = IPolicyBookFacade(
+                IPolicyBook(policyBooks[i]).policyBookFacade()
+            )
+                .getPolicyPrice(epochsNumbers[i], coversTokens[i], msg.sender);
         }
     }
 
@@ -315,15 +315,22 @@ contract PolicyBookRegistry is IPolicyBookRegistry, AbstractDependant {
         _stats = new PolicyBookStats[](policyBooks.length);
 
         for (uint256 i = 0; i < policyBooks.length; i++) {
+            address policyBookAddress;
+            if (isUserLeveragePool(policyBooks[i])) {
+                policyBookAddress = policyBooks[i];
+            } else {
+                policyBookAddress = address(IPolicyBook(policyBooks[i]).policyBookFacade());
+            }
             (
                 _stats[i].symbol,
                 _stats[i].insuredContract,
                 _stats[i].contractType,
                 _stats[i].whitelisted
-            ) = IPolicyBook(policyBooks[i]).info();
+            ) = IPolicyBookFacade(policyBookAddress).info();
 
             (
                 _stats[i].maxCapacity,
+                ,
                 _stats[i].totalSTBLLiquidity,
                 _stats[i].totalLeveragedLiquidity,
                 _stats[i].stakedSTBL,
@@ -352,10 +359,14 @@ contract PolicyBookRegistry is IPolicyBookRegistry, AbstractDependant {
                 _stats[i].insuredContract,
                 _stats[i].contractType,
                 _stats[i].whitelisted
-            ) = IPolicyBook(policyBooksByInsuredAddress[insuredContracts[i]]).info();
+            ) = IPolicyBookFacade(
+                IPolicyBook(policyBooksByInsuredAddress[insuredContracts[i]]).policyBookFacade()
+            )
+                .info();
 
             (
                 _stats[i].maxCapacity,
+                ,
                 _stats[i].totalSTBLLiquidity,
                 _stats[i].totalLeveragedLiquidity,
                 _stats[i].stakedSTBL,

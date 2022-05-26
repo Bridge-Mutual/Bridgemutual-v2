@@ -5,6 +5,8 @@ pragma experimental ABIEncoderV2;
 import "../UserLeveragePool.sol";
 
 contract UserLeveragePoolMock is UserLeveragePool {
+    using EnumerableSet for EnumerableSet.AddressSet;
+
     function triggerPremiumsDistribution() external withPremiumsDistribution {}
 
     function getSTBLToBMIXRatio() external view returns (uint256) {
@@ -23,5 +25,9 @@ contract UserLeveragePoolMock is UserLeveragePool {
 
     function burn(uint256 _amountToBurn) external {
         _burn(_msgSender(), _amountToBurn);
+    }
+
+    function addInvestedPools(address policyBookAddress) external {
+        leveragedCoveragePools.add(policyBookAddress);
     }
 }

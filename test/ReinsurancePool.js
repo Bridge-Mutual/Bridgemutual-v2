@@ -7,6 +7,9 @@ const ReinsurancePool = artifacts.require("ReinsurancePoolMock");
 const ContractsRegistry = artifacts.require("ContractsRegistry");
 const BMIMock = artifacts.require("BMIMock");
 const STBLMock = artifacts.require("STBLMock");
+const BSCSTBLMock = artifacts.require("BSCSTBLMock");
+const MATICSTBLMock = artifacts.require("MATICSTBLMock");
+
 const STKBMIToken = artifacts.require("STKBMIToken");
 const BMIStaking = artifacts.require("BMIStaking");
 const CapitalPool = artifacts.require("CapitalPoolMock");
@@ -22,10 +25,12 @@ const LeveragePortfolioView = artifacts.require("LeveragePortfolioView");
 const PolicyBookAdmin = artifacts.require("PolicyBookAdmin");
 const PolicyBookMock = artifacts.require("PolicyBookMock");
 const PolicyBookFacade = artifacts.require("PolicyBookFacadeMock");
+const PolicyQuote = artifacts.require("PolicyQuote");
 
 function toBN(number) {
   return new BigNumber(number);
 }
+const { getStableAmount, getNetwork, Networks } = require("./helpers/utils");
 
 contract("ReinsurancePool", async (accounts) => {
   const reverter = new Reverter(web3);
@@ -37,6 +42,9 @@ contract("ReinsurancePool", async (accounts) => {
   let bmiStaking;
   let capitalPool;
   let policyBookAdmin;
+  let policyQuote;
+
+  let network;
 
   const OWNER_USER = accounts[0];
   const OTHER_USER = accounts[1];
@@ -48,9 +56,17 @@ contract("ReinsurancePool", async (accounts) => {
   const PRECISION = toBN(10).pow(25);
 
   before("setup", async () => {
+    network = await getNetwork();
     const contractsRegistry = await ContractsRegistry.new();
     bmiToken = await BMIMock.new(OWNER_USER);
-    stblToken = await STBLMock.new("stbl", "stbl", 6);
+    if (network == Networks.ETH) {
+      stblToken = await STBLMock.new("stbl", "stbl", 6);
+    } else if (network == Networks.BSC) {
+      stblToken = await BSCSTBLMock.new();
+    } else if (network == Networks.POL) {
+      stbl = await MATICSTBLMock.new();
+      await stbl.initialize("stbl", "stbl", 6, accounts[0]);
+    }
     const policyBookImpl = await PolicyBookMock.new();
     const policyBookFacadeImpl = await PolicyBookFacade.new();
     const _userLeveragePoolImpl = await UserLeveragePool.new();
@@ -66,14 +82,16 @@ contract("ReinsurancePool", async (accounts) => {
     const _claimingRegistry = await ClaimingRegistry.new();
     const _yieldGenerator = await YieldGeneratorMock.new();
     const _policyBookAdmin = await PolicyBookAdmin.new();
+    const _policyQuote = await PolicyQuote.new();
     await contractsRegistry.__ContractsRegistry_init();
 
-    await contractsRegistry.addContract(await contractsRegistry.LEGACY_BMI_STAKING_NAME(), NOTHING);
     await contractsRegistry.addContract(await contractsRegistry.BMI_COVER_STAKING_NAME(), NOTHING);
-    await contractsRegistry.addContract(await contractsRegistry.LIQUIDITY_MINING_NAME(), NOTHING);
+
     await contractsRegistry.addContract(await contractsRegistry.LIQUIDITY_MINING_STAKING_ETH_NAME(), NOTHING);
     await contractsRegistry.addContract(await contractsRegistry.LIQUIDITY_MINING_STAKING_USDT_NAME(), NOTHING);
-    await contractsRegistry.addContract(await contractsRegistry.VBMI_NAME(), NOTHING);
+    await contractsRegistry.addContract(await contractsRegistry.STKBMI_STAKING_NAME(), NOTHING);
+    await contractsRegistry.addContract(await contractsRegistry.LIQUIDITY_BRIDGE_NAME(), NOTHING);
+    await contractsRegistry.addContract(await contractsRegistry.BMI_TREASURY_NAME(), NOTHING);
     await contractsRegistry.addProxyContract(
       await contractsRegistry.LEVERAGE_PORTFOLIO_VIEW_NAME(),
       _leveragePortfolioView.address
@@ -88,7 +106,7 @@ contract("ReinsurancePool", async (accounts) => {
     await contractsRegistry.addProxyContract(await contractsRegistry.STKBMI_NAME(), _stkBmiToken.address);
     await contractsRegistry.addProxyContract(await contractsRegistry.BMI_STAKING_NAME(), _bmiStaking.address);
     await contractsRegistry.addProxyContract(await contractsRegistry.REINSURANCE_POOL_NAME(), _reinsurancePool.address);
-
+    await contractsRegistry.addProxyContract(await contractsRegistry.POLICY_QUOTE_NAME(), _policyQuote.address);
     reinsurancePool = await ReinsurancePool.at(await contractsRegistry.getReinsurancePoolContract());
     const _capitalPool = await CapitalPool.new();
 
@@ -97,12 +115,9 @@ contract("ReinsurancePool", async (accounts) => {
       _liquidityRegistry.address
     );
     await contractsRegistry.addProxyContract(await contractsRegistry.CAPITAL_POOL_NAME(), _capitalPool.address);
-    await contractsRegistry.addProxyContract(await contractsRegistry.AAVE_PROTOCOL_NAME(), _aaveProtocol.address);
-    await contractsRegistry.addProxyContract(
-      await contractsRegistry.COMPOUND_PROTOCOL_NAME(),
-      _compoundProtocol.address
-    );
-    await contractsRegistry.addProxyContract(await contractsRegistry.YEARN_PROTOCOL_NAME(), _yearnProtocol.address);
+    await contractsRegistry.addProxyContract(await contractsRegistry.DEFI_PROTOCOL_1_NAME(), _aaveProtocol.address);
+    await contractsRegistry.addProxyContract(await contractsRegistry.DEFI_PROTOCOL_2_NAME(), _compoundProtocol.address);
+    await contractsRegistry.addProxyContract(await contractsRegistry.DEFI_PROTOCOL_3_NAME(), _yearnProtocol.address);
     await contractsRegistry.addProxyContract(
       await contractsRegistry.POLICY_BOOK_REGISTRY_NAME(),
       _policyBookRegistry.address
@@ -112,11 +127,13 @@ contract("ReinsurancePool", async (accounts) => {
       _claimingRegistry.address
     );
     await contractsRegistry.addProxyContract(await contractsRegistry.YIELD_GENERATOR_NAME(), _yieldGenerator.address);
+    await contractsRegistry.addProxyContract(await contractsRegistry.POLICY_QUOTE_NAME(), _policyQuote.address);
 
     stkBmiToken = await STKBMIToken.at(await contractsRegistry.getSTKBMIContract());
     bmiStaking = await BMIStaking.at(await contractsRegistry.getBMIStakingContract());
     policyBookAdmin = await PolicyBookAdmin.at(await contractsRegistry.getPolicyBookAdminContract());
     capitalPool = await CapitalPool.at(await contractsRegistry.getCapitalPoolContract());
+    const policyQuote = await PolicyQuote.at(await contractsRegistry.getPolicyQuoteContract());
 
     await bmiStaking.__BMIStaking_init("0");
     await stkBmiToken.__STKBMIToken_init();
@@ -133,6 +150,8 @@ contract("ReinsurancePool", async (accounts) => {
     await contractsRegistry.injectDependencies(await contractsRegistry.CAPITAL_POOL_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.POLICY_BOOK_ADMIN_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.LEVERAGE_PORTFOLIO_VIEW_NAME());
+    await contractsRegistry.injectDependencies(await contractsRegistry.POLICY_QUOTE_NAME());
+
     await reverter.snapshot();
   });
 
@@ -164,18 +183,15 @@ contract("ReinsurancePool", async (accounts) => {
     });
 
     it("should actually transfer tokens", async () => {
-      await stblToken.transfer(reinsurancePool.address, web3.utils.toWei("100", "mwei"));
+      await stblToken.transfer(reinsurancePool.address, getStableAmount("100"));
 
       await reinsurancePool.withdrawSTBLTo(OTHER_USER, web3.utils.toWei("50"), { from: CLAIM_VOTING_ADDRESS });
 
       assert.equal(
         toBN(await stblToken.balanceOf(reinsurancePool.address)).toString(),
-        toBN(web3.utils.toWei("50", "mwei")).toString()
+        getStableAmount("50").toString()
       );
-      assert.equal(
-        toBN(await stblToken.balanceOf(OTHER_USER)).toString(),
-        toBN(web3.utils.toWei("50", "mwei")).toString()
-      );
+      assert.equal(toBN(await stblToken.balanceOf(OTHER_USER)).toString(), getStableAmount("50").toString());
     });
   });
 

@@ -22,23 +22,26 @@ contract YieldGenerator is IYieldGenerator, OwnableUpgradeable, AbstractDependan
     using SafeMath for uint256;
     using Math for uint256;
 
-    uint256 public constant DEPOSIT_SAFETY_MARGIN = 15 * 10**24; //1.5
-    uint256 public constant PROTOCOLS_NUMBER = 3;
+    uint256 public constant ETH_PROTOCOLS_NUMBER = 3;
+    uint256 public constant BSC_PROTOCOLS_NUMBER = 0;
+    uint256 public constant POL_PROTOCOLS_NUMBER = 0;
 
     ERC20 public stblToken;
     ICapitalPool public capitalPool;
 
-    uint256 public totalDeposit;
+    uint256 public override totalDeposit;
     uint256 public whitelistedProtocols;
 
     // index => defi protocol
     mapping(uint256 => DefiProtocol) internal defiProtocols;
     // index => defi protocol addresses
-    mapping(uint256 => address) internal defiProtocolsAddresses;
+    mapping(uint256 => address) public defiProtocolsAddresses;
     // available protcols to deposit/withdraw (weighted and threshold is true)
     uint256[] internal availableProtocols;
     // selected protocols for multiple deposit/withdraw
     uint256[] internal _selectedProtocols;
+
+    uint256 public override protocolsNumber;
 
     event DefiDeposited(
         uint256 indexed protocolIndex,
@@ -52,26 +55,22 @@ contract YieldGenerator is IYieldGenerator, OwnableUpgradeable, AbstractDependan
         _;
     }
 
-    modifier updateDefiProtocols(bool isDeposit) {
-        _updateDefiProtocols(isDeposit);
+    modifier updateDefiProtocols(uint256 amount, bool isDeposit) {
+        _updateDefiProtocols(amount, isDeposit);
         _;
     }
 
-    function __YieldGenerator_init() external initializer {
+    function __YieldGenerator_init(Networks _network) external initializer {
         __Ownable_init();
-        whitelistedProtocols = 3;
-        // setup AAVE
-        defiProtocols[uint256(DefiProtocols.AAVE)].targetAllocation = 45 * PRECISION;
-        defiProtocols[uint256(DefiProtocols.AAVE)].whiteListed = true;
-        defiProtocols[uint256(DefiProtocols.AAVE)].threshold = true;
-        // setup Compound
-        defiProtocols[uint256(DefiProtocols.COMPOUND)].targetAllocation = 45 * PRECISION;
-        defiProtocols[uint256(DefiProtocols.COMPOUND)].whiteListed = true;
-        defiProtocols[uint256(DefiProtocols.COMPOUND)].threshold = true;
-        // setup Yearn
-        defiProtocols[uint256(DefiProtocols.YEARN)].targetAllocation = 10 * PRECISION;
-        defiProtocols[uint256(DefiProtocols.YEARN)].whiteListed = true;
-        defiProtocols[uint256(DefiProtocols.YEARN)].threshold = true;
+
+        uint256 networkIndex = uint256(_network);
+        if (networkIndex == uint256(Networks.ETH)) {
+            protocolsNumber = ETH_PROTOCOLS_NUMBER;
+        } else if (networkIndex == uint256(Networks.BSC)) {
+            protocolsNumber = BSC_PROTOCOLS_NUMBER;
+        } else if (networkIndex == uint256(Networks.POL)) {
+            protocolsNumber = POL_PROTOCOLS_NUMBER;
+        }
     }
 
     function setDependencies(IContractsRegistry _contractsRegistry)
@@ -81,12 +80,18 @@ contract YieldGenerator is IYieldGenerator, OwnableUpgradeable, AbstractDependan
     {
         stblToken = ERC20(_contractsRegistry.getUSDTContract());
         capitalPool = ICapitalPool(_contractsRegistry.getCapitalPoolContract());
-        defiProtocolsAddresses[uint256(DefiProtocols.AAVE)] = _contractsRegistry
-            .getAaveProtocolContract();
-        defiProtocolsAddresses[uint256(DefiProtocols.COMPOUND)] = _contractsRegistry
-            .getCompoundProtocolContract();
-        defiProtocolsAddresses[uint256(DefiProtocols.YEARN)] = _contractsRegistry
-            .getYearnProtocolContract();
+        if (protocolsNumber >= 1) {
+            defiProtocolsAddresses[uint256(DefiProtocols.DefiProtocol1)] = _contractsRegistry
+                .getDefiProtocol1Contract();
+        }
+        if (protocolsNumber >= 2) {
+            defiProtocolsAddresses[uint256(DefiProtocols.DefiProtocol2)] = _contractsRegistry
+                .getDefiProtocol2Contract();
+        }
+        if (protocolsNumber >= 3) {
+            defiProtocolsAddresses[uint256(DefiProtocols.DefiProtocol3)] = _contractsRegistry
+                .getDefiProtocol3Contract();
+        }
     }
 
     /// @notice deposit stable coin into multiple defi protocols using formulas, access: capital pool
@@ -103,25 +108,31 @@ contract YieldGenerator is IYieldGenerator, OwnableUpgradeable, AbstractDependan
         return _aggregateDepositWithdrawFunction(amount, false);
     }
 
-    /// @notice set the protocol settings for each defi protocol (allocations, whitelisted, threshold), access: owner
+    function updateProtocolNumbers(uint256 _protocolsNumber) external onlyOwner {
+        require(_protocolsNumber > 0 && _protocolsNumber <= 5, "YG: protocol number is invalid");
+
+        protocolsNumber = _protocolsNumber;
+    }
+
+    /// @notice set the protocol settings for each defi protocol (allocations, whitelisted, depositCost), access: owner
     /// @param whitelisted bool[] list of whitelisted values for each protocol
     /// @param allocations uint256[] list of allocations value for each protocol
-    /// @param threshold bool[] list of threshold values for each protocol
+    /// @param depositCost uint256[] list of depositCost values for each protocol
     function setProtocolSettings(
         bool[] calldata whitelisted,
         uint256[] calldata allocations,
-        bool[] calldata threshold
+        uint256[] calldata depositCost
     ) external override onlyOwner {
         require(
-            whitelisted.length == PROTOCOLS_NUMBER &&
-                allocations.length == PROTOCOLS_NUMBER &&
-                threshold.length == PROTOCOLS_NUMBER,
+            whitelisted.length == protocolsNumber &&
+                allocations.length == protocolsNumber &&
+                depositCost.length == protocolsNumber,
             "YG: Invlaid arr length"
         );
 
         whitelistedProtocols = 0;
         bool _whiteListed;
-        for (uint256 i = 0; i < PROTOCOLS_NUMBER; i++) {
+        for (uint256 i = 0; i < protocolsNumber; i++) {
             _whiteListed = whitelisted[i];
 
             if (_whiteListed) {
@@ -131,15 +142,21 @@ contract YieldGenerator is IYieldGenerator, OwnableUpgradeable, AbstractDependan
             defiProtocols[i].targetAllocation = allocations[i];
 
             defiProtocols[i].whiteListed = _whiteListed;
-            defiProtocols[i].threshold = threshold[i];
+            defiProtocols[i].depositCost = depositCost[i];
         }
     }
 
     /// @notice claim rewards for all defi protocols and send them to reinsurance pool, access: owner
     function claimRewards() external override onlyOwner {
-        for (uint256 i = 0; i < PROTOCOLS_NUMBER; i++) {
+        for (uint256 i = 0; i < protocolsNumber; i++) {
             IDefiProtocol(defiProtocolsAddresses[i]).claimRewards();
         }
+    }
+
+    /// @notice returns defi protocol APR by its index
+    /// @param index uint256 the index of the defi protocol
+    function getOneDayGain(uint256 index) public view returns (uint256) {
+        return IDefiProtocol(defiProtocolsAddresses[index]).getOneDayGain();
     }
 
     /// @notice returns defi protocol info by its index
@@ -148,89 +165,116 @@ contract YieldGenerator is IYieldGenerator, OwnableUpgradeable, AbstractDependan
         external
         view
         override
-        returns (DefiProtocol memory _defiProtocol)
+        returns (
+            uint256 _targetAllocation,
+            uint256 _currentAllocation,
+            uint256 _rebalanceWeight,
+            uint256 _depositedAmount,
+            bool _whiteListed,
+            bool _threshold,
+            uint256 _totalValue,
+            uint256 _depositCost
+        )
     {
-        _defiProtocol = DefiProtocol(
-            defiProtocols[index].targetAllocation,
-            _calcProtocolCurrentAllocation(index),
-            defiProtocols[index].rebalanceWeight,
-            defiProtocols[index].depositedAmount,
-            defiProtocols[index].whiteListed,
-            defiProtocols[index].threshold,
-            defiProtocols[index].withdrawMax,
-            IDefiProtocol(defiProtocolsAddresses[index]).totalValue()
-        );
+        _targetAllocation = defiProtocols[index].targetAllocation;
+        _currentAllocation = _calcProtocolCurrentAllocation(index);
+        _rebalanceWeight = defiProtocols[index].rebalanceWeight;
+        _depositedAmount = defiProtocols[index].depositedAmount;
+        _whiteListed = defiProtocols[index].whiteListed;
+        _threshold = defiProtocols[index].threshold;
+        _totalValue = IDefiProtocol(defiProtocolsAddresses[index]).totalValue();
+        _depositCost = defiProtocols[index].depositCost;
     }
 
     function _aggregateDepositWithdrawFunction(uint256 amount, bool isDeposit)
         internal
-        updateDefiProtocols(isDeposit)
+        updateDefiProtocols(amount, isDeposit)
         returns (uint256 _actualAmount)
     {
-        uint256 _protocolIndex;
+        if (availableProtocols.length == 0) {
+            return _actualAmount;
+        }
+
         uint256 _protocolsNo = _howManyProtocols(amount, isDeposit);
         if (_protocolsNo == 1) {
-            if (availableProtocols.length == 0) {
-                return _actualAmount;
-            }
-
-            if (isDeposit) {
-                _protocolIndex = _getProtocolOfMaxWeight();
-                // deposit 100% to this protocol
-                _depoist(_protocolIndex, amount, PERCENTAGE_100);
-                _actualAmount = amount;
-            } else {
-                _protocolIndex = _getProtocolOfMinWeight();
-                // withdraw 100% from this protocol
-                _actualAmount = _withdraw(_protocolIndex, amount, PERCENTAGE_100);
-            }
+            _actualAmount = _aggregateDepositWithdrawFunctionForOneProtocol(amount, isDeposit);
         } else if (_protocolsNo > 1) {
             delete _selectedProtocols;
 
-            uint256 _totalWeight;
-            uint256 _depoistedAmount;
-            uint256 _protocolRebalanceAllocation;
-
-            for (uint256 i = 0; i < _protocolsNo; i++) {
-                if (availableProtocols.length == 0) {
-                    break;
-                }
-                if (isDeposit) {
-                    _protocolIndex = _getProtocolOfMaxWeight();
-                } else {
-                    _protocolIndex = _getProtocolOfMinWeight();
-                }
-                _totalWeight = _totalWeight.add(defiProtocols[_protocolIndex].rebalanceWeight);
-                _selectedProtocols.push(_protocolIndex);
-            }
+            uint256 _totalWeight = _calcTotalWeight(_protocolsNo, isDeposit);
 
             if (_selectedProtocols.length > 0) {
                 for (uint256 i = 0; i < _selectedProtocols.length; i++) {
-                    _protocolRebalanceAllocation = _calcRebalanceAllocation(
-                        _selectedProtocols[i],
-                        _totalWeight
+                    _actualAmount = _actualAmount.add(
+                        _aggregateDepositWithdrawFunctionForMultipleProtocol(
+                            isDeposit,
+                            amount,
+                            i,
+                            _totalWeight
+                        )
                     );
-
-                    if (isDeposit) {
-                        // deposit % allocation to this protocol
-                        _depoistedAmount = amount.mul(_protocolRebalanceAllocation).div(
-                            PERCENTAGE_100
-                        );
-                        _depoist(
-                            _selectedProtocols[i],
-                            _depoistedAmount,
-                            _protocolRebalanceAllocation
-                        );
-                        _actualAmount += _depoistedAmount;
-                    } else {
-                        _actualAmount += _withdraw(
-                            _selectedProtocols[i],
-                            amount.mul(_protocolRebalanceAllocation).div(PERCENTAGE_100),
-                            _protocolRebalanceAllocation
-                        );
-                    }
                 }
             }
+        }
+    }
+
+    function _aggregateDepositWithdrawFunctionForOneProtocol(uint256 amount, bool isDeposit)
+        internal
+        returns (uint256 _actualAmount)
+    {
+        uint256 _protocolIndex;
+        if (isDeposit) {
+            _protocolIndex = _getProtocolOfMaxWeight();
+            // deposit 100% to this protocol
+            _depoist(_protocolIndex, amount, PERCENTAGE_100);
+            _actualAmount = amount;
+        } else {
+            _protocolIndex = _getProtocolOfMinWeight();
+            // withdraw 100% from this protocol
+            _actualAmount = _withdraw(_protocolIndex, amount, PERCENTAGE_100);
+        }
+    }
+
+    function _aggregateDepositWithdrawFunctionForMultipleProtocol(
+        bool isDeposit,
+        uint256 amount,
+        uint256 index,
+        uint256 _totalWeight
+    ) internal returns (uint256 _actualAmount) {
+        uint256 _protocolRebalanceAllocation =
+            _calcRebalanceAllocation(_selectedProtocols[index], _totalWeight);
+
+        if (isDeposit) {
+            // deposit % allocation to this protocol
+            uint256 _depoistedAmount =
+                amount.mul(_protocolRebalanceAllocation).div(PERCENTAGE_100);
+            _depoist(_selectedProtocols[index], _depoistedAmount, _protocolRebalanceAllocation);
+            _actualAmount = _depoistedAmount;
+        } else {
+            _actualAmount = _withdraw(
+                _selectedProtocols[index],
+                amount.mul(_protocolRebalanceAllocation).div(PERCENTAGE_100),
+                _protocolRebalanceAllocation
+            );
+        }
+    }
+
+    function _calcTotalWeight(uint256 _protocolsNo, bool isDeposit)
+        internal
+        returns (uint256 _totalWeight)
+    {
+        uint256 _protocolIndex;
+        for (uint256 i = 0; i < _protocolsNo; i++) {
+            if (availableProtocols.length == 0) {
+                break;
+            }
+            if (isDeposit) {
+                _protocolIndex = _getProtocolOfMaxWeight();
+            } else {
+                _protocolIndex = _getProtocolOfMinWeight();
+            }
+            _totalWeight = _totalWeight.add(defiProtocols[_protocolIndex].rebalanceWeight);
+            _selectedProtocols.push(_protocolIndex);
         }
     }
 
@@ -248,7 +292,9 @@ contract YieldGenerator is IYieldGenerator, OwnableUpgradeable, AbstractDependan
 
         IDefiProtocol(defiProtocolsAddresses[_protocolIndex]).deposit(_amount);
 
-        defiProtocols[_protocolIndex].depositedAmount += _amount;
+        defiProtocols[_protocolIndex].depositedAmount = defiProtocols[_protocolIndex]
+            .depositedAmount
+            .add(_amount);
 
         totalDeposit = totalDeposit.add(_amount);
 
@@ -277,7 +323,9 @@ contract YieldGenerator is IYieldGenerator, OwnableUpgradeable, AbstractDependan
             _amount
         );
 
-        defiProtocols[_protocolIndex].depositedAmount -= _actualAmountWithdrawn;
+        defiProtocols[_protocolIndex].depositedAmount = defiProtocols[_protocolIndex]
+            .depositedAmount
+            .sub(_actualAmountWithdrawn);
 
         totalDeposit = totalDeposit.sub(_actualAmountWithdrawn);
 
@@ -297,7 +345,7 @@ contract YieldGenerator is IYieldGenerator, OwnableUpgradeable, AbstractDependan
         if (isDeposit) {
             _no1 = whitelistedProtocols.mul(rebalanceAmount);
         } else {
-            _no1 = PROTOCOLS_NUMBER.mul(rebalanceAmount);
+            _no1 = protocolsNumber.mul(rebalanceAmount);
         }
 
         uint256 _no2 = _getCurrentvSTBLVolume();
@@ -308,10 +356,10 @@ contract YieldGenerator is IYieldGenerator, OwnableUpgradeable, AbstractDependan
 
     /// @notice update defi protocols rebalance weight and threshold status
     /// @param isDeposit bool determine the rebalance is for deposit or withdraw
-    function _updateDefiProtocols(bool isDeposit) internal {
+    function _updateDefiProtocols(uint256 amount, bool isDeposit) internal {
         delete availableProtocols;
 
-        for (uint256 i = 0; i < PROTOCOLS_NUMBER; i++) {
+        for (uint256 i = 0; i < protocolsNumber; i++) {
             uint256 _targetAllocation = defiProtocols[i].targetAllocation;
             uint256 _currentAllocation = _calcProtocolCurrentAllocation(i);
             uint256 _diffAllocation;
@@ -323,6 +371,7 @@ contract YieldGenerator is IYieldGenerator, OwnableUpgradeable, AbstractDependan
                 } else if (_currentAllocation >= _targetAllocation) {
                     _diffAllocation = 0;
                 }
+                _reevaluateThreshold(i, _diffAllocation.mul(amount).div(PERCENTAGE_100));
             } else {
                 if (_currentAllocation > _targetAllocation) {
                     // max weight
@@ -341,12 +390,11 @@ contract YieldGenerator is IYieldGenerator, OwnableUpgradeable, AbstractDependan
             );
 
             if (
-                defiProtocols[i].rebalanceWeight > 0 &&
-                (
-                    isDeposit
-                        ? defiProtocols[i].whiteListed && defiProtocols[i].threshold
-                        : _currentAllocation > 0
-                )
+                isDeposit
+                    ? defiProtocols[i].rebalanceWeight > 0 &&
+                        defiProtocols[i].whiteListed &&
+                        defiProtocols[i].threshold
+                    : _currentAllocation > 0
             ) {
                 availableProtocols.push(i);
             }
@@ -453,6 +501,20 @@ contract YieldGenerator is IYieldGenerator, OwnableUpgradeable, AbstractDependan
             capitalPool.virtualUsdtAccumulatedBalance().sub(capitalPool.liquidityCushionBalance());
     }
 
+    function _reevaluateThreshold(uint256 _protocolIndex, uint256 depositAmount) internal {
+        uint256 _protocolOneDayGain = getOneDayGain(_protocolIndex);
+
+        uint256 _oneDayReturn = _protocolOneDayGain.mul(depositAmount).div(PRECISION);
+
+        uint256 _depositCost = defiProtocols[_protocolIndex].depositCost;
+
+        if (_oneDayReturn < _depositCost) {
+            defiProtocols[_protocolIndex].threshold = false;
+        } else if (_oneDayReturn >= _depositCost) {
+            defiProtocols[_protocolIndex].threshold = true;
+        }
+    }
+
     function reevaluateDefiProtocolBalances()
         external
         override
@@ -462,15 +524,17 @@ contract YieldGenerator is IYieldGenerator, OwnableUpgradeable, AbstractDependan
 
         uint256 _totalValue;
         uint256 _depositedAmount;
-        for (uint256 index = 0; index < PROTOCOLS_NUMBER; index++) {
-            if (index == uint256(DefiProtocols.COMPOUND)) {
+        for (uint256 index = 0; index < protocolsNumber; index++) {
+            // this case apply for compound only in ETH
+            if (index == uint256(DefiProtocols.DefiProtocol2)) {
                 IDefiProtocol(defiProtocolsAddresses[index]).updateTotalValue();
             }
+
             _totalValue = IDefiProtocol(defiProtocolsAddresses[index]).totalValue();
             _depositedAmount = defiProtocols[index].depositedAmount;
 
             if (_totalValue < _depositedAmount) {
-                _lostAmount += _depositedAmount.sub(_totalValue);
+                _lostAmount = _lostAmount.add((_depositedAmount.sub(_totalValue)));
             }
         }
     }
@@ -480,7 +544,7 @@ contract YieldGenerator is IYieldGenerator, OwnableUpgradeable, AbstractDependan
         uint256 _depositedAmount;
         uint256 _lostAmount;
         uint256 _totalLostAmount;
-        for (uint256 index = 0; index < PROTOCOLS_NUMBER; index++) {
+        for (uint256 index = 0; index < protocolsNumber; index++) {
             _totalValue = IDefiProtocol(defiProtocolsAddresses[index]).totalValue();
 
             _depositedAmount = defiProtocols[index].depositedAmount;
@@ -489,10 +553,10 @@ contract YieldGenerator is IYieldGenerator, OwnableUpgradeable, AbstractDependan
                 _lostAmount = _depositedAmount.sub(_totalValue);
                 defiProtocols[index].depositedAmount = _depositedAmount.sub(_lostAmount);
                 IDefiProtocol(defiProtocolsAddresses[index]).updateTotalDeposit(_lostAmount);
-                _totalLostAmount += _lostAmount;
+                _totalLostAmount = _totalLostAmount.add(_lostAmount);
             }
         }
 
-        totalDeposit -= _lostAmount;
+        totalDeposit = totalDeposit.sub(_totalLostAmount);
     }
 }

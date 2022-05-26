@@ -3,6 +3,7 @@ pragma solidity ^0.7.4;
 pragma experimental ABIEncoderV2;
 
 import "@openzeppelin/contracts/math/SafeMath.sol";
+import "@openzeppelin/contracts/math/Math.sol";
 import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import "@openzeppelin/contracts/token/ERC20/SafeERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
@@ -15,7 +16,6 @@ import "./interfaces/IContractsRegistry.sol";
 import "./interfaces/ILeveragePortfolio.sol";
 import "./interfaces/ILiquidityRegistry.sol";
 import "./interfaces/IPolicyBook.sol";
-import "./interfaces/IPolicyBookFacade.sol";
 import "./interfaces/IPolicyBookRegistry.sol";
 import "./interfaces/IYieldGenerator.sol";
 import "./interfaces/ILeveragePortfolioView.sol";
@@ -27,6 +27,9 @@ import "./Globals.sol";
 contract CapitalPool is ICapitalPool, OwnableUpgradeable, AbstractDependant {
     using SafeERC20 for ERC20;
     using SafeMath for uint256;
+    using Math for uint256;
+
+    uint256 public constant ADDITIONAL_WITHDRAW_PERIOD = 1 days;
 
     IClaimingRegistry public claimingRegistry;
     IPolicyBookRegistry public policyBookRegistry;
@@ -55,6 +58,9 @@ contract CapitalPool is ICapitalPool, OwnableUpgradeable, AbstractDependant {
     // new state post v2 deployemnt
     bool public isLiqCushionPaused;
     bool public automaticHardRebalancing;
+
+    uint256 public override rebalanceDuration;
+    bool private deployFundsToDefi;
 
     event PoolBalancesUpdated(
         uint256 hardUsdtAccumulatedBalance,
@@ -92,6 +98,14 @@ contract CapitalPool is ICapitalPool, OwnableUpgradeable, AbstractDependant {
         _;
     }
 
+    modifier onlyClaimingRegistry() {
+        require(
+            address(claimingRegistry) == _msgSender(),
+            "CP: Caller is not claiming registry contract"
+        );
+        _;
+    }
+
     modifier onlyMaintainer() {
         require(_msgSender() == maintainer, "CP: not maintainer");
         _;
@@ -100,6 +114,8 @@ contract CapitalPool is ICapitalPool, OwnableUpgradeable, AbstractDependant {
     function __CapitalPool_init() external initializer {
         __Ownable_init();
         maintainer = _msgSender();
+        rebalanceDuration = 3 days;
+        deployFundsToDefi = true;
     }
 
     function setDependencies(IContractsRegistry _contractsRegistry)
@@ -136,61 +152,43 @@ contract CapitalPool is ICapitalPool, OwnableUpgradeable, AbstractDependant {
         factors.vStblOfCP = regularCoverageBalance[_msgSender()];
         factors.premiumPrice = _stblAmount.sub(_protocolFee);
 
-        IPolicyBookFacade policyBookFacade =
-            IPolicyBookFacade(IPolicyBook(_msgSender()).policyBookFacade());
-        /// TODO for v2 it is one user leverage pool ,after v2 it need to refactor premium function
-        /// to get the list of leveraged pools
-        (
-            factors.vStblDeployedByRP,
-            ,
-            factors.lStblDeployedByLP,
-            factors.userLeveragePoolAddress
-        ) = policyBookFacade.getPoolsData();
+        factors.policyBookFacade = IPolicyBookFacade(IPolicyBook(_msgSender()).policyBookFacade());
+
+        factors.vStblDeployedByRP = DecimalsConverter.convertFrom18(
+            factors.policyBookFacade.VUreinsurnacePool(),
+            stblDecimals
+        );
+
+        factors.userLeveragePoolsCount = factors.policyBookFacade.countUserLeveragePools();
+        factors.epochsNumber = _epochsNumber;
 
         uint256 reinsurancePoolPremium;
-        uint256 userLeveragePoolPremium;
         uint256 coveragePoolPremium;
-        if (factors.vStblDeployedByRP == 0 && factors.lStblDeployedByLP == 0) {
+
+        if (factors.vStblDeployedByRP == 0 && factors.userLeveragePoolsCount == 0) {
             coveragePoolPremium = factors.premiumPrice;
         } else {
-            factors.stblAmount = _stblAmount;
-            factors.premiumDurationInDays = _epochsNumber.mul(EPOCH_DAYS_AMOUNT);
-            (
-                reinsurancePoolPremium,
-                userLeveragePoolPremium,
-                coveragePoolPremium
-            ) = _calcPremiumForAllPools(factors);
+            (reinsurancePoolPremium, coveragePoolPremium) = _calcPremiumForAllPools(factors);
         }
 
         uint256 reinsurancePoolTotalPremium = reinsurancePoolPremium.add(_protocolFee);
-        reinsurancePoolBalance += reinsurancePoolTotalPremium;
+        reinsurancePoolBalance = reinsurancePoolBalance.add(reinsurancePoolTotalPremium);
         reinsurancePool.addPolicyPremium(
             _epochsNumber,
             DecimalsConverter.convertTo18(reinsurancePoolTotalPremium, stblDecimals)
         );
 
-        if (userLeveragePoolPremium > 0) {
-            leveragePoolBalance[factors.userLeveragePoolAddress] += userLeveragePoolPremium;
-            ILeveragePortfolio(factors.userLeveragePoolAddress).addPolicyPremium(
-                _epochsNumber,
-                DecimalsConverter.convertTo18(userLeveragePoolPremium, stblDecimals)
-            );
-        }
-
-        regularCoverageBalance[_msgSender()] += coveragePoolPremium;
-        hardUsdtAccumulatedBalance += _stblAmount;
-        virtualUsdtAccumulatedBalance += _stblAmount;
+        regularCoverageBalance[_msgSender()] = regularCoverageBalance[_msgSender()].add(
+            coveragePoolPremium
+        );
+        hardUsdtAccumulatedBalance = hardUsdtAccumulatedBalance.add(_stblAmount);
+        virtualUsdtAccumulatedBalance = virtualUsdtAccumulatedBalance.add(_stblAmount);
         return DecimalsConverter.convertTo18(coveragePoolPremium, stblDecimals);
     }
 
     function _calcPremiumForAllPools(PremiumFactors memory factors)
         internal
-        view
-        returns (
-            uint256 reinsurancePoolPremium,
-            uint256 userLeveragePoolPremium,
-            uint256 coveragePoolPremium
-        )
+        returns (uint256 reinsurancePoolPremium, uint256 coveragePoolPremium)
     {
         uint256 _totalCoverTokens =
             DecimalsConverter.convertFrom18(
@@ -198,33 +196,33 @@ contract CapitalPool is ICapitalPool, OwnableUpgradeable, AbstractDependant {
                 stblDecimals
             );
 
-        uint256 poolUtilizationRation =
-            _totalCoverTokens.mul(PERCENTAGE_100).div(factors.vStblOfCP);
+        factors.poolUtilizationRation = _totalCoverTokens.mul(PERCENTAGE_100).div(
+            factors.vStblOfCP
+        );
 
-        if (factors.lStblDeployedByLP > 0) {
-            factors.participatedlStblDeployedByLP = factors
-                .lStblDeployedByLP
-                .mul(
-                leveragePortfolioView.calcM(poolUtilizationRation, factors.userLeveragePoolAddress)
-            )
-                .div(PERCENTAGE_100);
+        uint256 _participatedLeverageAmounts;
+
+        if (factors.userLeveragePoolsCount > 0) {
+            address[] memory _userLeverageArr =
+                factors.policyBookFacade.listUserLeveragePools(0, factors.userLeveragePoolsCount);
+
+            for (uint256 i = 0; i < _userLeverageArr.length; i++) {
+                _participatedLeverageAmounts = _participatedLeverageAmounts.add(
+                    clacParticipatedLeverageAmount(factors, _userLeverageArr[i])
+                );
+            }
         }
-
         uint256 totalLiqforPremium =
-            factors.vStblOfCP.add(factors.vStblDeployedByRP).add(
-                factors.participatedlStblDeployedByLP
-            );
+            factors.vStblOfCP.add(factors.vStblDeployedByRP).add(_participatedLeverageAmounts);
 
-        uint256 premiumPerDay =
-            factors.premiumPrice.mul(PRECISION).div(
-                factors.premiumDurationInDays.mul(stblDecimals)
-            );
-
-        factors.premiumPerDeployment = (premiumPerDay.mul(stblDecimals)).div(totalLiqforPremium);
+        factors.premiumPerDeployment = (factors.premiumPrice.mul(PRECISION)).div(
+            totalLiqforPremium
+        );
 
         reinsurancePoolPremium = _calcReinsurancePoolPremium(factors);
-        if (factors.lStblDeployedByLP > 0) {
-            userLeveragePoolPremium = _calcUserLeveragePoolPremium(factors);
+
+        if (factors.userLeveragePoolsCount > 0) {
+            _calcUserLeveragePoolPremium(factors);
         }
         coveragePoolPremium = _calcCoveragePoolPremium(factors);
     }
@@ -238,9 +236,11 @@ contract CapitalPool is ICapitalPool, OwnableUpgradeable, AbstractDependant {
         onlyPolicyBook
         broadcastBalancing
     {
-        regularCoverageBalance[_msgSender()] += _stblAmount;
-        hardUsdtAccumulatedBalance += _stblAmount;
-        virtualUsdtAccumulatedBalance += _stblAmount;
+        regularCoverageBalance[_msgSender()] = regularCoverageBalance[_msgSender()].add(
+            _stblAmount
+        );
+        hardUsdtAccumulatedBalance = hardUsdtAccumulatedBalance.add(_stblAmount);
+        virtualUsdtAccumulatedBalance = virtualUsdtAccumulatedBalance.add(_stblAmount);
     }
 
     //// @notice distributes the hardSTBL from the leverage providers
@@ -252,9 +252,9 @@ contract CapitalPool is ICapitalPool, OwnableUpgradeable, AbstractDependant {
         onlyPolicyBook
         broadcastBalancing
     {
-        leveragePoolBalance[_msgSender()] += _stblAmount;
-        hardUsdtAccumulatedBalance += _stblAmount;
-        virtualUsdtAccumulatedBalance += _stblAmount;
+        leveragePoolBalance[_msgSender()] = leveragePoolBalance[_msgSender()].add(_stblAmount);
+        hardUsdtAccumulatedBalance = hardUsdtAccumulatedBalance.add(_stblAmount);
+        virtualUsdtAccumulatedBalance = virtualUsdtAccumulatedBalance.add(_stblAmount);
     }
 
     /// @notice distributes the hardSTBL from the reinsurance pool
@@ -266,15 +266,16 @@ contract CapitalPool is ICapitalPool, OwnableUpgradeable, AbstractDependant {
         onlyReinsurancePool
         broadcastBalancing
     {
-        reinsurancePoolBalance += _stblAmount;
-        hardUsdtAccumulatedBalance += _stblAmount;
-        virtualUsdtAccumulatedBalance += _stblAmount;
+        reinsurancePoolBalance = reinsurancePoolBalance.add(_stblAmount);
+        hardUsdtAccumulatedBalance = hardUsdtAccumulatedBalance.add(_stblAmount);
+        virtualUsdtAccumulatedBalance = virtualUsdtAccumulatedBalance.add(_stblAmount);
     }
 
-    /// TODO if user not withdraw the amount after request withdraw , should the amount returned back to capital pool
     /// @notice rebalances pools acording to v2 specification and dao enforced policies
     /// @dev  emits PoolBalancesUpdated
     function rebalanceLiquidityCushion() public override broadcastBalancing onlyMaintainer {
+        require(!isLiqCushionPaused, "CP: liqudity cushion is pasued");
+
         //check defi protocol balances
         (, uint256 _lostAmount) = yieldGenerator.reevaluateDefiProtocolBalances();
 
@@ -287,17 +288,19 @@ contract CapitalPool is ICapitalPool, OwnableUpgradeable, AbstractDependant {
 
         // hard rebalancing - Stop all withdrawals from all pools
         if (isLiqCushionPaused) {
-            hardUsdtAccumulatedBalance += liquidityCushionBalance;
+            hardUsdtAccumulatedBalance = hardUsdtAccumulatedBalance.add(liquidityCushionBalance);
             liquidityCushionBalance = 0;
             return;
         }
 
         uint256 _pendingClaimAmount = claimingRegistry.getAllPendingClaimsAmount();
+        uint256 _pendingRewardAmount = claimingRegistry.getAllPendingRewardsAmount();
 
         uint256 _pendingWithdrawlAmount =
             liquidityRegistry.getAllPendingWithdrawalRequestsAmount();
 
-        uint256 _requiredLiquidity = _pendingWithdrawlAmount.add(_pendingClaimAmount);
+        uint256 _requiredLiquidity =
+            _pendingWithdrawlAmount.add(_pendingClaimAmount).add(_pendingRewardAmount);
 
         _requiredLiquidity = DecimalsConverter.convertFrom18(_requiredLiquidity, stblDecimals);
 
@@ -314,35 +317,44 @@ contract CapitalPool is ICapitalPool, OwnableUpgradeable, AbstractDependant {
 
             _actualAmount = yieldGenerator.deposit(_deposit);
             if (_actualAmount < _deposit) {
-                hardUsdtAccumulatedBalance += _deposit.sub(_actualAmount);
+                hardUsdtAccumulatedBalance = hardUsdtAccumulatedBalance.add(
+                    (_deposit.sub(_actualAmount))
+                );
             }
         } else if (_withdraw > 0) {
             _actualAmount = yieldGenerator.withdraw(_withdraw);
             if (_actualAmount < _withdraw) {
-                liquidityCushionBalance -= _withdraw.sub(_actualAmount);
+                liquidityCushionBalance = liquidityCushionBalance.sub(
+                    (_withdraw.sub(_actualAmount))
+                );
             }
         }
 
         emit LiquidityCushionRebalanced(_requiredLiquidity, _withdraw, _deposit);
     }
 
+    /// @param _rebalanceDuration parameter passes in seconds
+    function setRebalanceDuration(uint256 _rebalanceDuration) public onlyOwner {
+        require(_rebalanceDuration <= 7 days, "CP: invalid rebalance duration");
+        rebalanceDuration = _rebalanceDuration;
+    }
+
     function defiHardRebalancing() public onlyOwner {
         (uint256 _totalDeposit, uint256 _lostAmount) =
             yieldGenerator.reevaluateDefiProtocolBalances();
 
-        ///TODO use threshold to evaluate lost amount
         if (_lostAmount > 0 && _totalDeposit > _lostAmount) {
             uint256 _lostPercentage =
-                (_totalDeposit.sub(_lostAmount)).mul(PERCENTAGE_100).div(_totalDeposit);
+                _lostAmount.mul(PERCENTAGE_100).div(virtualUsdtAccumulatedBalance);
 
             address[] memory _policyBooksArr =
                 policyBookRegistry.list(0, policyBookRegistry.count());
             ///@dev we should update all coverage pools liquidity before leverage pool
-            /// in order to do leverage rebalancing for all pools
+            /// in order to do leverage rebalancing for all pools at once
             for (uint256 i = 0; i < _policyBooksArr.length; i++) {
                 if (policyBookRegistry.isUserLeveragePool(_policyBooksArr[i])) continue;
 
-                _updatePolicyBookLiquidity(_policyBooksArr[i], _lostPercentage, false);
+                _updatePoolLiquidity(_policyBooksArr[i], 0, _lostPercentage, PoolType.COVERAGE);
             }
 
             address[] memory _userLeverageArr =
@@ -353,40 +365,114 @@ contract CapitalPool is ICapitalPool, OwnableUpgradeable, AbstractDependant {
                 );
 
             for (uint256 i = 0; i < _userLeverageArr.length; i++) {
-                _updatePolicyBookLiquidity(_userLeverageArr[i], _lostPercentage, true);
+                _updatePoolLiquidity(_userLeverageArr[i], 0, _lostPercentage, PoolType.LEVERAGE);
             }
             yieldGenerator.defiHardRebalancing();
         }
     }
 
-    function _updatePolicyBookLiquidity(
-        address _policyBookAddress,
+    /// @dev when calling this function we have to have either _lostAmount == 0 or _lostPercentage == 0
+    function _updatePoolLiquidity(
+        address _poolAddress,
+        uint256 _lostAmount,
         uint256 _lostPercentage,
-        bool _isLeveragePool
+        PoolType poolType
     ) internal {
-        IPolicyBook _policyBook = IPolicyBook(_policyBookAddress);
-        uint256 _currentLiquidity = _policyBook.totalLiquidity();
-        uint256 _newLiquidity = _currentLiquidity.mul(_lostPercentage).div(PERCENTAGE_100);
+        IPolicyBook _pool = IPolicyBook(_poolAddress);
 
-        _policyBook.updateLiquidity(_newLiquidity);
-
-        uint256 _stblLostAmount =
-            DecimalsConverter.convertFrom18(_currentLiquidity.sub(_newLiquidity), stblDecimals);
-
-        if (_isLeveragePool) {
-            leveragePoolBalance[_policyBookAddress] -= _stblLostAmount;
-        } else {
-            regularCoverageBalance[_policyBookAddress] -= _stblLostAmount;
+        if (_lostPercentage > 0) {
+            uint256 _currentLiquidity = _pool.totalLiquidity();
+            _lostAmount = _currentLiquidity.mul(_lostPercentage).div(PERCENTAGE_100);
         }
-        virtualUsdtAccumulatedBalance -= _stblLostAmount;
+        _pool.updateLiquidity(_lostAmount);
+
+        uint256 _stblLostAmount = DecimalsConverter.convertFrom18(_lostAmount, stblDecimals);
+
+        if (poolType == PoolType.COVERAGE) {
+            regularCoverageBalance[_poolAddress] = regularCoverageBalance[_poolAddress].sub(
+                _stblLostAmount
+            );
+        } else if (poolType == PoolType.LEVERAGE) {
+            leveragePoolBalance[_poolAddress] = leveragePoolBalance[_poolAddress].sub(
+                _stblLostAmount
+            );
+        } else if (poolType == PoolType.REINSURANCE) {
+            reinsurancePoolBalance = reinsurancePoolBalance.sub(_stblLostAmount);
+        }
+
+        if (_lostPercentage > 0) {
+            virtualUsdtAccumulatedBalance = virtualUsdtAccumulatedBalance.sub(_stblLostAmount);
+        }
     }
 
     /// @notice Fullfils policybook claims by transfering the balance to claimer
     /// @param _claimer, address of the claimer recieving the withdraw
-    /// @param _stblAmount uint256 amount to be withdrawn
-    function fundClaim(address _claimer, uint256 _stblAmount) external override onlyPolicyBook {
-        _withdrawFromLiquidityCushion(_claimer, _stblAmount);
-        regularCoverageBalance[_msgSender()] -= _stblAmount;
+    /// @param _stblClaimAmount uint256 amount to of the claim
+    function fundClaim(
+        address _claimer,
+        uint256 _stblClaimAmount,
+        address _policyBookAddress
+    ) external override onlyClaimingRegistry returns (uint256 _actualAmount) {
+        _actualAmount = _withdrawFromLiquidityCushion(_claimer, _stblClaimAmount);
+
+        _dispatchLiquidities(
+            _policyBookAddress,
+            DecimalsConverter.convertTo18(_actualAmount, stblDecimals)
+        );
+    }
+
+    function _dispatchLiquidities(address _policyBookAddress, uint256 _claimAmount) internal {
+        IPolicyBook policyBook = IPolicyBook(_policyBookAddress);
+        IPolicyBookFacade policyBookFacade = policyBook.policyBookFacade();
+
+        uint256 totalCoveragedLiquidity = policyBook.totalLiquidity();
+        uint256 totalLeveragedLiquidity = policyBookFacade.totalLeveragedLiquidity();
+        uint256 totalPoolLiquidity = totalCoveragedLiquidity.add(totalLeveragedLiquidity);
+
+        // COVERAGE CONTRIBUTION
+        uint256 coverageContribution =
+            totalCoveragedLiquidity.mul(PERCENTAGE_100).div(totalPoolLiquidity);
+        uint256 coverageLoss = _claimAmount.mul(coverageContribution).div(PERCENTAGE_100);
+        _updatePoolLiquidity(_policyBookAddress, coverageLoss, 0, PoolType.COVERAGE);
+
+        // LEVERAGE CONTRIBUTION
+        address[] memory _userLeverageArr =
+            policyBookFacade.listUserLeveragePools(0, policyBookFacade.countUserLeveragePools());
+        for (uint256 i = 0; i < _userLeverageArr.length; i++) {
+            uint256 leverageContribution =
+                policyBookFacade.LUuserLeveragePool(_userLeverageArr[i]).mul(PERCENTAGE_100).div(
+                    totalPoolLiquidity
+                );
+            uint256 leverageLoss = _claimAmount.mul(leverageContribution).div(PERCENTAGE_100);
+            _updatePoolLiquidity(_userLeverageArr[i], leverageLoss, 0, PoolType.LEVERAGE);
+        }
+
+        // REINSURANCE CONTRIBUTION
+        uint256 reinsuranceContribution =
+            (policyBookFacade.LUreinsurnacePool().add(policyBookFacade.VUreinsurnacePool()))
+                .mul(PERCENTAGE_100)
+                .div(totalPoolLiquidity);
+        uint256 reinsuranceLoss = _claimAmount.mul(reinsuranceContribution).div(PERCENTAGE_100);
+        _updatePoolLiquidity(address(reinsurancePool), reinsuranceLoss, 0, PoolType.REINSURANCE);
+    }
+
+    /// @notice Fullfils policybook claims by transfering the balance to claimer
+    /// @param _voter, address of the voter recieving the withdraw
+    /// @param _stblRewardAmount uint256 amount to of the reward
+    function fundReward(address _voter, uint256 _stblRewardAmount)
+        external
+        override
+        onlyClaimingRegistry
+        returns (uint256 _actualAmount)
+    {
+        _actualAmount = _withdrawFromLiquidityCushion(_voter, _stblRewardAmount);
+
+        _updatePoolLiquidity(
+            address(reinsurancePool),
+            DecimalsConverter.convertTo18(_actualAmount, stblDecimals),
+            0,
+            PoolType.REINSURANCE
+        );
     }
 
     /// @notice Withdraws liquidity from a specific policbybook to the user
@@ -396,13 +482,17 @@ contract CapitalPool is ICapitalPool, OwnableUpgradeable, AbstractDependant {
         address _sender,
         uint256 _stblAmount,
         bool _isLeveragePool
-    ) external override onlyPolicyBook broadcastBalancing {
-        _withdrawFromLiquidityCushion(_sender, _stblAmount);
+    ) external override onlyPolicyBook broadcastBalancing returns (uint256 _actualAmount) {
+        _actualAmount = _withdrawFromLiquidityCushion(_sender, _stblAmount);
 
         if (_isLeveragePool) {
-            leveragePoolBalance[_msgSender()] -= _stblAmount;
+            leveragePoolBalance[_msgSender()] = leveragePoolBalance[_msgSender()].sub(
+                _actualAmount
+            );
         } else {
-            regularCoverageBalance[_msgSender()] -= _stblAmount;
+            regularCoverageBalance[_msgSender()] = regularCoverageBalance[_msgSender()].sub(
+                _actualAmount
+            );
         }
     }
 
@@ -415,6 +505,11 @@ contract CapitalPool is ICapitalPool, OwnableUpgradeable, AbstractDependant {
         require(_paused != isLiqCushionPaused, "CP: invalid paused state");
 
         isLiqCushionPaused = _paused;
+
+        if (isLiqCushionPaused) {
+            hardUsdtAccumulatedBalance = hardUsdtAccumulatedBalance.add(liquidityCushionBalance);
+            liquidityCushionBalance = 0;
+        }
     }
 
     function automateHardRebalancing(bool _isAutomatic) public onlyOwner {
@@ -423,16 +518,58 @@ contract CapitalPool is ICapitalPool, OwnableUpgradeable, AbstractDependant {
         automaticHardRebalancing = _isAutomatic;
     }
 
+    function allowDeployFundsToDefi(bool _deployFundsToDefi) public onlyOwner {
+        require(_deployFundsToDefi != deployFundsToDefi, "CP: invalid input");
+
+        //can not disabled deploy funds to defi in case there is deposited amount
+        if (!_deployFundsToDefi) {
+            require(yieldGenerator.totalDeposit() == 0, "CP: Can't disable deploy funds");
+        }
+
+        deployFundsToDefi = _deployFundsToDefi;
+
+        // check isLiqCushionPaused isn't have the same state before update it
+        if (isLiqCushionPaused != !deployFundsToDefi) {
+            pauseLiquidityCushionRebalancing(!deployFundsToDefi);
+        }
+    }
+
     function _withdrawFromLiquidityCushion(address _sender, uint256 _stblAmount)
         internal
         broadcastBalancing
+        returns (uint256 _actualAmount)
     {
-        require(liquidityCushionBalance >= _stblAmount, "CP: insuficient liquidity");
+        //withdraw from hardbalance if defi deployment is pasued
+        if (!deployFundsToDefi) {
+            require(hardUsdtAccumulatedBalance >= _stblAmount, "CP: insuficient liquidity");
+            hardUsdtAccumulatedBalance = hardUsdtAccumulatedBalance.sub(_stblAmount);
+            _actualAmount = _stblAmount;
+        } else {
+            //withdraw from liq cushion service if defi deployment is enabled
+            require(!isLiqCushionPaused, "CP: withdraw is pasued");
 
-        liquidityCushionBalance = liquidityCushionBalance.sub(_stblAmount);
-        virtualUsdtAccumulatedBalance -= _stblAmount;
+            if (_stblAmount > liquidityCushionBalance) {
+                uint256 _diffAmount = _stblAmount.sub(liquidityCushionBalance);
+                if (hardUsdtAccumulatedBalance >= _diffAmount) {
+                    hardUsdtAccumulatedBalance = hardUsdtAccumulatedBalance.sub(_diffAmount);
+                    liquidityCushionBalance = liquidityCushionBalance.add(_diffAmount);
+                } else if (hardUsdtAccumulatedBalance > 0) {
+                    liquidityCushionBalance = liquidityCushionBalance.add(
+                        hardUsdtAccumulatedBalance
+                    );
+                    hardUsdtAccumulatedBalance = 0;
+                }
+            }
+            require(liquidityCushionBalance > 0, "CP: insuficient liquidity");
 
-        stblToken.safeTransfer(_sender, _stblAmount);
+            _actualAmount = Math.min(_stblAmount, liquidityCushionBalance);
+
+            liquidityCushionBalance = liquidityCushionBalance.sub(_actualAmount);
+        }
+
+        virtualUsdtAccumulatedBalance = virtualUsdtAccumulatedBalance.sub(_actualAmount);
+
+        stblToken.safeTransfer(_sender, _actualAmount);
     }
 
     function _calcReinsurancePoolPremium(PremiumFactors memory factors)
@@ -440,26 +577,45 @@ contract CapitalPool is ICapitalPool, OwnableUpgradeable, AbstractDependant {
         pure
         returns (uint256)
     {
-        return (
-            factors
-                .premiumPerDeployment
-                .mul(factors.vStblDeployedByRP)
-                .mul(factors.premiumDurationInDays)
-                .div(PRECISION)
-        );
+        return (factors.premiumPerDeployment.mul(factors.vStblDeployedByRP).div(PRECISION));
     }
 
-    function _calcUserLeveragePoolPremium(PremiumFactors memory factors)
-        internal
-        pure
-        returns (uint256)
-    {
+    function _calcUserLeveragePoolPremium(PremiumFactors memory factors) internal {
+        address[] memory _userLeverageArr =
+            factors.policyBookFacade.listUserLeveragePools(0, factors.userLeveragePoolsCount);
+
+        uint256 premium;
+        uint256 _participatedLeverageAmount;
+        for (uint256 i = 0; i < _userLeverageArr.length; i++) {
+            _participatedLeverageAmount = clacParticipatedLeverageAmount(
+                factors,
+                _userLeverageArr[i]
+            );
+            premium = (
+                factors.premiumPerDeployment.mul(_participatedLeverageAmount).div(PRECISION)
+            );
+
+            leveragePoolBalance[_userLeverageArr[i]] = leveragePoolBalance[_userLeverageArr[i]]
+                .add(premium);
+            ILeveragePortfolio(_userLeverageArr[i]).addPolicyPremium(
+                factors.epochsNumber,
+                DecimalsConverter.convertTo18(premium, stblDecimals)
+            );
+        }
+    }
+
+    function clacParticipatedLeverageAmount(
+        PremiumFactors memory factors,
+        address userLeveragePool
+    ) internal view returns (uint256) {
         return
-            factors
-                .premiumPerDeployment
-                .mul(factors.participatedlStblDeployedByLP)
-                .mul(factors.premiumDurationInDays)
-                .div(PRECISION);
+            DecimalsConverter
+                .convertFrom18(
+                factors.policyBookFacade.LUuserLeveragePool(userLeveragePool),
+                stblDecimals
+            )
+                .mul(leveragePortfolioView.calcM(factors.poolUtilizationRation, userLeveragePool))
+                .div(PERCENTAGE_100);
     }
 
     function _calcCoveragePoolPremium(PremiumFactors memory factors)
@@ -467,12 +623,7 @@ contract CapitalPool is ICapitalPool, OwnableUpgradeable, AbstractDependant {
         pure
         returns (uint256)
     {
-        return
-            factors
-                .premiumPerDeployment
-                .mul(factors.vStblOfCP)
-                .mul(factors.premiumDurationInDays)
-                .div(PRECISION);
+        return factors.premiumPerDeployment.mul(factors.vStblOfCP).div(PRECISION);
     }
 
     function getDepositAndWithdraw(uint256 _requiredLiquidity)
@@ -487,5 +638,9 @@ contract CapitalPool is ICapitalPool, OwnableUpgradeable, AbstractDependant {
         } else if (_requiredLiquidity < _availableBalance) {
             deposit = _availableBalance.sub(_requiredLiquidity);
         }
+    }
+
+    function getWithdrawPeriod() external view override returns (uint256) {
+        return rebalanceDuration + ADDITIONAL_WITHDRAW_PERIOD;
     }
 }

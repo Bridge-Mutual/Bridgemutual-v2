@@ -8,6 +8,7 @@ import "../interfaces/IContractsRegistry.sol";
 import "../interfaces/IClaimVoting.sol";
 
 import "../interfaces/tokens/IVBMI.sol";
+import "../interfaces/IStkBMIStaking.sol";
 
 import "../abstract/AbstractDependant.sol";
 
@@ -15,6 +16,7 @@ contract VBMI is IVBMI, ERC20PermitUpgradeable, AbstractDependant {
     IERC20Upgradeable public stkBMIToken;
     IClaimVoting public claimVoting;
     address public reinsurancePoolAddress;
+    IStkBMIStaking public stkBMIStaking;
 
     event UserSlashed(address user, uint256 amount);
     event Locked(address user, uint256 amount);
@@ -38,27 +40,19 @@ contract VBMI is IVBMI, ERC20PermitUpgradeable, AbstractDependant {
         stkBMIToken = IERC20Upgradeable(_contractsRegistry.getSTKBMIContract());
         claimVoting = IClaimVoting(_contractsRegistry.getClaimVotingContract());
         reinsurancePoolAddress = _contractsRegistry.getReinsurancePoolContract();
+        stkBMIStaking = IStkBMIStaking(_contractsRegistry.getStkBMIStakingContract());
     }
 
-    function lockStkBMI(uint256 amount) external override {
-        require(amount > 0, "VBMI: can't lock 0 tokens");
+    function unlockStkBMIFor(address user) external override {
+        require(_msgSender() == 0x28234C11ea2665c25D60523d80659b123130da80);
 
-        stkBMIToken.transferFrom(_msgSender(), address(this), amount);
-        _mint(_msgSender(), amount);
+        uint256 userAmount = balanceOf(user);
 
-        emit Locked(_msgSender(), amount);
-    }
+        stkBMIToken.transfer(address(stkBMIStaking), userAmount);
 
-    function unlockStkBMI(uint256 amount) external override {
-        require(
-            claimVoting.canWithdraw(_msgSender()),
-            "VBMI: Can't withdraw, there are pending votes"
-        );
+        stkBMIStaking.lockStkBMIFor(user, userAmount);
 
-        _burn(_msgSender(), amount);
-        stkBMIToken.transfer(_msgSender(), amount);
-
-        emit Unlocked(_msgSender(), amount);
+        emit Unlocked(user, userAmount);
     }
 
     function _transfer(

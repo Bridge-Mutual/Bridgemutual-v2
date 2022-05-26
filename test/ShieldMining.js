@@ -9,7 +9,6 @@ const ClaimingRegistry = artifacts.require("ClaimingRegistry");
 const ClaimingRegistryMock = artifacts.require("ClaimingRegistryMock");
 const CompoundProtocol = artifacts.require("CompoundProtocol");
 const ContractsRegistry = artifacts.require("ContractsRegistry");
-const LiquidityMining = artifacts.require("LiquidityMining");
 const LiquidityMiningStakingMock = artifacts.require("LiquidityMiningStakingMock");
 const LiquidityRegistry = artifacts.require("LiquidityRegistry");
 const NFTStaking = artifacts.require("NFTStaking");
@@ -26,9 +25,12 @@ const Proxy = artifacts.require("TransparentUpgradeableProxy");
 const ReinsurancePool = artifacts.require("ReinsurancePoolMock");
 const RewardsGenerator = artifacts.require("RewardsGenerator");
 const STBLMock = artifacts.require("STBLMock");
+const BSCSTBLMock = artifacts.require("BSCSTBLMock");
+const MATICSTBLMock = artifacts.require("MATICSTBLMock");
+
 const SushiswapRouterMock = artifacts.require("UniswapRouterMock");
-const UserLeveragePool = artifacts.require("UserLeveragePool");
-const WETHMock = artifacts.require("WETHMock");
+const UserLeveragePool = artifacts.require("UserLeveragePoolMock");
+const WETHMock = artifacts.require("WrappedTokenMock");
 const YearnProtocol = artifacts.require("YearnProtocol");
 const YieldGenerator = artifacts.require("YieldGenerator");
 const YieldGeneratorMock = artifacts.require("YieldGeneratorMock");
@@ -41,6 +43,7 @@ const truffleAssert = require("truffle-assertions");
 const { advanceBlockAtTime } = require("./helpers/ganacheTimeTraveler");
 const setCurrentTime = require("./helpers/ganacheTimeTraveler");
 const { time } = require("@openzeppelin/test-helpers");
+const { getStableAmount, getNetwork, Networks } = require("./helpers/utils");
 
 const { assert } = require("chai");
 const { ethers } = require("ethers");
@@ -58,6 +61,7 @@ function toBN(number) {
 }
 
 const { toWei } = web3.utils;
+const wei = web3.utils.toWei;
 
 contract("ShieldMining", async (accounts) => {
   const reverter = new Reverter(web3);
@@ -66,7 +70,6 @@ contract("ShieldMining", async (accounts) => {
   let policyBookMock;
   let bmiCoverStaking;
   let bmiCoverStakingView;
-  let liquidityMining;
   let stbl;
   let bmi;
 
@@ -99,6 +102,10 @@ contract("ShieldMining", async (accounts) => {
   let policyBookFacade;
   let policyBookSmFacade;
 
+  let network;
+  let SMToken;
+  let initialDeposit, stblInitialDeposit;
+
   const epochPeriod = toBN(604800); // 7 days
 
   const OWNER = accounts[0];
@@ -107,6 +114,8 @@ contract("ShieldMining", async (accounts) => {
   const CONTRACT1 = accounts[3];
   const CONTRACT2 = accounts[4];
   const CONTRACT3 = accounts[5];
+  const CONTRACT4 = accounts[8];
+  const CONTRACT5 = accounts[9];
   const USER3 = accounts[6];
   const USER4 = accounts[7];
 
@@ -116,10 +125,8 @@ contract("ShieldMining", async (accounts) => {
 
   const PERCENTAGE_100 = toBN(10).pow(27);
   const APY_PRECISION = toBN(10 ** 5);
-  const withdrawalPeriod = toBN(691200); // 8 days
+  let withdrawalPeriod;
   const BLOCKS_PER_DAY = toBN(6450);
-
-  const initialDeposit = toWei("1000");
 
   const NOTHING = accounts[9];
   const DISTRIBUTOR = accounts[5];
@@ -155,15 +162,35 @@ contract("ShieldMining", async (accounts) => {
     }
   }
 
+  const convert = (amount) => {
+    if (network == Networks.ETH || network == Networks.POL) {
+      const amountStbl = toBN(amount).div(toBN(10).pow(12));
+      return amountStbl;
+    } else if (network == Networks.BSC) {
+      const amountStbl = toBN(amount);
+      return amountStbl;
+    }
+  };
+
   before("setup", async () => {
+    network = await getNetwork();
+
     contractsRegistry = await ContractsRegistry.new();
     const policyBookImpl = await PolicyBookMock.new();
     const policyBookFacadeImpl = await PolicyBookFacade.new();
     const weth = await WETHMock.new("weth", "weth");
     let sushiswapRouterMock = await SushiswapRouterMock.new();
     bmi = await BMIMock.new(OWNER);
-    stbl = await STBLMock.new("stbl", "stbl", 6);
-    //shieldToken = await STBLMock.new("shieldToken", "SMT", 6);
+    SMToken = await STBLMock.new("SMT", "SMT", 6);
+    if (network == Networks.ETH) {
+      stbl = await STBLMock.new("stbl", "stbl", 6);
+    } else if (network == Networks.BSC) {
+      stbl = await BSCSTBLMock.new();
+    } else if (network == Networks.POL) {
+      stbl = await MATICSTBLMock.new();
+      await stbl.initialize("stbl", "stbl", 6, accounts[0]);
+    }
+
     const _policyBookAdmin = await PolicyBookAdmin.new();
     const _priceFeed = await PriceFeed.new();
     const _policyBookRegistry = await PolicyBookRegistry.new();
@@ -175,7 +202,6 @@ contract("ShieldMining", async (accounts) => {
     const _rewardsGenerator = await RewardsGenerator.new();
     const _bmiCoverStaking = await BMICoverStaking.new();
     const _bmiCoverStakingView = await BMICoverStakingView.new();
-    const _liquidityMining = await LiquidityMining.new();
     const _claimingRegistry = await ClaimingRegistry.new();
     const _claimingRegistryMock = await ClaimingRegistryMock.new();
     const _liquidityRegistry = await LiquidityRegistry.new();
@@ -193,23 +219,24 @@ contract("ShieldMining", async (accounts) => {
 
     await contractsRegistry.__ContractsRegistry_init();
 
-    await contractsRegistry.addContract(await contractsRegistry.AAVE_PROTOCOL_NAME(), NOTHING);
+    await contractsRegistry.addContract(await contractsRegistry.DEFI_PROTOCOL_1_NAME(), NOTHING);
     await contractsRegistry.addContract(await contractsRegistry.BMI_NAME(), bmi.address);
     await contractsRegistry.addContract(await contractsRegistry.BMI_STAKING_NAME(), NOTHING);
     await contractsRegistry.addContract(await contractsRegistry.BMI_UTILITY_NFT_NAME(), NOTHING);
     await contractsRegistry.addContract(await contractsRegistry.CAPITAL_POOL_NAME(), _capitalPool.address);
-    await contractsRegistry.addContract(await contractsRegistry.COMPOUND_PROTOCOL_NAME(), NOTHING);
-    await contractsRegistry.addContract(await contractsRegistry.LEGACY_REWARDS_GENERATOR_NAME(), NOTHING);
+    await contractsRegistry.addContract(await contractsRegistry.DEFI_PROTOCOL_2_NAME(), NOTHING);
+    await contractsRegistry.addContract(await contractsRegistry.BMI_TREASURY_NAME(), NOTHING);
     await contractsRegistry.addContract(await contractsRegistry.LIQUIDITY_REGISTRY_NAME(), _liquidityRegistry.address);
-    // await contractsRegistry.addContract(await contractsRegistry.POLICY_BOOK_FABRIC_NAME(), _policyBookFabric.address);
+
     await contractsRegistry.addContract(await contractsRegistry.REINSURANCE_POOL_NAME(), _reinsurancePool.address);
     await contractsRegistry.addContract(await contractsRegistry.REPUTATION_SYSTEM_NAME(), NOTHING);
+    await contractsRegistry.addContract(await contractsRegistry.LIQUIDITY_BRIDGE_NAME(), NOTHING);
 
-    await contractsRegistry.addContract(await contractsRegistry.SUSHISWAP_ROUTER_NAME(), sushiswapRouterMock.address);
+    await contractsRegistry.addContract(await contractsRegistry.AMM_ROUTER_NAME(), sushiswapRouterMock.address);
     await contractsRegistry.addContract(await contractsRegistry.USDT_NAME(), stbl.address);
-    await contractsRegistry.addContract(await contractsRegistry.VBMI_NAME(), NOTHING);
-    await contractsRegistry.addContract(await contractsRegistry.WETH_NAME(), weth.address);
-    await contractsRegistry.addContract(await contractsRegistry.YEARN_PROTOCOL_NAME(), NOTHING);
+    await contractsRegistry.addContract(await contractsRegistry.STKBMI_STAKING_NAME(), NOTHING);
+    await contractsRegistry.addContract(await contractsRegistry.WRAPPEDTOKEN_NAME(), weth.address);
+    await contractsRegistry.addContract(await contractsRegistry.DEFI_PROTOCOL_3_NAME(), NOTHING);
     await contractsRegistry.addContract(await contractsRegistry.YIELD_GENERATOR_NAME(), NOTHING);
     await contractsRegistry.addContract(await contractsRegistry.SHIELD_MINING_NAME(), _shieldMining.address);
     await contractsRegistry.addContract(
@@ -225,7 +252,6 @@ contract("ShieldMining", async (accounts) => {
     await contractsRegistry.addProxyContract(await contractsRegistry.PRICE_FEED_NAME(), _priceFeed.address);
     await contractsRegistry.addProxyContract(await contractsRegistry.CLAIM_VOTING_NAME(), _claimVoting.address);
     await contractsRegistry.addProxyContract(await contractsRegistry.REINSURANCE_POOL_NAME(), _reinsurancePool.address);
-    await contractsRegistry.addProxyContract(await contractsRegistry.LIQUIDITY_MINING_NAME(), _liquidityMining.address);
     await contractsRegistry.addProxyContract(await contractsRegistry.YIELD_GENERATOR_NAME(), _yieldGenerator.address);
     await contractsRegistry.addProxyContract(
       await contractsRegistry.BMI_COVER_STAKING_NAME(),
@@ -282,14 +308,13 @@ contract("ShieldMining", async (accounts) => {
     bmiUtilityNFT = await BMIUtilityNFT.at(await contractsRegistry.getBMIUtilityNFTContract());
     claimVoting = await ClaimVoting.at(await contractsRegistry.getClaimVotingContract());
     claimingRegistry = await ClaimingRegistry.at(await contractsRegistry.getClaimingRegistryContract());
-    liquidityMining = await LiquidityMining.at(await contractsRegistry.getLiquidityMiningContract());
     nftStaking = await NFTStaking.at(await contractsRegistry.getNFTStakingContract());
     policyBookAdmin = await PolicyBookAdmin.at(await contractsRegistry.getPolicyBookAdminContract());
     policyQuote = await PolicyQuote.at(await contractsRegistry.getPolicyQuoteContract());
     policyRegistry = await PolicyRegistry.at(await contractsRegistry.getPolicyRegistryContract());
     reinsurancePool = await ReinsurancePool.at(await contractsRegistry.getReinsurancePoolContract());
     rewardsGenerator = await RewardsGenerator.at(await contractsRegistry.getRewardsGeneratorContract());
-    sushiswapRouterMock = await SushiswapRouterMock.at(await contractsRegistry.getSushiswapRouterContract());
+    sushiswapRouterMock = await SushiswapRouterMock.at(await contractsRegistry.getAMMRouterContract());
     yieldGenerator = await YieldGeneratorMock.at(await contractsRegistry.getYieldGeneratorContract());
     shieldMining = await ShieldMining.at(await contractsRegistry.getShieldMiningContract());
     leveragePortfolioView = await LeveragePortfolioView.at(await contractsRegistry.getLeveragePortfolioViewContract());
@@ -299,7 +324,6 @@ contract("ShieldMining", async (accounts) => {
     await capitalPool.__CapitalPool_init();
     await claimVoting.__ClaimVoting_init();
     await claimingRegistry.__ClaimingRegistry_init();
-    await liquidityMining.__LiquidityMining_init();
     await nftStaking.__NFTStaking_init();
     await policyBookAdmin.__PolicyBookAdmin_init(
       policyBookImpl.address,
@@ -309,7 +333,7 @@ contract("ShieldMining", async (accounts) => {
     await policyBookFabric.__PolicyBookFabric_init();
     await reinsurancePool.__ReinsurancePool_init();
     await rewardsGenerator.__RewardsGenerator_init();
-    await yieldGenerator.__YieldGenerator_init();
+    await yieldGenerator.__YieldGenerator_init(network);
     await shieldMining.__ShieldMining_init();
 
     await contractsRegistry.injectDependencies(await contractsRegistry.BMI_COVER_STAKING_NAME());
@@ -317,7 +341,6 @@ contract("ShieldMining", async (accounts) => {
     await contractsRegistry.injectDependencies(await contractsRegistry.CAPITAL_POOL_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.CLAIMING_REGISTRY_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.CLAIM_VOTING_NAME());
-    await contractsRegistry.injectDependencies(await contractsRegistry.LIQUIDITY_MINING_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.LIQUIDITY_REGISTRY_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.NFT_STAKING_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.POLICY_BOOK_ADMIN_NAME());
@@ -331,21 +354,31 @@ contract("ShieldMining", async (accounts) => {
     await contractsRegistry.injectDependencies(await contractsRegistry.LEVERAGE_PORTFOLIO_VIEW_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.POLICY_QUOTE_NAME());
 
-    await sushiswapRouterMock.setReserve(stbl.address, toWei(toBN(10 ** 3).toString()));
+    if (network == Networks.ETH || network == Networks.POL) {
+      await sushiswapRouterMock.setReserve(stbl.address, wei(toBN(10 ** 3).toString()));
+    } else if (network == Networks.BSC) {
+      await sushiswapRouterMock.setReserve(stbl.address, wei(toBN(10 ** 15).toString()));
+    }
+
     await sushiswapRouterMock.setReserve(weth.address, toWei(toBN(10 ** 15).toString()));
     await sushiswapRouterMock.setReserve(bmi.address, toWei(toBN(10 ** 15).toString()));
 
+    initialDeposit = toWei("1000");
+    stblInitialDeposit = getStableAmount("1000");
+
     await policyBookAdmin.setupPricingModel(
       PRECISION.times(80),
+      PRECISION.times(80),
       PRECISION.times(2),
-      toWei("10"),
+      PRECISION.times(2),
+      wei("10"),
       PRECISION.times(10),
       PRECISION.times(50),
       PRECISION.times(25),
       PRECISION.times(100)
     );
 
-    await stbl.approve(policyBookFabric.address, initialDeposit);
+    await stbl.approve(policyBookFabric.address, stblInitialDeposit.times(4));
 
     const policyBookEmpty = (
       await policyBookFabric.create(
@@ -365,17 +398,32 @@ contract("ShieldMining", async (accounts) => {
         "test description2",
         "TEST2",
         initialDeposit,
-        stbl.address
+        SMToken.address
       )
     ).logs[0].args.at;
 
     const userLeveragePoolAddress = (
-      await policyBookFabric.createLeveragePools(ContractType.VARIUOS, "User Leverage Pool", "LevPf1")
+      await policyBookFabric.createLeveragePools(CONTRACT4, ContractType.VARIUOS, "User Leverage Pool", "LevPf1")
     ).logs[0].args.at;
 
     userLeveragePool = await UserLeveragePool.at(userLeveragePoolAddress);
+
+    const userLeveragePoolAddress2 = (
+      await policyBookFabric.createLeveragePools(CONTRACT5, ContractType.VARIUOS, "User Leverage Pool", "LevPf2")
+    ).logs[0].args.at;
+
+    userLeveragePool2 = await UserLeveragePool.at(userLeveragePoolAddress2);
+
     await policyBookAdmin.setLeveragePortfolioProtocolConstant(
       userLeveragePool.address,
+      PRECISION.times(45),
+      PRECISION.times(2),
+      PRECISION.times(100),
+      PRECISION.times(100)
+    );
+
+    await policyBookAdmin.setLeveragePortfolioProtocolConstant(
+      userLeveragePool2.address,
       PRECISION.times(45),
       PRECISION.times(2),
       PRECISION.times(100),
@@ -391,6 +439,8 @@ contract("ShieldMining", async (accounts) => {
     const policyBookSMFacadeAddress = await policyBookSm.policyBookFacade();
     policyBookSmFacade = await PolicyBookFacade.at(policyBookSMFacadeAddress);
 
+    withdrawalPeriod = toBN(await capitalPool.getWithdrawPeriod());
+
     await reverter.snapshot();
   });
 
@@ -398,33 +448,33 @@ contract("ShieldMining", async (accounts) => {
 
   describe("restriction to create a shield mining (owner)", () => {
     beforeEach(async () => {
-      await stbl.approve(shieldMining.address, toWei("25000"));
+      await SMToken.approve(shieldMining.address, getStableAmount("25000"));
     });
 
     it("should revert if the policy book does not exist", async () => {
       await truffleAssert.reverts(
-        shieldMining.associateShieldMining(reinsurancePool.address, stbl.address),
+        shieldMining.associateShieldMining(reinsurancePool.address, SMToken.address),
         "SM: Not a PolicyBook"
       );
     });
 
     it("could change an already attached shield mining", async () => {
-      await shieldMining.associateShieldMining(policyBook.address, stbl.address);
+      await shieldMining.associateShieldMining(policyBook.address, SMToken.address);
       await shieldMining.associateShieldMining(policyBook.address, bmi.address);
       assert.equal(await shieldMining.getShieldTokenAddress(policyBook.address), bmi.address);
     });
 
     it("could not change an already attached shield mining by anyone", async () => {
-      await shieldMining.associateShieldMining(policyBook.address, stbl.address);
+      await shieldMining.associateShieldMining(policyBook.address, SMToken.address);
       await truffleAssert.reverts(
         shieldMining.associateShieldMining(policyBook.address, bmi.address, { from: USER2 }),
         "SM: no access"
       );
-      assert.equal(await shieldMining.getShieldTokenAddress(policyBook.address), stbl.address);
+      assert.equal(await shieldMining.getShieldTokenAddress(policyBook.address), SMToken.address);
     });
 
     it("should revert if duration is not in the range", async () => {
-      await shieldMining.associateShieldMining(policyBook.address, stbl.address);
+      await shieldMining.associateShieldMining(policyBook.address, SMToken.address);
       await truffleAssert.reverts(
         shieldMining.fillShieldMining(policyBook.address, toWei("500"), 21),
         "SM: out of minimum/maximum duration"
@@ -465,8 +515,8 @@ contract("ShieldMining", async (accounts) => {
     });
 
     it("should revert if deposit small amount", async () => {
-      await shieldMining.associateShieldMining(policyBook.address, stbl.address);
-      await truffleAssert.reverts(shieldMining.fillShieldMining(policyBook.address, 100, 45), "SM: amount is zero");
+      await shieldMining.associateShieldMining(policyBook.address, SMToken.address);
+      await truffleAssert.reverts(shieldMining.fillShieldMining(policyBook.address, 0, 45), "SM: amount is zero");
     });
   });
 
@@ -481,8 +531,9 @@ contract("ShieldMining", async (accounts) => {
     const stbleAmount = toWei("508", "mwei");
 
     beforeEach(async () => {
-      await stbl.approve(shieldMining.address, stbleAmount, { from: USER1 });
-      await stbl.transfer(USER1, stbleAmount);
+      await SMToken.approve(shieldMining.address, stbleAmount, { from: USER1 });
+
+      await SMToken.transfer(USER1, stbleAmount);
     });
 
     it("should update reward per token before - checking shield mining info", async () => {
@@ -496,7 +547,7 @@ contract("ShieldMining", async (accounts) => {
       let tx = await shieldMining.mockFillShieldMining(policyBookSm.address, amount1, duration1, { from: USER1 });
       let info = await shieldMining.getShieldMiningInfo(policyBookSm.address);
 
-      assert.equal(info._decimals.toString(), "6");
+      assert.equal(info._decimals.toString(), (await SMToken.decimals()).toString());
       assert.equal(info._firstBlockWithReward.toString(), getTransactionBlock(tx).toString());
 
       assert.equal(info._lastBlockWithReward.toString(), endBlock1.toString());
@@ -509,12 +560,7 @@ contract("ShieldMining", async (accounts) => {
       assert.equal(info._rewardPerTokenStored.toString(), 0);
       assert.equal(info._totalSupply.toString(), initialDeposit.toString());
 
-      assert.equal(
-        toBN(await stbl.balanceOf(shieldMining.address)).toString(),
-        toBN(amount1)
-          .idiv(10 ** 12)
-          .toString()
-      );
+      assert.equal(toBN(await SMToken.balanceOf(shieldMining.address)).toString(), convert(amount1).toString());
       await advanceBlocks(10);
 
       // refill2
@@ -538,10 +584,10 @@ contract("ShieldMining", async (accounts) => {
       assert.equal(info._rewardPerTokenStored.toString(), toWei("0.022"));
 
       assert.equal(
-        toBN(await stbl.balanceOf(shieldMining.address)).toString(),
-        toBN(amount1)
-          .plus(toBN(amount2))
-          .idiv(10 ** 12)
+        toBN(await SMToken.balanceOf(shieldMining.address)).toString(),
+        convert(amount1)
+          .plus(convert(amount2))
+
           .toFixed()
           .toString()
       );
@@ -649,15 +695,10 @@ contract("ShieldMining", async (accounts) => {
       assert.equal(info._rewardPerTokenStored.toString(), toWei("0.257"));
 
       assert.equal(
-        toBN(await stbl.balanceOf(shieldMining.address)).toString(),
-        toBN(amount1)
-          .plus(toBN(amount2))
-          .plus(toBN(amount3))
-          .idiv(10 ** 12)
-          .toFixed()
-          .toString()
+        toBN(await SMToken.balanceOf(shieldMining.address)).toString(),
+        convert(amount1).plus(convert(amount2)).plus(convert(amount3)).toFixed().toString()
       );
-      assert.equal(toBN(await stbl.balanceOf(USER1)).toString(), 0);
+      assert.equal(toBN(await SMToken.balanceOf(USER1)).toString(), 0);
       await advanceBlocks(1);
 
       tx = await shieldMining.getReward(policyBookSm.address, ADDRESS_ZERO, { from: USER1 });
@@ -678,18 +719,13 @@ contract("ShieldMining", async (accounts) => {
         info._rewardPerTokenStored.toString(),
         toBN(amount1).plus(amount2).plus(amount3).div(initialDeposit).times(DECIMALS18).toString()
       );
-      assert.equal(toBN(await stbl.balanceOf(USER1)).toString(), 0);
+      assert.equal(toBN(await SMToken.balanceOf(USER1)).toString(), 0);
       assert.equal(
-        toBN(await stbl.balanceOf(shieldMining.address)).toString(),
-        toBN(amount1)
-          .plus(toBN(amount2))
-          .plus(toBN(amount3))
-          .idiv(10 ** 12)
-          .toFixed()
-          .toString()
+        toBN(await SMToken.balanceOf(shieldMining.address)).toString(),
+        convert(amount1).plus(convert(amount2)).plus(convert(amount3)).toFixed().toString()
       );
       tx = await shieldMining.getReward(policyBookSm.address, ADDRESS_ZERO, { from: OWNER });
-      assert.equal(toBN(await stbl.balanceOf(shieldMining.address)).toString(), 0);
+      assert.equal(toBN(await SMToken.balanceOf(shieldMining.address)).toString(), 0);
     });
   });
 
@@ -699,17 +735,18 @@ contract("ShieldMining", async (accounts) => {
     const amount1 = toWei("256");
     const totalAmount = toWei("256");
     const stbleAmount = toWei("256", "mwei");
-
-    const stblAmount1 = toBN(toWei("100000", "mwei"));
+    let stblAmount1;
     const liquidityAmount1 = toBN(toWei("5000"));
     const amountToWithdraw = toBN(toWei("1000"));
     let policyBook1;
     let policyBookFacade1;
 
     beforeEach(async () => {
-      await stbl.approve(shieldMining.address, stbleAmount, { from: USER1 });
-      await stbl.transfer(USER1, stbleAmount);
+      stblAmount1 = getStableAmount("100000");
+      await SMToken.approve(shieldMining.address, stbleAmount, { from: USER1 });
+      await SMToken.transfer(USER1, stbleAmount);
       await stbl.transfer(USER2, stblAmount1);
+
       await stbl.approve(policyBookFabric.address, stblAmount1, { from: USER2 });
 
       const policyBookAddrees = (
@@ -719,7 +756,7 @@ contract("ShieldMining", async (accounts) => {
           "test description2",
           "TEST2",
           initialDeposit,
-          stbl.address,
+          SMToken.address,
           { from: USER2 }
         )
       ).logs[0].args.at;
@@ -731,7 +768,7 @@ contract("ShieldMining", async (accounts) => {
 
       await stbl.transfer(USER3, stblAmount1);
       await stbl.approve(policyBook1.address, stblAmount1, { from: USER3 });
-      await capitalPool.setliquidityCushionBalance(toBN(liquidityAmount1.idiv(10 ** 12)));
+      await capitalPool.setliquidityCushionBalance(convert(liquidityAmount1));
     });
 
     it("add liquidity", async () => {
@@ -750,27 +787,13 @@ contract("ShieldMining", async (accounts) => {
 
       assert.equal(info._totalSupply.toString(), toBN(initialDeposit).plus(liquidityAmount1).toFixed().toString());
       // 22 block passed * 2 reward per bolck
-      assert.equal(
-        toBN(await stbl.balanceOf(USER2)).toString(),
-        toBN(stblAmount1)
-          .minus(toBN(initialDeposit).idiv(10 ** 12))
-          .plus(toBN(toWei("25.666666", "mwei")))
-          .toString()
-      );
-      assert.equal(
-        toBN(await stbl.balanceOf(USER3)).toString(),
-        toBN(stblAmount1)
-          .minus(liquidityAmount1.idiv(10 ** 12))
-          .plus(toBN(toWei("19.999999", "mwei")))
-          .toString()
-      );
+
+      assert.equal(toBN(await SMToken.balanceOf(USER2)).toString(), toWei("25.666666", "mwei"));
+      assert.equal(toBN(await SMToken.balanceOf(USER3)).toString(), toWei("19.999999", "mwei"));
 
       assert.equal(
-        toBN(await stbl.balanceOf(shieldMining.address)).toString(),
-        toBN(amount1)
-          .idiv(10 ** 12)
-          .minus(toBN(toWei("45.666665", "mwei")))
-          .toString()
+        toBN(await SMToken.balanceOf(shieldMining.address)).toString(),
+        convert(amount1).minus(toWei("45.666665", "mwei"))
       );
     });
 
@@ -808,28 +831,12 @@ contract("ShieldMining", async (accounts) => {
         toBN(initialDeposit).plus(liquidityAmount1).minus(amountToWithdraw).toFixed().toString()
       );
       // 30 block passed * 2 reward per bolck
-      assert.equal(
-        toBN(await stbl.balanceOf(USER2)).toString(),
-        toBN(stblAmount1)
-          .minus(toBN(initialDeposit).idiv(10 ** 12))
-          .plus(toBN(toWei("27.8", "mwei")))
-          .toString()
-      );
-      assert.equal(
-        toBN(await stbl.balanceOf(USER3)).toString(),
-        toBN(stblAmount1)
-          .minus(liquidityAmount1.idiv(10 ** 12))
-          .plus(amountToWithdraw.idiv(10 ** 12))
-          .plus(toBN(toWei("31.4", "mwei")))
-          .toString()
-      );
+      assert.equal(toBN(await SMToken.balanceOf(USER2)).toString(), toWei("27.8", "mwei"));
+      assert.equal(toBN(await SMToken.balanceOf(USER3)).toString(), toWei("31.4", "mwei"));
 
       assert.equal(
-        toBN(await stbl.balanceOf(shieldMining.address)).toString(),
-        toBN(amount1)
-          .idiv(10 ** 12)
-          .minus(toBN(toWei("59.2", "mwei")))
-          .toString()
+        toBN(await SMToken.balanceOf(shieldMining.address)).toString(),
+        convert(amount1).minus(toWei("59.2", "mwei")).toString()
       );
     });
   });
@@ -839,9 +846,8 @@ contract("ShieldMining", async (accounts) => {
 
     const amount1 = toWei("256");
 
-    const stbleAmount = toWei("256", "mwei");
-
-    const stblAmount1 = toBN(toWei("100000", "mwei"));
+    const stbleAmount = toBN(toWei("256", "mwei"));
+    let stblAmount1;
     const liquidityAmount1 = toBN(toWei("5000"));
     const coverTokensAmount = toBN(toWei("3000"));
     const amountToWithdraw = toBN(toWei("1000"));
@@ -850,8 +856,10 @@ contract("ShieldMining", async (accounts) => {
     let policyBookFacade1;
 
     beforeEach(async () => {
-      await stbl.approve(shieldMining.address, stbleAmount, { from: USER1 });
-      await stbl.transfer(USER1, stbleAmount);
+      stblAmount1 = getStableAmount("100000");
+      await SMToken.approve(shieldMining.address, stbleAmount, { from: USER1 });
+      await SMToken.transfer(USER1, stbleAmount);
+
       await stbl.transfer(USER2, stblAmount1);
       await stbl.approve(policyBookFabric.address, stblAmount1, { from: USER2 });
 
@@ -862,7 +870,7 @@ contract("ShieldMining", async (accounts) => {
           "test description2",
           "TEST2",
           initialDeposit,
-          stbl.address,
+          SMToken.address,
           { from: USER2 }
         )
       ).logs[0].args.at;
@@ -877,6 +885,7 @@ contract("ShieldMining", async (accounts) => {
 
       await stbl.transfer(USER4, stblAmount1);
       await stbl.approve(userLeveragePool.address, stblAmount1, { from: USER4 });
+      await stbl.approve(userLeveragePool2.address, stblAmount1, { from: USER4 });
 
       await policyBookAdmin.setPolicyBookFacadeMPLs(
         policyBookFacade1.address,
@@ -884,7 +893,7 @@ contract("ShieldMining", async (accounts) => {
         PRECISION.times(30)
       );
       await policyBook1.setTotalCoverTokens(coverTokensAmount);
-      await capitalPool.setliquidityCushionBalance(toBN(liquidityAmount1.idiv(10 ** 12)));
+      await capitalPool.setliquidityCushionBalance(convert(liquidityAmount1));
     });
 
     it("add liquidity", async () => {
@@ -894,8 +903,8 @@ contract("ShieldMining", async (accounts) => {
 
       await policyBookFacade1.addLiquidity(liquidityAmount1, { from: USER3 });
 
-      await advanceBlocks(10);
-
+      await advanceBlocks(9);
+      await userLeveragePool.addInvestedPools(policyBook1.address);
       await userLeveragePool.addLiquidity(liquidityAmount1, { from: USER4 });
 
       await advanceBlocks(10);
@@ -917,35 +926,74 @@ contract("ShieldMining", async (accounts) => {
         toBN(initialDeposit).plus(liquidityAmount1).plus(participatedLeveragedAmount).toFixed().toString()
       );
       // 35 block passed * 2 reward per bolck
+
+      assert.equal(toBN(await SMToken.balanceOf(USER2)).toString(), toWei("26.651006", "mwei"));
+      assert.equal(toBN(await SMToken.balanceOf(USER3)).toString(), toWei("23.702460", "mwei"));
+
+      assert.equal(toBN(await SMToken.balanceOf(USER4)).toString(), toWei("19.020134", "mwei"));
+
       assert.equal(
-        toBN(await stbl.balanceOf(USER2)).toString(),
-        toBN(stblAmount1)
-          .minus(toBN(initialDeposit).idiv(10 ** 12))
-          .plus(toBN(toWei("26.651006", "mwei")))
-          .toString()
+        toBN(await SMToken.balanceOf(shieldMining.address)).toString(),
+        convert(amount1).minus(toWei("69.3736", "mwei")).toString()
       );
+    });
+
+    it("add liquidity - two leverage pools", async () => {
+      // refill1
+      let tx = await shieldMining.mockFillShieldMining(policyBook1.address, amount1, duration1, { from: USER1 });
+      await advanceBlocks(10);
+
+      await policyBookFacade1.addLiquidity(liquidityAmount1, { from: USER3 });
+
+      await advanceBlocks(9);
+      await userLeveragePool.addInvestedPools(policyBook1.address);
+      await userLeveragePool2.addInvestedPools(policyBook1.address);
+      await userLeveragePool.addLiquidity(liquidityAmount1, { from: USER4 });
+      await userLeveragePool2.addLiquidity(liquidityAmount1, { from: USER4 });
+
+      await advanceBlocks(7);
+
+      tx = await shieldMining.getReward(policyBook1.address, ADDRESS_ZERO, { from: USER2 });
+      tx = await shieldMining.getReward(policyBook1.address, ADDRESS_ZERO, { from: USER3 });
+      tx = await shieldMining.getReward(policyBook1.address, userLeveragePool.address, { from: USER4 });
+      tx = await shieldMining.getReward(policyBook1.address, userLeveragePool2.address, { from: USER4 });
+
+      info = await shieldMining.getShieldMiningInfo(policyBook1.address);
+
+      //levpf1
+      const multiplier = await leveragePortfolioView.calcM(poolUR, userLeveragePool.address);
+
+      const leveragedAmount = await policyBookFacade1.LUuserLeveragePool(userLeveragePool.address);
+
+      const participatedLeveragedAmount = toBN(leveragedAmount).times(multiplier).idiv(PERCENTAGE_100).toFixed();
+
+      //levpf2
+      const multiplier2 = await leveragePortfolioView.calcM(poolUR, userLeveragePool2.address);
+
+      const leveragedAmount2 = await policyBookFacade1.LUuserLeveragePool(userLeveragePool2.address);
+
+      const participatedLeveragedAmount2 = toBN(leveragedAmount2).times(multiplier2).idiv(PERCENTAGE_100).toFixed();
+
       assert.equal(
-        toBN(await stbl.balanceOf(USER3)).toString(),
-        toBN(stblAmount1)
-          .minus(liquidityAmount1.idiv(10 ** 12))
-          .plus(toBN(toWei("23.702460", "mwei")))
+        info._totalSupply.toString(),
+        toBN(initialDeposit)
+          .plus(liquidityAmount1)
+          .plus(participatedLeveragedAmount)
+          .plus(participatedLeveragedAmount2)
+          .toFixed()
           .toString()
       );
 
-      assert.equal(
-        toBN(await stbl.balanceOf(USER4)).toString(),
-        toBN(stblAmount1)
-          .minus(liquidityAmount1.idiv(10 ** 12))
-          .plus(toBN(toWei("19.020134", "mwei")))
-          .toString()
-      );
+      // 35 block passed * 2 reward per bolck
+
+      assert.equal(toBN(await SMToken.balanceOf(USER2)).toString(), toWei("26.613645", "mwei"));
+      assert.equal(toBN(await SMToken.balanceOf(USER3)).toString(), toWei("23.395830", "mwei"));
+
+      assert.equal(toBN(await SMToken.balanceOf(USER4)).toString(), toWei("18.067508", "mwei"));
 
       assert.equal(
-        toBN(await stbl.balanceOf(shieldMining.address)).toString(),
-        toBN(amount1)
-          .idiv(10 ** 12)
-          .minus(toBN(toWei("69.3736", "mwei")))
-          .toString()
+        toBN(await SMToken.balanceOf(shieldMining.address)).toString(),
+        convert(amount1).minus(toWei("68.076983", "mwei")).toString()
       );
     });
 
@@ -960,8 +1008,8 @@ contract("ShieldMining", async (accounts) => {
       tx = await policyBookFacade1.addLiquidity(liquidityAmount1, { from: USER3 });
       info = await shieldMining.getShieldMiningInfo(policyBook1.address);
 
-      await advanceBlocks(10);
-
+      await advanceBlocks(9);
+      await userLeveragePool.addInvestedPools(policyBook1.address);
       tx = await userLeveragePool.addLiquidity(liquidityAmount1, { from: USER4 });
       info = await shieldMining.getShieldMiningInfo(policyBook1.address);
 
@@ -1006,47 +1054,26 @@ contract("ShieldMining", async (accounts) => {
         toBN(initialDeposit).plus(liquidityAmount1).plus(participatedLeveragedAmount).toFixed().toString()
       );
       // 41 block passed * 2 reward per bolck
-      assert.equal(
-        toBN(await stbl.balanceOf(USER2)).toString(),
-        toBN(stblAmount1)
-          .minus(toBN(initialDeposit).idiv(10 ** 12))
-          .plus(toBN(toWei("27.576978", "mwei")))
-          .toString()
-      );
-      assert.equal(
-        toBN(await stbl.balanceOf(USER3)).toString(),
-        toBN(stblAmount1)
-          .minus(liquidityAmount1.idiv(10 ** 12))
-          .plus(toBN(toWei("28.468597", "mwei"))) //28.468597
-          .toString()
-      );
+      assert.equal(toBN(await SMToken.balanceOf(USER2)).toString(), toWei("27.576978", "mwei"));
+      assert.equal(toBN(await SMToken.balanceOf(USER3)).toString(), toWei("28.468597", "mwei"));
+
+      assert.equal(toBN(await SMToken.balanceOf(USER4)).toString(), toWei("25.137236", "mwei"));
 
       assert.equal(
-        toBN(await stbl.balanceOf(USER4)).toString(),
-        toBN(stblAmount1)
-          .minus(liquidityAmount1.idiv(10 ** 12))
-          .plus(amountToWithdraw.idiv(10 ** 12))
-          .plus(toBN(toWei("25.137236", "mwei")))
-          .toString()
-      );
-
-      assert.equal(
-        toBN(await stbl.balanceOf(shieldMining.address)).toString(),
-        toBN(amount1)
-          .idiv(10 ** 12)
-          .minus(toBN(toWei("81.182811", "mwei")))
-          .toString()
+        toBN(await SMToken.balanceOf(shieldMining.address)).toString(),
+        convert(amount1).minus(toWei("81.182811", "mwei")).toString()
       );
     });
   });
 
   describe("list of deposit", () => {
-    let shieldDeposit = toWei("1200");
+    let shieldDeposit;
     let createBlock;
     let numberOfBlock = 45 * 6450;
 
     beforeEach(async () => {
-      await stbl.approve(shieldMining.address, toBN(shieldDeposit).times(4));
+      shieldDeposit = toBN(toWei("1200"));
+      await SMToken.approve(shieldMining.address, shieldDeposit.times(4));
       createBlock = await getCurrentBlock();
       await shieldMining.fillShieldMining(policyBookSm.address, shieldDeposit, 45);
       await shieldMining.fillShieldMining(policyBookSm.address, shieldDeposit, 45);
@@ -1057,7 +1084,7 @@ contract("ShieldMining", async (accounts) => {
       const result = await shieldMining.getDepositList(OWNER, 0, 10);
       result.forEach(async (deposit, index) => {
         assert.equal(deposit.policyBook, policyBookSm.address, "pb address");
-        assert.equal(deposit.amount.toString(), shieldDeposit.toString(), "sm deposit");
+        assert.equal(deposit.amount.toString(), shieldDeposit.toFixed().toString(), "sm deposit");
         assert.equal(deposit.duration, 45, "duration");
         assert.equal(deposit.startBlock, createBlock + 1 + index, "start");
         assert.equal(deposit.endBlock, createBlock + index + numberOfBlock, "end");

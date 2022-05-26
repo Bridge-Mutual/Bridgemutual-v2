@@ -110,41 +110,21 @@ interface IPolicyBook {
     /// @notice submits new appeal claim of the policy book
     function submitAppealAndInitializeVoting(string calldata evidenceURI) external;
 
-    /// @notice updates info on claim acceptance
+    /// @notice updates info on claim when not accepted
     function commitClaim(
         address claimer,
-        uint256 claimAmount,
         uint256 claimEndTime,
         IClaimingRegistry.ClaimStatus status
     ) external;
 
-    /// @notice forces an update of RewardsGenerator multiplier
-    function forceUpdateBMICoverStakingRewardMultiplier() external;
+    /// @notice withdraw the claim after requested
+    function commitWithdrawnClaim(address claimer) external;
 
     /// @notice function to get precise current cover and liquidity
     function getNewCoverAndLiquidity()
         external
         view
         returns (uint256 newTotalCoverTokens, uint256 newTotalLiquidity);
-
-    /// @notice view function to get precise policy price
-    /// @param _epochsNumber is number of epochs to cover
-    /// @param _coverTokens is number of tokens to cover
-    /// @param _buyer address of the user who buy the policy
-    /// @return totalSeconds is number of seconds to cover
-    /// @return totalPrice is the policy price which will pay by the buyer
-    function getPolicyPrice(
-        uint256 _epochsNumber,
-        uint256 _coverTokens,
-        address _buyer
-    )
-        external
-        view
-        returns (
-            uint256 totalSeconds,
-            uint256 totalPrice,
-            uint256 pricePercentage
-        );
 
     /// @notice Let user to buy policy by supplying stable coin, access: ANY
     /// @param _buyer who is transferring funds
@@ -162,9 +142,10 @@ interface IPolicyBook {
         address _distributor
     ) external returns (uint256, uint256);
 
-    function updateEpochsInfo() external;
+    /// @notice end active policy from ClaimingRegistry in case of a new bought policy
+    function endActivePolicy(address _holder) external;
 
-    function secondsToEndCurrentEpoch() external view returns (uint256);
+    function updateEpochsInfo() external;
 
     /// @notice Let eligible contracts add liqiudity for another user by supplying stable coin
     /// @param _liquidityHolderAddr is address of address to assign cover
@@ -211,6 +192,7 @@ interface IPolicyBook {
 
     /// @notice Getting number stats, access: ANY
     /// @return _maxCapacities is a max token amount that a user can buy
+    /// @return _buyPolicyCapacity new capacity which is a max token amount that a user can buy including withdraw amount
     /// @return _totalSTBLLiquidity is PolicyBook's liquidity
     /// @return _totalLeveragedLiquidity is PolicyBook's leveraged liquidity
     /// @return _stakedSTBL is how much stable coin are staked on this PolicyBook
@@ -221,26 +203,12 @@ interface IPolicyBook {
         view
         returns (
             uint256 _maxCapacities,
+            uint256 _buyPolicyCapacity,
             uint256 _totalSTBLLiquidity,
             uint256 _totalLeveragedLiquidity,
             uint256 _stakedSTBL,
             uint256 _annualProfitYields,
             uint256 _annualInsuranceCost,
             uint256 _bmiXRatio
-        );
-
-    /// @notice Getting info, access: ANY
-    /// @return _symbol is the symbol of PolicyBook (bmiXCover)
-    /// @return _insuredContract is an addres of insured contract
-    /// @return _contractType is a type of insured contract
-    /// @return _whitelisted is a state of whitelisting
-    function info()
-        external
-        view
-        returns (
-            string memory _symbol,
-            address _insuredContract,
-            IPolicyBookFabric.ContractType _contractType,
-            bool _whitelisted
         );
 }

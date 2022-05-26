@@ -10,6 +10,7 @@ import "./interfaces/IContractsRegistry.sol";
 import "./interfaces/IBMIStaking.sol";
 import "./interfaces/tokens/ISTKBMIToken.sol";
 import "./interfaces/ILiquidityMining.sol";
+import "./interfaces/IStkBMIStaking.sol";
 
 import "./interfaces/tokens/erc20permit-upgradeable/IERC20PermitUpgradeable.sol";
 
@@ -36,13 +37,23 @@ contract BMIStaking is IBMIStaking, OwnableUpgradeable, AbstractDependant {
     IERC20 public vBMI;
 
     address public liquidityMiningStakingUSDTAddress;
+    address public liquidityBridgeAddress;
 
     uint256 internal constant WITHDRAWING_LOCKUP_DURATION = 90 days;
     uint256 internal constant WITHDRAWING_COOLDOWN_DURATION = 8 days;
     uint256 internal constant WITHDRAWAL_PHASE_DURATION = 2 days;
 
+    bool public isPaused;
+
+    IStkBMIStaking public stkBMIStaking;
+
     modifier updateRewardPool() {
         _updateRewardPool();
+        _;
+    }
+
+    modifier notPaused() {
+        require(!isPaused, "BMIS: op paused for maintenance");
         _;
     }
 
@@ -51,7 +62,8 @@ contract BMIStaking is IBMIStaking, OwnableUpgradeable, AbstractDependant {
             _msgSender() == bmiCoverStakingAddress ||
                 _msgSender() == liquidityMiningStakingAddress ||
                 _msgSender() == legacyBMIStakingAddress ||
-                _msgSender() == liquidityMiningStakingUSDTAddress,
+                _msgSender() == liquidityMiningStakingUSDTAddress ||
+                _msgSender() == liquidityBridgeAddress,
             "BMIStaking: Not a staking contract"
         );
         _;
@@ -69,15 +81,16 @@ contract BMIStaking is IBMIStaking, OwnableUpgradeable, AbstractDependant {
         override
         onlyInjectorOrZero
     {
-        legacyBMIStakingAddress = _contractsRegistry.getLegacyBMIStakingContract();
         bmiToken = IERC20(_contractsRegistry.getBMIContract());
         stkBMIToken = ISTKBMIToken(_contractsRegistry.getSTKBMIContract());
-        liquidityMining = ILiquidityMining(_contractsRegistry.getLiquidityMiningContract());
         bmiCoverStakingAddress = _contractsRegistry.getBMICoverStakingContract();
         liquidityMiningStakingAddress = _contractsRegistry.getLiquidityMiningStakingETHContract();
         liquidityMiningStakingUSDTAddress = _contractsRegistry
             .getLiquidityMiningStakingUSDTContract();
-        vBMI = IERC20(_contractsRegistry.getVBMIContract());
+
+        stkBMIStaking = IStkBMIStaking(_contractsRegistry.getStkBMIStakingContract());
+
+        // liquidityBridgeAddress = _contractsRegistry.getLiquidityBridgeContract();
     }
 
     function stakeWithPermit(
@@ -113,24 +126,6 @@ contract BMIStaking is IBMIStaking, OwnableUpgradeable, AbstractDependant {
         _stake(_msgSender(), _amountBMI);
     }
 
-    /// @notice checks when the unlockPeriod expires (90 days)
-    /// @return exact timestamp of the unlock time or 0 if LME is not started or unlock period is reached
-    function maturityAt() external view override returns (uint256) {
-        uint256 maturityDate =
-            liquidityMining.startLiquidityMiningTime().add(WITHDRAWING_LOCKUP_DURATION);
-
-        return maturityDate < block.timestamp ? 0 : maturityDate;
-    }
-
-    // It is unlocked after 90 days
-    function isBMIRewardUnlocked() public view override returns (bool) {
-        uint256 liquidityMiningStartTime = liquidityMining.startLiquidityMiningTime();
-
-        return
-            liquidityMiningStartTime == 0 ||
-            liquidityMiningStartTime.add(WITHDRAWING_LOCKUP_DURATION) <= block.timestamp;
-    }
-
     // There is a second withdrawal phase of 48 hours to actually receive the rewards.
     // If a user misses this period, in order to withdraw he has to wait for 10 days again.
     // It will return:
@@ -144,6 +139,10 @@ contract BMIStaking is IBMIStaking, OwnableUpgradeable, AbstractDependant {
                 : 0;
     }
 
+    function setPaused(bool _pause) public onlyOwner {
+        isPaused = _pause;
+    }
+
     /*
      * Before a withdraw, it is needed to wait 90 days after LiquidityMining started.
      * And after 90 days, user can request to withdraw and wait 10 days.
@@ -151,11 +150,11 @@ contract BMIStaking is IBMIStaking, OwnableUpgradeable, AbstractDependant {
      * user will need to request to withdraw again and wait for more 10 days before
      * being able to withdraw.
      */
-    function unlockTokensToWithdraw(uint256 _amountBMIUnlock) external override {
+    function unlockTokensToWithdraw(uint256 _amountBMIUnlock) external override notPaused {
         require(_amountBMIUnlock > 0, "BMIStaking: can't unlock 0 tokens");
-        require(isBMIRewardUnlocked(), "BMIStaking: lock up time didn't end");
 
         uint256 _amountStkBMIUnlock = _convertToStkBMI(_amountBMIUnlock);
+        require(_amountStkBMIUnlock > 0, "BMIStaking: StkBMIUnlock must bigger than 0");
         require(
             stkBMIToken.balanceOf(_msgSender()) >= _amountStkBMIUnlock,
             "BMIStaking: not enough BMI to unlock"
@@ -169,7 +168,7 @@ contract BMIStaking is IBMIStaking, OwnableUpgradeable, AbstractDependant {
 
     // User can withdraw after unlock period is over, when 10 days passed
     // after user asked to unlock stkBMI and before 48hs that stkBMI are unlocked.
-    function withdraw() external override updateRewardPool {
+    function withdraw() external override notPaused updateRewardPool {
         //it will revert (equal to 0) here if passed 48hs after unlock period, if
         //lockup period didn't start or didn't passed 90 days or if unlock didn't start
         uint256 _whenCanWithdrawBMIReward = whenCanWithdrawBMIReward(_msgSender());
@@ -235,7 +234,8 @@ contract BMIStaking is IBMIStaking, OwnableUpgradeable, AbstractDependant {
     }
 
     function getStakedBMI(address _address) external view override returns (uint256) {
-        uint256 balance = stkBMIToken.balanceOf(_address).add(vBMI.balanceOf(_address));
+        uint256 balance =
+            stkBMIToken.balanceOf(_address).add(stkBMIStaking.stakedStkBMI(_address));
         return balance > 0 ? _convertToBMI(balance) : 0;
     }
 

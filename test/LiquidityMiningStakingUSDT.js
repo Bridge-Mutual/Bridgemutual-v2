@@ -5,7 +5,6 @@ const BMIMock = artifacts.require("BMIMock");
 const LpBmiUsdtMock = artifacts.require("LpBmiUsdtMock");
 const BMIStaking = artifacts.require("BMIStaking");
 const StkBMIToken = artifacts.require("STKBMIToken");
-const LiquidityMiningMock = artifacts.require("LiquidityMiningMock");
 const NFTStaking = artifacts.require("NFTStaking");
 
 const Reverter = require("./helpers/reverter");
@@ -26,7 +25,6 @@ contract("LiquidityMiningStakingUSDT", async (accounts) => {
   let rewardToken;
   let rewardStaking;
   let rewardStakingToken;
-  let liquidityMiningMock;
   let contractsRegistry;
 
   before("setup", async () => {
@@ -38,20 +36,17 @@ contract("LiquidityMiningStakingUSDT", async (accounts) => {
     const _stakingETH = await LiquidityMiningStakingETH.new();
     const _stakingUSDT = await LiquidityMiningStakingUSDT.new();
 
-    const _liquidityMiningMock = await LiquidityMiningMock.new();
     const _nftStaking = await NFTStaking.new();
 
     await contractsRegistry.__ContractsRegistry_init();
 
-    await contractsRegistry.addContract(await contractsRegistry.LEGACY_BMI_STAKING_NAME(), NOTHING);
     await contractsRegistry.addContract(await contractsRegistry.BMI_COVER_STAKING_NAME(), NOTHING);
     await contractsRegistry.addContract(await contractsRegistry.BMI_UTILITY_NFT_NAME(), NOTHING);
     await contractsRegistry.addContract(await contractsRegistry.POLICY_BOOK_REGISTRY_NAME(), NOTHING);
-    await contractsRegistry.addContract(await contractsRegistry.VBMI_NAME(), NOTHING);
-    await contractsRegistry.addContract(
-      await contractsRegistry.SUSHISWAP_BMI_TO_USDT_PAIR_NAME(),
-      stakingToken.address
-    );
+    await contractsRegistry.addContract(await contractsRegistry.STKBMI_STAKING_NAME(), NOTHING);
+    await contractsRegistry.addContract(await contractsRegistry.LIQUIDITY_BRIDGE_NAME(), NOTHING);
+    await contractsRegistry.addContract(await contractsRegistry.BMI_TREASURY_NAME(), NOTHING);
+    await contractsRegistry.addContract(await contractsRegistry.AMM_BMI_TO_USDT_PAIR_NAME(), stakingToken.address);
     await contractsRegistry.addContract(await contractsRegistry.BMI_NAME(), rewardToken.address);
     await contractsRegistry.addContract(await contractsRegistry.SUSHI_SWAP_MASTER_CHEF_V2_NAME(), NOTHING);
 
@@ -65,26 +60,20 @@ contract("LiquidityMiningStakingUSDT", async (accounts) => {
       await contractsRegistry.LIQUIDITY_MINING_STAKING_USDT_NAME(),
       _stakingUSDT.address
     );
-    await contractsRegistry.addProxyContract(
-      await contractsRegistry.LIQUIDITY_MINING_NAME(),
-      _liquidityMiningMock.address
-    );
+
     await contractsRegistry.addProxyContract(await contractsRegistry.NFT_STAKING_NAME(), _nftStaking.address);
 
     rewardStaking = await BMIStaking.at(await contractsRegistry.getBMIStakingContract());
     rewardStakingToken = await StkBMIToken.at(await contractsRegistry.getSTKBMIContract());
     staking = await LiquidityMiningStakingUSDT.at(await contractsRegistry.getLiquidityMiningStakingUSDTContract());
-    liquidityMiningMock = await LiquidityMiningMock.at(await contractsRegistry.getLiquidityMiningContract());
 
     await rewardStaking.__BMIStaking_init("0");
     await rewardStakingToken.__STKBMIToken_init();
     await staking.__LiquidityMiningStakingUSDT_init();
-    await liquidityMiningMock.__LiquidityMining_init();
 
     await contractsRegistry.injectDependencies(await contractsRegistry.BMI_STAKING_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.STKBMI_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.LIQUIDITY_MINING_STAKING_USDT_NAME());
-    await contractsRegistry.injectDependencies(await contractsRegistry.LIQUIDITY_MINING_NAME());
     await reverter.snapshot();
   });
 
@@ -121,11 +110,7 @@ contract("LiquidityMiningStakingUSDT", async (accounts) => {
       });
 
       it("stakingToken", async () => {
-        expect(await staking.stakingToken()).to.be.eq(await contractsRegistry.getSushiswapBMIToUSDTPairContract());
-      });
-
-      it("liquidityMining", async () => {
-        expect(await staking.liquidityMining()).to.be.eq(await contractsRegistry.getLiquidityMiningContract());
+        expect(await staking.stakingToken()).to.be.eq(await contractsRegistry.getAMMBMIToUSDTPairContract());
       });
 
       it("nftStakingAddress", async () => {

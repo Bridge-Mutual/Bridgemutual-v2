@@ -66,20 +66,14 @@ module.exports = {
           `wss://rinkeby.infura.io/ws/v3/${process.env.PROJECT_ID}`
         ),
       network_id: 4, // Rinkeby's id
-      gas: 7000000,
-      gasPrice: 30000000000, // 30 gwei
-      skipDryRun: true, // Skip dry run before migrations? (default: false for public nets )
-    },
-    mainnet_maintainer: {
-      provider: () =>
-        new HDWalletProvider(
-          [process.env.MAINTAINER_PRIVATE_KEY],
-          `wss://mainnet.infura.io/ws/v3/${process.env.PROJECT_ID}`
-        ),
-      network_id: 4, // Rinkeby's id
-      gas: 7000000,
-      gasPrice: 30000000000, // 30 gwei
-      skipDryRun: true, // Skip dry run before migrations? (default: false for public nets )
+      // gas: 6000000,
+      gas: 6250000,
+      gasPrice: 1000000000, // 1 Gwei
+      maxFeePerGas: 8000000000, // 8 Gwei
+      // maxPriorityFeePerGas : 5, // 5 Gwei
+      // timeoutBlocks : 5, // wait 5 minutes (20 blocks)
+      // deploymentPollingInterval: 70, // 10 seconds
+      skipDryRun: true,
     },
     ropsten: {
       provider: () =>
@@ -97,9 +91,45 @@ module.exports = {
       gasPrice: 50000000000,
       skipDryRun: true,
     },
-    bsc_test: {
+    mainnet_maintainer: {
       provider: () =>
-        new HDWalletProvider([process.env.PRIVATE_KEY], "https://data-seed-prebsc-1-s3.binance.org:8545/"),
+        new HDWalletProvider(
+          [process.env.MAINTAINER_PRIVATE_KEY],
+          `wss://mainnet.infura.io/ws/v3/${process.env.PROJECT_ID}`
+        ),
+      network_id: 1, // Rinkeby's id
+      gas: 5250000,
+      maxFeePerGas: 120000000000,
+      maxPriorityFeePerGas: 5, // 5 Gwei
+      // gasPrice: 30000000000, // 30 gwei
+      // skipDryRun: true, // Skip dry run before migrations? (default: false for public nets )
+      networkCheckTimeout: 10000,
+      deploymentPollingInterval: 750,
+      skipDryRun: false,
+    },
+    mainnet_fork: {
+      // For testing mainnet integrations on migrations
+      host: "127.0.0.1",
+      port: 8545, // Different port to prevent accidents
+      network_id: "*",
+      // gasLimit: 10000000,
+      // gasPrice: 50000000000,
+      gas: 5000000,
+      maxFeePerGas: 80000000000,
+      maxPriorityFeePerGas: 5, // 5 Gwei
+      disableConfirmationListener: true,
+      skipDryRun: true,
+    },
+    bsc_development: {
+      host: "127.0.0.1", // Localhost (default: none)
+      port: 8545, // Standard Ethereum port (default: none)
+      network_id: "*", // Any network (default: none)
+      gasLimit: 10000000, // <-- Use this high gas value
+      gasPrice: 50000000000,
+      disableConfirmationListener: true,
+    },
+    bsc_test: {
+      provider: () => new HDWalletProvider([process.env.PRIVATE_KEY], "wss://data-seed-prebsc-1-s3.binance.org:8545/"),
       network_id: 97,
       gas: 8000000,
       gasPrice: 10000000000,
@@ -110,10 +140,21 @@ module.exports = {
       network_id: 56,
       gas: 8000000,
     },
-    polygon_testnet: {
-      provider: () => new HDWalletProvider([process.env.PRIVATE_KEY], "https://matic-mumbai.chainstacklabs.com"),
+    polygon_development: {
+      host: "127.0.0.1", // Localhost (default: none)
+      port: 8545, // Standard Ethereum port (default: none)
+      network_id: "*", // Any network (default: none)
+      gasLimit: 10000000, // <-- Use this high gas value
+      gasPrice: 50000000000,
+      disableConfirmationListener: true,
+    },
+    polygon_test: {
+      provider: () => new HDWalletProvider([process.env.PRIVATE_KEY], "wss://ws-matic-mumbai.chainstacklabs.com"),
       network_id: 80001,
+      gas: 8000000,
+      gasPrice: 20000000000,
       timeoutBlocks: 200,
+      networkCheckTimeout: 1000000,
       skipDryRun: true,
       disableConfirmationListener: true,
     },
@@ -140,8 +181,7 @@ module.exports = {
   // Set default mocha options here, use special reporters etc.
   mocha: {
     color: true,
-    timeout: 5000000,
-    // parallel: true,
+    // timeout: 5000000,
     //reporter: 'eth-gas-reporter',
     // reporterOptions: {
     //   showTimeSpent: true,
@@ -155,6 +195,8 @@ module.exports = {
 
   api_keys: {
     etherscan: process.env.ETHERSCAN_KEY,
+    bscscan: process.env.BSCSCAN_KEY,
+    polygonscan: process.env.POLYGON_KEY,
   },
 
   // Configure your compilers

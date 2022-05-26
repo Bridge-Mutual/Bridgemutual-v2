@@ -21,6 +21,7 @@ interface IPolicyBookFabric {
     ) external returns (address);
 
     function createLeveragePools(
+        address _insuranceContract,
         ContractType _contractType,
         string calldata _description,
         string calldata _projectSymbol

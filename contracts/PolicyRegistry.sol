@@ -65,6 +65,23 @@ contract PolicyRegistry is IPolicyRegistry, AbstractDependant {
         return _policies[_userAddr].contains(_policyBookAddr);
     }
 
+    /// @dev a valid policy is a not expired policy
+    /// @dev Policy Expired when the coverage period ends
+    /// @dev after policy expires, user can buy new one
+    function isPolicyValid(address _userAddr, address _policyBookAddr)
+        public
+        view
+        override
+        returns (bool)
+    {
+        uint256 endTime = policyInfos[_userAddr][_policyBookAddr].endTime;
+
+        return endTime > block.timestamp;
+    }
+
+    /// @dev an active policy is a not ended policy
+    /// @dev Policy Ended when the coverage period ends + X days
+    /// @dev before policy end, user can claim
     function isPolicyActive(address _userAddr, address _policyBookAddr)
         public
         view
@@ -167,7 +184,7 @@ contract PolicyRegistry is IPolicyRegistry, AbstractDependant {
                 _usersInfos[i].insuredContract,
                 _usersInfos[i].contractType,
 
-            ) = IPolicyBook(_policyBooks[i]).info();
+            ) = IPolicyBookFacade(IPolicyBook(_policyBooks[i]).policyBookFacade()).info();
 
             _usersInfos[i].coverTokens = policyHolder.coverTokens;
             _usersInfos[i].startTime = policyStartTime(_users[i], _policyBooks[i]);

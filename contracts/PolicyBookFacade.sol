@@ -1,4 +1,4 @@
-// SPDX-Licene-Identifier: MIT
+// SPDX-License-Identifier: MIT
 pragma solidity ^0.7.4;
 
 import "@openzeppelin/contracts-upgradeable/proxy/Initializable.sol";
@@ -14,8 +14,11 @@ import "./interfaces/ILiquidityRegistry.sol";
 import "./interfaces/IPolicyBookAdmin.sol";
 import "./interfaces/IPolicyBookFacade.sol";
 import "./interfaces/helpers/IPriceFeed.sol";
-import "./interfaces/IPolicyBookFabric.sol";
+
 import "./interfaces/IPolicyBookRegistry.sol";
+import "./interfaces/IRewardsGenerator.sol";
+import "./interfaces/IPolicyQuote.sol";
+import "./interfaces/IClaimingRegistry.sol";
 
 import "./abstract/AbstractDependant.sol";
 
@@ -24,6 +27,18 @@ import "./Globals.sol";
 contract PolicyBookFacade is IPolicyBookFacade, AbstractDependant, Initializable {
     using EnumerableSet for EnumerableSet.AddressSet;
     using Math for uint256;
+
+    uint256 public constant MINUMUM_COVERAGE = 100 * DECIMALS18; // 100 STBL
+
+    uint256 public constant EPOCH_DURATION = 1 weeks;
+    uint256 public constant MAXIMUM_EPOCHS = SECONDS_IN_THE_YEAR / EPOCH_DURATION;
+
+    uint256 public constant RISKY_UTILIZATION_RATIO = 80 * PRECISION;
+    uint256 public constant MODERATE_UTILIZATION_RATIO = 50 * PRECISION;
+
+    uint256 public constant MINIMUM_REWARD = 15 * PRECISION; // 0.15
+    uint256 public constant MAXIMUM_REWARD = 2 * PERCENTAGE_100; // 2.0
+    uint256 public constant BASE_REWARD = PERCENTAGE_100; // 1.0
 
     IPolicyBookAdmin public policyBookAdmin;
     ILeveragePortfolio public reinsurancePool;
@@ -57,6 +72,12 @@ contract PolicyBookFacade is IPolicyBookFacade, AbstractDependant, Initializable
     mapping(address => uint256) public override userLiquidity;
 
     EnumerableSet.AddressSet internal userLeveragePools;
+
+    IRewardsGenerator public rewardsGenerator;
+
+    IPolicyQuote public policyQuote;
+
+    IClaimingRegistry public claimingRegistry;
 
     event DeployLeverageFunds(uint256 _deployedAmount);
 
@@ -114,8 +135,10 @@ contract PolicyBookFacade is IPolicyBookFacade, AbstractDependant, Initializable
         policyBookAdmin = IPolicyBookAdmin(_contractsRegistry.getPolicyBookAdminContract());
         priceFeed = _contractsRegistry.getPriceFeedContract();
         reinsurancePool = ILeveragePortfolio(_contractsRegistry.getReinsurancePoolContract());
-
+        policyQuote = IPolicyQuote(_contractsRegistry.getPolicyQuoteContract());
         shieldMining = IShieldMining(_contractsRegistry.getShieldMiningContract());
+        rewardsGenerator = IRewardsGenerator(_contractsRegistry.getRewardsGeneratorContract());
+        claimingRegistry = IClaimingRegistry(_contractsRegistry.getClaimingRegistryContract());
     }
 
     /// @notice Let user to buy policy by supplying stable coin, access: ANY
@@ -227,15 +250,14 @@ contract PolicyBookFacade is IPolicyBookFacade, AbstractDependant, Initializable
         uint256 _distributorFee,
         address _distributor
     ) internal {
-        (uint256 _premium, ) =
-            policyBook.buyPolicy(
-                _policyBuyerAddr,
-                _policyHolderAddr,
-                _epochsNumber,
-                _coverTokens,
-                _distributorFee,
-                _distributor
-            );
+        policyBook.buyPolicy(
+            _policyBuyerAddr,
+            _policyHolderAddr,
+            _epochsNumber,
+            _coverTokens,
+            _distributorFee,
+            _distributor
+        );
 
         _deployLeveragedFunds();
     }
@@ -274,7 +296,9 @@ contract PolicyBookFacade is IPolicyBookFacade, AbstractDependant, Initializable
         }
         uint256 _LUuserLeveragePool;
         for (uint256 i = 0; i < userLeveragePools.length(); i++) {
-            _LUuserLeveragePool += LUuserLeveragePool[userLeveragePools.at(i)];
+            _LUuserLeveragePool = _LUuserLeveragePool.add(
+                LUuserLeveragePool[userLeveragePools.at(i)]
+            );
         }
         totalLeveragedLiquidity = VUreinsurnacePool.add(LUreinsurnacePool).add(
             _LUuserLeveragePool
@@ -291,8 +315,10 @@ contract PolicyBookFacade is IPolicyBookFacade, AbstractDependant, Initializable
     {
         VUreinsurnacePool = deployedAmount;
         uint256 _LUuserLeveragePool;
-        if (userLeveragePools.length() > 0) {
-            _LUuserLeveragePool = LUuserLeveragePool[userLeveragePools.at(0)];
+        for (uint256 i = 0; i < userLeveragePools.length(); i++) {
+            _LUuserLeveragePool = _LUuserLeveragePool.add(
+                LUuserLeveragePool[userLeveragePools.at(i)]
+            );
         }
         totalLeveragedLiquidity = VUreinsurnacePool.add(LUreinsurnacePool).add(
             _LUuserLeveragePool
@@ -324,12 +350,14 @@ contract PolicyBookFacade is IPolicyBookFacade, AbstractDependant, Initializable
                 .deployLeverageStableToCoveragePools(
                 ILeveragePortfolio.LeveragePortfolio.USERLEVERAGEPOOL
             );
+            // update user leverage pool apy after rebalancing
+            ILeveragePortfolio(_userLeverageArr[i]).forceUpdateBMICoverStakingRewardMultiplier();
             LUuserLeveragePool[_userLeverageArr[i]] = _deployedAmount;
             _deployedAmount > 0
                 ? userLeveragePools.add(_userLeverageArr[i])
                 : userLeveragePools.remove(_userLeverageArr[i]);
 
-            _LUuserLeveragePool += _deployedAmount;
+            _LUuserLeveragePool = _LUuserLeveragePool.add(_deployedAmount);
         }
 
         totalLeveragedLiquidity = VUreinsurnacePool.add(LUreinsurnacePool).add(
@@ -348,9 +376,13 @@ contract PolicyBookFacade is IPolicyBookFacade, AbstractDependant, Initializable
         }
 
         if (isWithdraw) {
-            userLiquidity[liquidityProvider] -= liquidityAmount;
+            userLiquidity[liquidityProvider] = userLiquidity[liquidityProvider].sub(
+                liquidityAmount
+            );
         } else {
-            userLiquidity[liquidityProvider] += liquidityAmount;
+            userLiquidity[liquidityProvider] = userLiquidity[liquidityProvider].add(
+                liquidityAmount
+            );
         }
     }
 
@@ -390,39 +422,6 @@ contract PolicyBookFacade is IPolicyBookFacade, AbstractDependant, Initializable
         safePricingModel = _safePricingModel;
     }
 
-    /// @notice fetches all the pools data
-    /// @return uint256 VUreinsurnacePool
-    /// @return uint256 LUreinsurnacePool
-    /// @return uint256 LUleveragePool
-    /// @return uint256 user leverage pool address
-    function getPoolsData()
-        external
-        view
-        override
-        returns (
-            uint256,
-            uint256,
-            uint256,
-            address
-        )
-    {
-        uint256 _LUuserLeveragePool;
-        address _userLeverageAddress;
-        if (userLeveragePools.length() > 0) {
-            _LUuserLeveragePool = DecimalsConverter.convertFrom18(
-                LUuserLeveragePool[userLeveragePools.at(0)],
-                policyBook.stblDecimals()
-            );
-            _userLeverageAddress = userLeveragePools.at(0);
-        }
-        return (
-            DecimalsConverter.convertFrom18(VUreinsurnacePool, policyBook.stblDecimals()),
-            DecimalsConverter.convertFrom18(LUreinsurnacePool, policyBook.stblDecimals()),
-            _LUuserLeveragePool,
-            _userLeverageAddress
-        );
-    }
-
     // TODO possible sandwich attack or allowance fluctuation
     function getClaimApprovalAmount(address user) external view override returns (uint256) {
         (uint256 _coverTokens, , , , ) = policyBook.policyHolders(user);
@@ -438,12 +437,19 @@ contract PolicyBookFacade is IPolicyBookFacade, AbstractDependant, Initializable
     /// @dev prevents adding a request if an already pending or ready request is open.
     /// @param _tokensToWithdraw uint256 amount of tokens to withdraw
     function requestWithdrawal(uint256 _tokensToWithdraw) external override {
+        require(_tokensToWithdraw > 0, "PB: Amount is zero");
+
         IPolicyBook.WithdrawalStatus _withdrawlStatus = policyBook.getWithdrawalStatus(msg.sender);
 
         require(
             _withdrawlStatus == IPolicyBook.WithdrawalStatus.NONE ||
                 _withdrawlStatus == IPolicyBook.WithdrawalStatus.EXPIRED,
             "PBf: ongoing withdrawl request"
+        );
+
+        require(
+            !claimingRegistry.hasProcedureOngoing(address(policyBook)),
+            "PBf: ongoing claim procedure"
         );
 
         policyBook.requestWithdrawal(_tokensToWithdraw, msg.sender);
@@ -471,5 +477,104 @@ contract PolicyBookFacade is IPolicyBookFacade, AbstractDependant, Initializable
     /// @notice get count of user leverage pools which provide leverage to this pool
     function countUserLeveragePools() external view override returns (uint256) {
         return userLeveragePools.length();
+    }
+
+    function secondsToEndCurrentEpoch() public view override returns (uint256) {
+        uint256 epochNumber =
+            block.timestamp.sub(policyBook.epochStartTime()).div(EPOCH_DURATION) + 1;
+
+        return
+            epochNumber.mul(EPOCH_DURATION).sub(block.timestamp.sub(policyBook.epochStartTime()));
+    }
+
+    function forceUpdateBMICoverStakingRewardMultiplier() external override {
+        uint256 rewardMultiplier;
+
+        if (policyBook.whitelisted()) {
+            rewardMultiplier = MINIMUM_REWARD;
+            uint256 liquidity = policyBook.totalLiquidity();
+            uint256 coverTokens = policyBook.totalCoverTokens();
+
+            if (coverTokens > 0 && liquidity > 0) {
+                rewardMultiplier = BASE_REWARD;
+
+                uint256 utilizationRatio = coverTokens.mul(PERCENTAGE_100).div(liquidity);
+
+                if (utilizationRatio < MODERATE_UTILIZATION_RATIO) {
+                    rewardMultiplier = Math
+                        .max(utilizationRatio, PRECISION)
+                        .sub(PRECISION)
+                        .mul(BASE_REWARD.sub(MINIMUM_REWARD))
+                        .div(MODERATE_UTILIZATION_RATIO)
+                        .add(MINIMUM_REWARD);
+                } else if (utilizationRatio > RISKY_UTILIZATION_RATIO) {
+                    rewardMultiplier = MAXIMUM_REWARD
+                        .sub(BASE_REWARD)
+                        .mul(utilizationRatio.sub(RISKY_UTILIZATION_RATIO))
+                        .div(PERCENTAGE_100.sub(RISKY_UTILIZATION_RATIO))
+                        .add(BASE_REWARD);
+                }
+            }
+        }
+
+        rewardsGenerator.updatePolicyBookShare(rewardMultiplier.div(10**22), address(policyBook)); // 5 decimal places or zero
+    }
+
+    function getPolicyPrice(
+        uint256 _epochsNumber,
+        uint256 _coverTokens,
+        address _holder
+    )
+        public
+        view
+        override
+        returns (
+            uint256 totalSeconds,
+            uint256 totalPrice,
+            uint256 pricePercentage
+        )
+    {
+        require(_coverTokens >= MINUMUM_COVERAGE, "PB: Wrong cover");
+        require(_epochsNumber > 0 && _epochsNumber <= MAXIMUM_EPOCHS, "PB: Wrong epoch duration");
+
+        (uint256 newTotalCoverTokens, uint256 newTotalLiquidity) =
+            policyBook.getNewCoverAndLiquidity();
+
+        totalSeconds = secondsToEndCurrentEpoch().add(_epochsNumber.sub(1).mul(EPOCH_DURATION));
+        (totalPrice, pricePercentage) = policyQuote.getQuotePredefined(
+            totalSeconds,
+            _coverTokens,
+            newTotalCoverTokens,
+            newTotalLiquidity,
+            totalLeveragedLiquidity,
+            safePricingModel
+        );
+
+        ///@notice commented this because of PB size when adding a new feature
+        /// and it is not used anymore ATM
+        // reduce premium by reward NFT locked by user
+        // uint256 _reductionMultiplier = nftStaking.getUserReductionMultiplier(_holder);
+        // if (_reductionMultiplier > 0) {
+        //     totalPrice = totalPrice.sub(totalPrice.mul(_reductionMultiplier).div(PERCENTAGE_100));
+        // }
+    }
+
+    function info()
+        external
+        view
+        override
+        returns (
+            string memory _symbol,
+            address _insuredContract,
+            IPolicyBookFabric.ContractType _contractType,
+            bool _whitelisted
+        )
+    {
+        return (
+            ERC20(address(policyBook)).symbol(),
+            policyBook.insuranceContractAddress(),
+            policyBook.contractType(),
+            policyBook.whitelisted()
+        );
     }
 }

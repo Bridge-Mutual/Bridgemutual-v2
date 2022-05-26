@@ -107,14 +107,14 @@ contract LeveragePortfolioView is ILeveragePortfolioView, AbstractDependant {
         }
     }
 
-    function calcvStableFormulaforAllPools() internal view returns (uint256) {
+    function calcvStableFormulaforAllPools() external view override returns (uint256) {
         uint256 _coveragePoolCount = policyBookRegistry.count();
         address[] memory _policyBooksArr = policyBookRegistry.list(0, _coveragePoolCount);
 
         uint256 sum;
         for (uint256 i = 0; i < _policyBooksArr.length; i++) {
             if (policyBookRegistry.isUserLeveragePool(_policyBooksArr[i])) continue;
-            sum += calcvStableFormulaforOnePool(_policyBooksArr[i]);
+            sum = sum.add(calcvStableFormulaforOnePool(_policyBooksArr[i]));
         }
         return sum;
     }
@@ -190,14 +190,16 @@ contract LeveragePortfolioView is ILeveragePortfolioView, AbstractDependant {
             if (leveragePoolType == ILeveragePortfolio.LeveragePortfolio.USERLEVERAGEPOOL) {
                 if (_userLeverageArr[i] == address(msg.sender)) continue;
             }
-            _netMPLn += ILeveragePortfolio(_userLeverageArr[i])
-                .totalLiquidity()
-                .mul(IPolicyBookFacade(_policyBookFacade).userleveragedMPL())
-                .div(PERCENTAGE_100);
+            _netMPLn = _netMPLn.add(
+                ILeveragePortfolio(_userLeverageArr[i])
+                    .totalLiquidity()
+                    .mul(IPolicyBookFacade(_policyBookFacade).userleveragedMPL())
+                    .div(PERCENTAGE_100)
+            );
         }
     }
 
-    function calcMaxVirtualFunds(address policyBookAddress)
+    function calcMaxVirtualFunds(address policyBookAddress, uint256 vStableWeight)
         external
         view
         override
@@ -221,11 +223,9 @@ contract LeveragePortfolioView is ILeveragePortfolioView, AbstractDependant {
 
         uint256 result1 = calcvStableFormulaforOnePool(policyBookAddress);
 
-        uint256 result2 = calcvStableFormulaforAllPools();
-
-        if (result2 != 0) {
+        if (vStableWeight != 0) {
             _amountToDeploy = result1.mul(ILeveragePortfolio(msg.sender).totalLiquidity()).div(
-                result2
+                vStableWeight
             );
         }
     }

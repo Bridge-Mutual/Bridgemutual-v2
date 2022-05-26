@@ -13,4 +13,6 @@ interface ICERC20 {
     function balanceOf(address owner) external view returns (uint256);
 
     function exchangeRateStored() external view returns (uint256);
+
+    function supplyRatePerBlock() external view returns (uint256);
 }

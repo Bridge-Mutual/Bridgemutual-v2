@@ -140,13 +140,8 @@ abstract contract AbstractLiquidityMiningStaking is
         totalStaked = totalPoolStaked;
     }
 
-    /// @dev returns percentage multiplied by 10**25
-    function getSlashingPercentage() external view override returns (uint256) {
-        return getSlashingPercentage(liquidityMining.startLiquidityMiningTime());
-    }
-
     function earnedSlashed(address _account) external view override returns (uint256) {
-        return _applySlashing(earned(_account), liquidityMining.startLiquidityMiningTime());
+        return _applySlashing(earned(_account));
     }
 
     /// @notice djusts the staking of a specific user by staking,  withdrawing or _getReward (harvesting, WandHarvest) on the sushiswap protocol
@@ -203,8 +198,7 @@ abstract contract AbstractLiquidityMiningStaking is
         if (reward > 0) {
             delete _rewards[user];
 
-            uint256 bmiStakingProfit =
-                _getSlashed(reward, liquidityMining.startLiquidityMiningTime());
+            uint256 bmiStakingProfit = _getSlashed(reward);
             uint256 profit = reward.sub(bmiStakingProfit);
 
             // transfer slashed bmi to the bmiStaking and add them to the pool

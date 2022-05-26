@@ -2,6 +2,8 @@
 pragma solidity ^0.7.4;
 pragma experimental ABIEncoderV2;
 
+import "@openzeppelin/contracts/utils/EnumerableSet.sol";
+
 import "./IClaimingRegistry.sol";
 
 interface IClaimVoting {
@@ -10,9 +12,9 @@ interface IClaimVoting {
         AWAITING_EXPOSURE,
         EXPIRED,
         EXPOSED_PENDING,
-        AWAITING_CALCULATION,
         MINORITY,
-        MAJORITY
+        MAJORITY,
+        RECEIVED
     }
 
     struct VotingResult {
@@ -20,10 +22,11 @@ interface IClaimVoting {
         uint256 lockedBMIAmount;
         uint256 reinsuranceTokensAmount;
         uint256 votedAverageWithdrawalAmount;
-        uint256 votedYesStakedBMIAmountWithReputation;
-        uint256 votedNoStakedBMIAmountWithReputation;
-        uint256 allVotedStakedBMIAmount;
+        uint256 votedYesStakedStkBMIAmountWithReputation;
+        uint256 votedNoStakedStkBMIAmountWithReputation;
+        uint256 allVotedStakedStkBMIAmount;
         uint256 votedYesPercentage;
+        EnumerableSet.UintSet voteIndexes;
     }
 
     struct VotingInst {
@@ -33,7 +36,7 @@ interface IClaimVoting {
         address voter;
         uint256 voterReputation;
         uint256 suggestedAmount;
-        uint256 stakedBMIAmount;
+        uint256 stakedStkBMIAmount;
         bool accept;
         VoteStatus status;
     }
@@ -81,6 +84,16 @@ interface IClaimVoting {
         int256 stakeChange;
     }
 
+    function voteResults(uint256 voteIndex)
+        external
+        view
+        returns (
+            uint256 bmiReward,
+            uint256 stblReward,
+            int256 reputationChange,
+            int256 stakeChange
+        );
+
     /// @notice starts the voting process
     function initializeVoting(
         address claimer,
@@ -90,13 +103,24 @@ interface IClaimVoting {
     ) external;
 
     /// @notice returns true if the user has no PENDING votes
-    function canWithdraw(address user) external view returns (bool);
+    function canUnstake(address user) external view returns (bool);
 
-    /// @notice returns true if the user has no AWAITING_CALCULATION votes
+    /// @notice returns true if the user has no awaiting reception votes
     function canVote(address user) external view returns (bool);
+
+    /// @notice returns number of vote on a claim
+    function countVoteOnClaim(uint256 claimIndex) external view returns (uint256);
+
+    /// @notice returns amount of bmi locked for FE
+    function lockedBMIAmount(uint256 claimIndex) external view returns (uint256);
 
     /// @notice returns how many votes the user has
     function countVotes(address user) external view returns (uint256);
+
+    function voteIndexByClaimIndexAt(uint256 claimIndex, uint256 orderIndex)
+        external
+        view
+        returns (uint256);
 
     /// @notice returns status of the vote
     function voteStatus(uint256 index) external view returns (VoteStatus);
@@ -124,15 +148,10 @@ interface IClaimVoting {
         view
         returns (MyVoteInfo[] memory _myVotesInfo);
 
-    /// @notice returns an array of votes that can be calculated + update information
-    function myVotesUpdates(uint256 offset, uint256 limit)
+    function myNotReceivesVotes(address user)
         external
         view
-        returns (
-            uint256 _votesUpdatesCount,
-            uint256[] memory _claimIndexes,
-            VotesUpdatesInfo memory _myVotesUpdatesInfo
-        );
+        returns (uint256[] memory claimIndexes, VotesUpdatesInfo[] memory voteRewardInfo);
 
     /// @notice anonymously votes (result used later in exposeVote())
     /// @notice the claims have to be PENDING, the voter can vote only once for a specific claim
@@ -159,9 +178,11 @@ interface IClaimVoting {
         bytes32[] calldata hashedSignaturesOfClaims
     ) external;
 
-    /// @notice calculates results of votes
-    function calculateVoterResultBatch(uint256[] calldata claimIndexes) external;
+    /// @notice calculates results of votes on a claim
+    function calculateResult(uint256 claimIndex) external;
 
-    /// @notice calculates results of claims
-    function calculateVotingResultBatch(uint256[] calldata claimIndexes) external;
+    /// @notice distribute rewards and slash penalties
+    function receiveResult() external;
+
+    function transferLockedBMI(uint256 claimIndex, address claimer) external;
 }

@@ -26,6 +26,9 @@ interface IDefiProtocol {
     /// @param newValue address the new address to recieve the rewards
     function setRewards(address newValue) external;
 
+    /// @notice get protocol gain for one day for one unit
+    function getOneDayGain() external view returns (uint256);
+
     ///@dev update total value only for compound
     function updateTotalValue() external returns (uint256);
 

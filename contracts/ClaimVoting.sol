@@ -17,6 +17,7 @@ import "./interfaces/IPolicyBookRegistry.sol";
 import "./interfaces/IReputationSystem.sol";
 import "./interfaces/IReinsurancePool.sol";
 import "./interfaces/IPolicyBook.sol";
+import "./interfaces/IStkBMIStaking.sol";
 
 import "./interfaces/tokens/IVBMI.sol";
 
@@ -51,7 +52,7 @@ contract ClaimVoting is IClaimVoting, Initializable, AbstractDependant {
     mapping(uint256 => VotingResult) internal _votings;
 
     // voter -> claim indexes
-    mapping(address => EnumerableSet.UintSet) internal _myNotCalculatedVotes;
+    mapping(address => EnumerableSet.UintSet) internal _myNotReceivedVotes;
 
     // voter -> voting indexes
     mapping(address => EnumerableSet.UintSet) internal _myVotes;
@@ -66,6 +67,11 @@ contract ClaimVoting is IClaimVoting, Initializable, AbstractDependant {
 
     uint256 private _voteIndex;
 
+    IStkBMIStaking public stkBMIStaking;
+
+    // vote index -> results of calculation
+    mapping(uint256 => VotesUpdatesInfo) public override voteResults;
+
     event AnonymouslyVoted(uint256 claimIndex);
     event VoteExposed(uint256 claimIndex, address voter, uint256 suggestedClaimAmount);
     event VoteCalculated(uint256 claimIndex, address voter, VoteStatus status);
@@ -78,11 +84,9 @@ contract ClaimVoting is IClaimVoting, Initializable, AbstractDependant {
         _;
     }
 
-    function _isVoteAwaitingCalculation(uint256 index) internal view returns (bool) {
-        uint256 claimIndex = _allVotesByIndexInst[index].claimIndex;
-
-        return (_allVotesByIndexInst[index].status == VoteStatus.EXPOSED_PENDING &&
-            !claimingRegistry.isClaimPending(claimIndex));
+    modifier onlyClaimingRegistry() {
+        require(msg.sender == address(claimingRegistry), "CV: Not ClaimingRegistry");
+        _;
     }
 
     function _isVoteAwaitingExposure(uint256 index) internal view returns (bool) {
@@ -115,8 +119,8 @@ contract ClaimVoting is IClaimVoting, Initializable, AbstractDependant {
         );
         reputationSystem = IReputationSystem(_contractsRegistry.getReputationSystemContract());
         reinsurancePool = IReinsurancePool(_contractsRegistry.getReinsurancePoolContract());
-        vBMI = IVBMI(_contractsRegistry.getVBMIContract());
         bmiToken = IERC20(_contractsRegistry.getBMIContract());
+        stkBMIStaking = IStkBMIStaking(_contractsRegistry.getStkBMIStakingContract());
 
         stblDecimals = ERC20(_contractsRegistry.getUSDTContract()).decimals();
     }
@@ -141,17 +145,8 @@ contract ClaimVoting is IClaimVoting, Initializable, AbstractDependant {
 
         bmiToken.transferFrom(claimer, address(this), onePercentInBMIToLock); // needed approval
 
-        // reinsurancePrice variable was added later after a SC Upgrade and if user
-        // had bought policy before it was implemented, his value would be 0.
-        // So if it is zero, we should get it from protocol percentage fee only
-        // reinsurancePrice is equal to (paid * protocol percentage) - distributorFee.
-        // If user bought policy before upgrade, correct value is (paid * protocol).
         IPolicyBook.PolicyHolder memory policyHolder = IPolicyBook(msg.sender).userStats(claimer);
         uint256 reinsuranceTokensAmount = policyHolder.reinsurancePrice;
-        if (reinsuranceTokensAmount == 0) {
-            reinsuranceTokensAmount = policyHolder.paid.mul(20 * PRECISION).div(PERCENTAGE_100);
-        }
-
         reinsuranceTokensAmount = Math.min(reinsuranceTokensAmount, coverTokens.div(100));
 
         _votings[claimIndex].withdrawalAmount = coverTokens;
@@ -159,38 +154,62 @@ contract ClaimVoting is IClaimVoting, Initializable, AbstractDependant {
         _votings[claimIndex].reinsuranceTokensAmount = reinsuranceTokensAmount;
     }
 
-    /// @dev check in BMIStaking when withdrawing, if true -> can withdraw
-    function canWithdraw(address user) external view override returns (bool) {
-        return _myNotCalculatedVotes[user].length() == 0;
+    /// @dev check if no vote or vote pending reception, if true -> can vote
+    /// @dev Voters can vote on other Claims only when they updated their reputation and received outcomes for all Resolved Claims.
+    /// @dev _myNotReceivedVotes represent list of vote pending calculation or calculated but not received
+    function canVote(address user) public view override returns (bool) {
+        return _myNotReceivedVotes[user].length() == 0;
     }
 
-    /// @dev check when anonymously voting, if true -> can vote
-    function canVote(address user) public view override returns (bool) {
-        uint256 notCalculatedLength = _myNotCalculatedVotes[user].length();
+    /// @dev check in StkBMIStaking when withdrawing, if true -> can withdraw
+    /// @dev Voters can unstake stkBMI only when there are no voted Claims
+    function canUnstake(address user) external view override returns (bool) {
+        uint256 voteLength = _myVotes[user].length();
 
-        for (uint256 i = 0; i < notCalculatedLength; i++) {
-            if (
-                _isVoteAwaitingCalculation(
-                    _allVotesToIndex[user][_myNotCalculatedVotes[user].at(i)]
-                )
-            ) {
+        for (uint256 i = 0; i < voteLength; i++) {
+            if (voteStatus(_myVotes[user].at(i)) != VoteStatus.RECEIVED) {
                 return false;
             }
         }
-
         return true;
+    }
+
+    function countVoteOnClaim(uint256 claimIndex) external view override returns (uint256) {
+        return _votings[claimIndex].voteIndexes.length();
+    }
+
+    function lockedBMIAmount(uint256 claimIndex) public view override returns (uint256) {
+        return _votings[claimIndex].lockedBMIAmount;
     }
 
     function countVotes(address user) external view override returns (uint256) {
         return _myVotes[user].length();
     }
 
+    function voteIndex(uint256 claimIndex, address user) external view returns (uint256) {
+        return _allVotesToIndex[user][claimIndex];
+    }
+
+    function getVotingPower(uint256 index) external view returns (uint256) {
+        return
+            _allVotesByIndexInst[index].voterReputation.mul(
+                _allVotesByIndexInst[index].stakedStkBMIAmount
+            );
+    }
+
+    function voteIndexByClaimIndexAt(uint256 claimIndex, uint256 orderIndex)
+        external
+        view
+        override
+        returns (uint256)
+    {
+        return _votings[claimIndex].voteIndexes.at(orderIndex);
+    }
+
     function voteStatus(uint256 index) public view override returns (VoteStatus) {
         require(_allVotesIndexes.contains(index), "CV: Vote doesn't exist");
 
-        if (_isVoteAwaitingCalculation(index)) {
-            return VoteStatus.AWAITING_CALCULATION;
-        } else if (_isVoteAwaitingExposure(index)) {
+        if (_isVoteAwaitingExposure(index)) {
             return VoteStatus.AWAITING_EXPOSURE;
         } else if (_isVoteExpired(index)) {
             return VoteStatus.EXPIRED;
@@ -336,13 +355,12 @@ contract ClaimVoting is IClaimVoting, Initializable, AbstractDependant {
         _myVotesInfo = new MyVoteInfo[](to - offset);
 
         for (uint256 i = offset; i < to; i++) {
-            VotingInst storage myVote = _allVotesByIndexInst[_myVotes[msg.sender].at(i)];
+            uint256 voteIndex = _myVotes[msg.sender].at(i);
+            uint256 claimIndex = _allVotesByIndexInst[voteIndex].claimIndex;
 
-            uint256 index = myVote.claimIndex;
+            IClaimingRegistry.ClaimInfo memory claimInfo = claimingRegistry.claimInfo(claimIndex);
 
-            IClaimingRegistry.ClaimInfo memory claimInfo = claimingRegistry.claimInfo(index);
-
-            _myVotesInfo[i - offset].allClaimInfo.publicClaimInfo.claimIndex = index;
+            _myVotesInfo[i - offset].allClaimInfo.publicClaimInfo.claimIndex = claimIndex;
             _myVotesInfo[i - offset].allClaimInfo.publicClaimInfo.claimer = claimInfo.claimer;
             _myVotesInfo[i - offset].allClaimInfo.publicClaimInfo.policyBookAddress = claimInfo
                 .policyBookAddress;
@@ -359,113 +377,54 @@ contract ClaimVoting is IClaimVoting, Initializable, AbstractDependant {
                 _myVotesInfo[i - offset].allClaimInfo.finalVerdict ==
                 IClaimingRegistry.ClaimStatus.ACCEPTED
             ) {
-                _myVotesInfo[i - offset].allClaimInfo.finalClaimAmount = _votings[index]
+                _myVotesInfo[i - offset].allClaimInfo.finalClaimAmount = _votings[claimIndex]
                     .votedAverageWithdrawalAmount;
             }
 
-            _myVotesInfo[i - offset].suggestedAmount = myVote.suggestedAmount;
-            _myVotesInfo[i - offset].status = voteStatus(_myVotes[msg.sender].at(i));
+            _myVotesInfo[i - offset].suggestedAmount = _allVotesByIndexInst[voteIndex]
+                .suggestedAmount;
+            _myVotesInfo[i - offset].status = voteStatus(voteIndex);
 
             if (_myVotesInfo[i - offset].status == VoteStatus.ANONYMOUS_PENDING) {
                 _myVotesInfo[i - offset].time = claimInfo
                     .dateSubmitted
-                    .add(claimingRegistry.anonymousVotingDuration(index))
+                    .add(claimingRegistry.anonymousVotingDuration(claimIndex))
                     .sub(block.timestamp);
             } else if (_myVotesInfo[i - offset].status == VoteStatus.AWAITING_EXPOSURE) {
-                _myVotesInfo[i - offset].encryptedVote = myVote.encryptedVote;
+                _myVotesInfo[i - offset].encryptedVote = _allVotesByIndexInst[voteIndex]
+                    .encryptedVote;
                 _myVotesInfo[i - offset].time = claimInfo
                     .dateSubmitted
-                    .add(claimingRegistry.votingDuration(index))
+                    .add(claimingRegistry.votingDuration(claimIndex))
                     .sub(block.timestamp);
             }
         }
     }
 
-    /// @dev use with countVotes()
-    function myVotesUpdates(uint256 offset, uint256 limit)
-        external
+    function myNotReceivesVotes(address user)
+        public
         view
         override
-        returns (
-            uint256 _votesUpdatesCount,
-            uint256[] memory _claimIndexes,
-            VotesUpdatesInfo memory _myVotesUpdatesInfo
-        )
+        returns (uint256[] memory claimIndexes, VotesUpdatesInfo[] memory voteRewardInfo)
     {
-        uint256 to = (offset.add(limit)).min(_myVotes[msg.sender].length()).max(offset);
-        _votesUpdatesCount = 0;
+        uint256 notReceivedCount = _myNotReceivedVotes[user].length();
+        claimIndexes = new uint256[](notReceivedCount);
+        voteRewardInfo = new VotesUpdatesInfo[](notReceivedCount);
 
-        _claimIndexes = new uint256[](to - offset);
-
-        uint256 stblAmount;
-        uint256 bmiAmount;
-        uint256 bmiPenaltyAmount;
-        uint256 newReputation;
-
-        for (uint256 i = offset; i < to; i++) {
-            uint256 claimIndex = _allVotesByIndexInst[_myVotes[msg.sender].at(i)].claimIndex;
-
-            if (
-                _myNotCalculatedVotes[msg.sender].contains(claimIndex) &&
-                _isVoteAwaitingCalculation(_allVotesToIndex[msg.sender][claimIndex])
-            ) {
-                _claimIndexes[_votesUpdatesCount] = claimIndex;
-                uint256 oldReputation = reputationSystem.reputation(msg.sender);
-
-                if (
-                    _votings[claimIndex].votedYesPercentage >= PERCENTAGE_50 &&
-                    _allVotesByIndexInst[_allVotesToIndex[msg.sender][claimIndex]]
-                        .suggestedAmount >
-                    0
-                ) {
-                    (stblAmount, bmiAmount, newReputation) = _calculateMajorityYesVote(
-                        claimIndex,
-                        msg.sender,
-                        oldReputation
-                    );
-
-                    _myVotesUpdatesInfo.reputationChange += int256(
-                        newReputation.sub(oldReputation)
-                    );
-                } else if (
-                    _votings[claimIndex].votedYesPercentage < PERCENTAGE_50 &&
-                    _allVotesByIndexInst[_allVotesToIndex[msg.sender][claimIndex]]
-                        .suggestedAmount ==
-                    0
-                ) {
-                    (bmiAmount, newReputation) = _calculateMajorityNoVote(
-                        claimIndex,
-                        msg.sender,
-                        oldReputation
-                    );
-
-                    _myVotesUpdatesInfo.reputationChange += int256(
-                        newReputation.sub(oldReputation)
-                    );
-                } else {
-                    (bmiPenaltyAmount, newReputation) = _calculateMinorityVote(
-                        claimIndex,
-                        msg.sender,
-                        oldReputation
-                    );
-
-                    _myVotesUpdatesInfo.reputationChange -= int256(
-                        oldReputation.sub(newReputation)
-                    );
-                    _myVotesUpdatesInfo.stakeChange -= int256(bmiPenaltyAmount);
-                }
-
-                _myVotesUpdatesInfo.bmiReward = _myVotesUpdatesInfo.bmiReward.add(bmiAmount);
-                _myVotesUpdatesInfo.stblReward = _myVotesUpdatesInfo.stblReward.add(stblAmount);
-
-                _votesUpdatesCount++;
-            }
+        for (uint256 i = 0; i < notReceivedCount; i++) {
+            uint256 claimIndex = _myNotReceivedVotes[user].at(i);
+            uint256 voteIndex = _allVotesToIndex[user][claimIndex];
+            claimIndexes[i] = claimIndex;
+            voteRewardInfo[i].bmiReward = voteResults[voteIndex].bmiReward;
+            voteRewardInfo[i].stblReward = voteResults[voteIndex].stblReward;
+            voteRewardInfo[i].reputationChange = voteResults[voteIndex].reputationChange;
+            voteRewardInfo[i].stakeChange = voteResults[voteIndex].stakeChange;
         }
     }
 
     function _calculateAverages(
         uint256 claimIndex,
-        uint256 stakedBMI,
+        uint256 stakedStkBMI,
         uint256 suggestedClaimAmount,
         uint256 reputationWithPrecision,
         bool votedFor
@@ -473,42 +432,39 @@ contract ClaimVoting is IClaimVoting, Initializable, AbstractDependant {
         VotingResult storage info = _votings[claimIndex];
 
         if (votedFor) {
-            uint256 votedPower = info.votedYesStakedBMIAmountWithReputation;
-            uint256 voterPower = stakedBMI.mul(reputationWithPrecision);
+            uint256 votedPower = info.votedYesStakedStkBMIAmountWithReputation;
+            uint256 voterPower = stakedStkBMI.mul(reputationWithPrecision);
             uint256 totalPower = votedPower.add(voterPower);
 
             uint256 votedSuggestedPrice = info.votedAverageWithdrawalAmount.mul(votedPower);
             uint256 voterSuggestedPrice = suggestedClaimAmount.mul(voterPower);
-
-            info.votedAverageWithdrawalAmount = votedSuggestedPrice.add(voterSuggestedPrice).div(
-                totalPower
-            );
-            info.votedYesStakedBMIAmountWithReputation = totalPower;
+            if (totalPower > 0) {
+                info.votedAverageWithdrawalAmount = votedSuggestedPrice
+                    .add(voterSuggestedPrice)
+                    .div(totalPower);
+            }
+            info.votedYesStakedStkBMIAmountWithReputation = totalPower;
         } else {
-            info.votedNoStakedBMIAmountWithReputation = info
-                .votedNoStakedBMIAmountWithReputation
-                .add(stakedBMI.mul(reputationWithPrecision));
+            info.votedNoStakedStkBMIAmountWithReputation = info
+                .votedNoStakedStkBMIAmountWithReputation
+                .add(stakedStkBMI.mul(reputationWithPrecision));
         }
 
-        info.allVotedStakedBMIAmount = info.allVotedStakedBMIAmount.add(stakedBMI);
+        info.allVotedStakedStkBMIAmount = info.allVotedStakedStkBMIAmount.add(stakedStkBMI);
     }
 
     function _modifyExposedVote(
         address voter,
         uint256 claimIndex,
         uint256 suggestedClaimAmount,
-        uint256 stakedBMI,
         bool accept
     ) internal {
         uint256 index = _allVotesToIndex[voter][claimIndex];
-
-        _myNotCalculatedVotes[voter].add(claimIndex);
 
         _allVotesByIndexInst[index].finalHash = 0;
         delete _allVotesByIndexInst[index].encryptedVote;
 
         _allVotesByIndexInst[index].suggestedAmount = suggestedClaimAmount;
-        _allVotesByIndexInst[index].stakedBMIAmount = stakedBMI;
         _allVotesByIndexInst[index].accept = accept;
         _allVotesByIndexInst[index].status = VoteStatus.EXPOSED_PENDING;
     }
@@ -517,7 +473,8 @@ contract ClaimVoting is IClaimVoting, Initializable, AbstractDependant {
         address voter,
         uint256 claimIndex,
         bytes32 finalHash,
-        string memory encryptedVote
+        string memory encryptedVote,
+        uint256 stakedStkBMI
     ) internal {
         _myVotes[voter].add(_voteIndex);
 
@@ -526,10 +483,13 @@ contract ClaimVoting is IClaimVoting, Initializable, AbstractDependant {
         _allVotesByIndexInst[_voteIndex].encryptedVote = encryptedVote;
         _allVotesByIndexInst[_voteIndex].voter = voter;
         _allVotesByIndexInst[_voteIndex].voterReputation = reputationSystem.reputation(voter);
+        _allVotesByIndexInst[_voteIndex].stakedStkBMIAmount = stakedStkBMI;
         // No need to set default ANONYMOUS_PENDING status
 
         _allVotesToIndex[voter][claimIndex] = _voteIndex;
         _allVotesIndexes.add(_voteIndex);
+
+        _votings[claimIndex].voteIndexes.add(_voteIndex);
 
         _voteIndex++;
     }
@@ -539,12 +499,15 @@ contract ClaimVoting is IClaimVoting, Initializable, AbstractDependant {
         bytes32[] calldata finalHashes,
         string[] calldata encryptedVotes
     ) external override {
-        require(canVote(msg.sender), "CV: There are awaiting votes");
+        require(canVote(msg.sender), "CV: There are reception awaiting votes");
         require(
             claimIndexes.length == finalHashes.length &&
                 claimIndexes.length == encryptedVotes.length,
             "CV: Length mismatches"
         );
+
+        uint256 stakedStkBMI = stkBMIStaking.stakedStkBMI(msg.sender);
+        require(stakedStkBMI > 0, "CV: 0 staked StkBMI");
 
         for (uint256 i = 0; i < claimIndexes.length; i++) {
             uint256 claimIndex = claimIndexes[i];
@@ -567,7 +530,13 @@ contract ClaimVoting is IClaimVoting, Initializable, AbstractDependant {
                 "CV: Already voted for this claim"
             );
 
-            _addAnonymousVote(msg.sender, claimIndex, finalHashes[i], encryptedVotes[i]);
+            _addAnonymousVote(
+                msg.sender,
+                claimIndex,
+                finalHashes[i],
+                encryptedVotes[i],
+                stakedStkBMI
+            );
 
             emit AnonymouslyVoted(claimIndex);
         }
@@ -583,10 +552,6 @@ contract ClaimVoting is IClaimVoting, Initializable, AbstractDependant {
                 claimIndexes.length == hashedSignaturesOfClaims.length,
             "CV: Length mismatches"
         );
-
-        uint256 stakedBMI = vBMI.balanceOf(msg.sender); // use canWithdaw function in vBMI staking
-
-        require(stakedBMI > 0, "CV: 0 staked BMI");
 
         for (uint256 i = 0; i < claimIndexes.length; i++) {
             uint256 claimIndex = claimIndexes[i];
@@ -607,26 +572,20 @@ contract ClaimVoting is IClaimVoting, Initializable, AbstractDependant {
             require(_allVotesByIndexInst[voteIndex].finalHash == finalHash, "CV: Data mismatches");
             require(
                 _votings[claimIndex].withdrawalAmount >= suggestedClaimAmounts[i],
-                "CV: Amount succeds coverage"
+                "CV: Amount exceeds coverage"
             );
 
             bool voteFor = (suggestedClaimAmounts[i] > 0);
 
             _calculateAverages(
                 claimIndex,
-                stakedBMI,
+                _allVotesByIndexInst[voteIndex].stakedStkBMIAmount,
                 suggestedClaimAmounts[i],
                 _allVotesByIndexInst[voteIndex].voterReputation,
                 voteFor
             );
 
-            _modifyExposedVote(
-                msg.sender,
-                claimIndex,
-                suggestedClaimAmounts[i],
-                stakedBMI,
-                voteFor
-            );
+            _modifyExposedVote(msg.sender, claimIndex, suggestedClaimAmounts[i], voteFor);
 
             emit VoteExposed(claimIndex, msg.sender, suggestedClaimAmounts[i]);
         }
@@ -635,16 +594,20 @@ contract ClaimVoting is IClaimVoting, Initializable, AbstractDependant {
     function _getRewardRatio(
         uint256 claimIndex,
         address voter,
-        uint256 votedStakedBMIAmountWithReputation
+        uint256 votedStakedStkBMIAmountWithReputation
     ) internal view returns (uint256) {
+        if (votedStakedStkBMIAmountWithReputation == 0) {
+            return 0;
+        }
+
         uint256 voteIndex = _allVotesToIndex[voter][claimIndex];
 
-        uint256 voterBMI = _allVotesByIndexInst[voteIndex].stakedBMIAmount;
+        uint256 voterBMI = _allVotesByIndexInst[voteIndex].stakedStkBMIAmount;
         uint256 voterReputation = _allVotesByIndexInst[voteIndex].voterReputation;
 
         return
             voterBMI.mul(voterReputation).mul(PERCENTAGE_100).div(
-                votedStakedBMIAmountWithReputation
+                votedStakedStkBMIAmountWithReputation
             );
     }
 
@@ -664,7 +627,7 @@ contract ClaimVoting is IClaimVoting, Initializable, AbstractDependant {
         VotingResult storage info = _votings[claimIndex];
 
         uint256 voterRatio =
-            _getRewardRatio(claimIndex, voter, info.votedYesStakedBMIAmountWithReputation);
+            _getRewardRatio(claimIndex, voter, info.votedYesStakedStkBMIAmountWithReputation);
 
         if (claimingRegistry.claimStatus(claimIndex) == IClaimingRegistry.ClaimStatus.ACCEPTED) {
             // calculate STBL reward tokens sent to the voter (from reinsurance)
@@ -685,7 +648,7 @@ contract ClaimVoting is IClaimVoting, Initializable, AbstractDependant {
         VotingResult storage info = _votings[claimIndex];
 
         uint256 voterRatio =
-            _getRewardRatio(claimIndex, voter, info.votedNoStakedBMIAmountWithReputation);
+            _getRewardRatio(claimIndex, voter, info.votedNoStakedStkBMIAmountWithReputation);
 
         // calculate BMI reward tokens sent to the voter (from 1% locked)
         _bmiAmount = info.lockedBMIAmount.mul(voterRatio).div(PERCENTAGE_100);
@@ -710,9 +673,9 @@ contract ClaimVoting is IClaimVoting, Initializable, AbstractDependant {
         if (minorityPercentageWithPrecision < PENALTY_THRESHOLD) {
             // calculate confiscated staked stkBMI tokens sent to reinsurance pool
             _bmiPenalty = Math.min(
-                vBMI.balanceOf(voter),
+                stkBMIStaking.stakedStkBMI(voter),
                 _allVotesByIndexInst[_allVotesToIndex[voter][claimIndex]]
-                    .stakedBMIAmount
+                    .stakedStkBMIAmount
                     .mul(PENALTY_THRESHOLD.sub(minorityPercentageWithPrecision))
                     .div(PERCENTAGE_100)
             );
@@ -724,74 +687,66 @@ contract ClaimVoting is IClaimVoting, Initializable, AbstractDependant {
         );
     }
 
-    function calculateVoterResultBatch(uint256[] calldata claimIndexes) external override {
-        uint256 reputation = reputationSystem.reputation(msg.sender);
-
-        for (uint256 i = 0; i < claimIndexes.length; i++) {
-            uint256 claimIndex = claimIndexes[i];
-
-            require(claimingRegistry.claimExists(claimIndex), "CV: Claim doesn't exist");
-
-            uint256 voteIndex = _allVotesToIndex[msg.sender][claimIndex];
+    function _calculateVoteResult(uint256 claimIndex) internal {
+        for (uint256 i = 0; i < _votings[claimIndex].voteIndexes.length(); i++) {
+            uint256 voteIndex = _votings[claimIndex].voteIndexes.at(i);
+            address voter = _allVotesByIndexInst[voteIndex].voter;
+            uint256 oldReputation = reputationSystem.reputation(voter);
 
             require(_allVotesIndexes.contains(voteIndex), "CV: Vote doesn't exist");
-            require(voteIndex != 0, "CV: No vote on this claim");
-            require(_isVoteAwaitingCalculation(voteIndex), "CV: Vote is not awaiting");
 
             uint256 stblAmount;
             uint256 bmiAmount;
+            uint256 bmiPenaltyAmount;
+            uint256 newReputation;
             VoteStatus status;
 
-            if (
+            if (_isVoteAwaitingExposure(voteIndex)) {
+                bmiPenaltyAmount = _allVotesByIndexInst[_allVotesToIndex[voter][claimIndex]]
+                    .stakedStkBMIAmount;
+                voteResults[voteIndex].stakeChange = int256(bmiPenaltyAmount);
+            } else if (
                 _votings[claimIndex].votedYesPercentage >= PERCENTAGE_50 &&
                 _allVotesByIndexInst[voteIndex].suggestedAmount > 0
             ) {
-                (stblAmount, bmiAmount, reputation) = _calculateMajorityYesVote(
+                (stblAmount, bmiAmount, newReputation) = _calculateMajorityYesVote(
                     claimIndex,
-                    msg.sender,
-                    reputation
+                    voter,
+                    oldReputation
                 );
 
-                reinsurancePool.withdrawSTBLTo(msg.sender, stblAmount);
-                bmiToken.transfer(msg.sender, bmiAmount);
-
-                emit RewardsForVoteCalculationSent(msg.sender, bmiAmount);
+                voteResults[voteIndex].stblReward = stblAmount;
 
                 status = VoteStatus.MAJORITY;
             } else if (
                 _votings[claimIndex].votedYesPercentage < PERCENTAGE_50 &&
                 _allVotesByIndexInst[voteIndex].suggestedAmount == 0
             ) {
-                (bmiAmount, reputation) = _calculateMajorityNoVote(
+                (bmiAmount, newReputation) = _calculateMajorityNoVote(
                     claimIndex,
-                    msg.sender,
-                    reputation
+                    voter,
+                    oldReputation
                 );
-
-                bmiToken.transfer(msg.sender, bmiAmount);
-
-                emit RewardsForVoteCalculationSent(msg.sender, bmiAmount);
-
                 status = VoteStatus.MAJORITY;
             } else {
-                (bmiAmount, reputation) = _calculateMinorityVote(
+                (bmiPenaltyAmount, newReputation) = _calculateMinorityVote(
                     claimIndex,
-                    msg.sender,
-                    reputation
+                    voter,
+                    oldReputation
                 );
-
-                vBMI.slashUserTokens(msg.sender, bmiAmount);
+                voteResults[voteIndex].stakeChange = int256(bmiPenaltyAmount);
 
                 status = VoteStatus.MINORITY;
             }
 
             _allVotesByIndexInst[voteIndex].status = status;
-            _myNotCalculatedVotes[msg.sender].remove(claimIndex);
+            voteResults[voteIndex].reputationChange = int256(newReputation);
+            voteResults[voteIndex].bmiReward = bmiAmount;
 
-            emit VoteCalculated(claimIndex, msg.sender, status);
+            _myNotReceivedVotes[voter].add(claimIndex);
+
+            emit VoteCalculated(claimIndex, voter, status);
         }
-
-        reputationSystem.setNewReputation(msg.sender, reputation);
     }
 
     function _getBMIRewardForCalculation(uint256 claimIndex) internal view returns (uint256) {
@@ -826,66 +781,120 @@ contract ClaimVoting is IClaimVoting, Initializable, AbstractDependant {
         emit RewardsForClaimCalculationSent(calculator, reward);
     }
 
-    function calculateVotingResultBatch(uint256[] calldata claimIndexes) external override {
-        uint256 totalSupplyVBMI = vBMI.totalSupply();
+    function calculateResult(uint256 claimIndex) external override {
+        // TODO invert order condition to prevent duplicate storage hits
+        require(
+            claimingRegistry.canClaimBeCalculatedByAnyone(claimIndex) ||
+                claimingRegistry.claimOwner(claimIndex) == msg.sender,
+            "CV: Not allowed to calculate"
+        );
+        _sendRewardsForCalculationTo(claimIndex, msg.sender);
 
-        for (uint256 i = 0; i < claimIndexes.length; i++) {
-            uint256 claimIndex = claimIndexes[i];
-            address claimer = claimingRegistry.claimOwner(claimIndex);
-
+        if (claimingRegistry.claimStatus(claimIndex) == IClaimingRegistry.ClaimStatus.EXPIRED) {
+            claimingRegistry.expireClaim(claimIndex);
+        } else {
             // claim existence is checked in claimStatus function
             require(
                 claimingRegistry.claimStatus(claimIndex) ==
                     IClaimingRegistry.ClaimStatus.AWAITING_CALCULATION,
                 "CV: Claim is not awaiting"
             );
-            // TODO invert order condition to prevent duplicate storage hits
-            require(
-                claimingRegistry.canClaimBeCalculatedByAnyone(claimIndex) || claimer == msg.sender,
-                "CV: Not allowed to calculate"
-            );
 
-            _sendRewardsForCalculationTo(claimIndex, msg.sender);
+            _resolveClaim(claimIndex);
+            _calculateVoteResult(claimIndex);
+        }
+    }
 
-            emit ClaimCalculated(claimIndex, msg.sender);
+    function _resolveClaim(uint256 claimIndex) internal {
+        uint256 totalStakedStkBMI = stkBMIStaking.totalStakedStkBMI();
 
-            uint256 allVotedVBMI = _votings[claimIndex].allVotedStakedBMIAmount;
+        uint256 allVotedStakedStkBMI = _votings[claimIndex].allVotedStakedStkBMIAmount;
 
-            // if no votes or not an appeal and voted < 10% supply of vBMI
-            if (
-                allVotedVBMI == 0 ||
-                ((totalSupplyVBMI == 0 ||
-                    totalSupplyVBMI.mul(QUORUM).div(PERCENTAGE_100) > allVotedVBMI) &&
-                    !claimingRegistry.isClaimAppeal(claimIndex))
-            ) {
-                // reject & use locked BMI for rewards
-                claimingRegistry.rejectClaim(claimIndex);
-            } else {
-                uint256 votedYesPower = _votings[claimIndex].votedYesStakedBMIAmountWithReputation;
-                uint256 votedNoPower = _votings[claimIndex].votedNoStakedBMIAmountWithReputation;
-                uint256 totalPower = votedYesPower.add(votedNoPower);
-
+        // if no votes or not an appeal and voted < 10% supply of staked StkBMI
+        if (
+            allVotedStakedStkBMI == 0 ||
+            ((totalStakedStkBMI == 0 ||
+                totalStakedStkBMI.mul(QUORUM).div(PERCENTAGE_100) > allVotedStakedStkBMI) &&
+                !claimingRegistry.isClaimAppeal(claimIndex))
+        ) {
+            // reject & use locked BMI for rewards
+            claimingRegistry.rejectClaim(claimIndex);
+        } else {
+            uint256 votedYesPower = _votings[claimIndex].votedYesStakedStkBMIAmountWithReputation;
+            uint256 votedNoPower = _votings[claimIndex].votedNoStakedStkBMIAmountWithReputation;
+            uint256 totalPower = votedYesPower.add(votedNoPower);
+            if (totalPower > 0) {
                 _votings[claimIndex].votedYesPercentage = votedYesPower.mul(PERCENTAGE_100).div(
                     totalPower
                 );
-
-                if (_votings[claimIndex].votedYesPercentage >= APPROVAL_PERCENTAGE) {
-                    // approve + send STBL & return locked BMI to the claimer
-                    claimingRegistry.acceptClaim(claimIndex);
-
-                    bmiToken.transfer(claimer, _votings[claimIndex].lockedBMIAmount);
-                } else {
-                    // reject & use locked BMI for rewards
-                    claimingRegistry.rejectClaim(claimIndex);
-                }
             }
 
-            IPolicyBook(claimingRegistry.claimPolicyBook(claimIndex)).commitClaim(
-                claimer,
-                _votings[claimIndex].votedAverageWithdrawalAmount,
-                block.timestamp,
-                claimingRegistry.claimStatus(claimIndex) // ACCEPTED, REJECTED_CAN_APPEAL, REJECTED
-            );
+            if (_votings[claimIndex].votedYesPercentage >= APPROVAL_PERCENTAGE) {
+                // approve + send STBL & return locked BMI to the claimer
+                claimingRegistry.acceptClaim(
+                    claimIndex,
+                    _votings[claimIndex].votedAverageWithdrawalAmount
+                );
+            } else {
+                // reject & use locked BMI for rewards
+                claimingRegistry.rejectClaim(claimIndex);
+            }
         }
+        emit ClaimCalculated(claimIndex, msg.sender);
+    }
+
+    function receiveResult() external override {
+        uint256 notReceivedLength = _myNotReceivedVotes[msg.sender].length();
+        uint256 oldReputation = reputationSystem.reputation(msg.sender);
+
+        (uint256 rewardAmount, ) = claimingRegistry.rewardWithdrawalInfo(msg.sender);
+
+        uint256 stblAmount = rewardAmount;
+        uint256 bmiAmount;
+        int256 bmiPenaltyAmount;
+        uint256 newReputation = oldReputation;
+
+        for (uint256 i = 0; i < notReceivedLength; i++) {
+            uint256 claimIndex = _myNotReceivedVotes[msg.sender].at(i);
+            uint256 voteIndex = _allVotesToIndex[msg.sender][claimIndex];
+            stblAmount = stblAmount.add(voteResults[voteIndex].stblReward);
+            bmiAmount = bmiAmount.add(voteResults[voteIndex].bmiReward);
+            bmiPenaltyAmount += voteResults[voteIndex].stakeChange;
+            if (uint256(voteResults[voteIndex].reputationChange) > oldReputation) {
+                newReputation = newReputation.add(
+                    uint256(voteResults[voteIndex].reputationChange).sub(oldReputation)
+                );
+            } else if (uint256(voteResults[voteIndex].reputationChange) < oldReputation) {
+                newReputation = newReputation.sub(
+                    oldReputation.sub(uint256(voteResults[voteIndex].reputationChange))
+                );
+            }
+            _allVotesByIndexInst[voteIndex].status = VoteStatus.RECEIVED;
+        }
+        if (stblAmount > 0) {
+            claimingRegistry.requestRewardWithdrawal(msg.sender, stblAmount);
+        }
+        if (bmiAmount > 0) {
+            bmiToken.transfer(msg.sender, bmiAmount);
+        }
+        if (bmiPenaltyAmount > 0) {
+            stkBMIStaking.slashUserTokens(msg.sender, uint256(bmiPenaltyAmount));
+        }
+        reputationSystem.setNewReputation(msg.sender, newReputation);
+
+        delete _myNotReceivedVotes[msg.sender];
+
+        emit RewardsForVoteCalculationSent(msg.sender, bmiAmount);
+    }
+
+    function transferLockedBMI(uint256 claimIndex, address claimer)
+        external
+        override
+        onlyClaimingRegistry
+    {
+        uint256 lockedAmount = _votings[claimIndex].lockedBMIAmount;
+        require(lockedAmount > 0, "CV: Already withdrawn");
+        _votings[claimIndex].lockedBMIAmount = 0;
+        bmiToken.transfer(claimer, lockedAmount);
     }
 }

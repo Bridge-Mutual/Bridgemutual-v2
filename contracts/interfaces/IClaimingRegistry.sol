@@ -12,7 +12,8 @@ interface IClaimingRegistry {
         AWAITING_CALCULATION,
         REJECTED_CAN_APPEAL,
         REJECTED,
-        ACCEPTED
+        ACCEPTED,
+        EXPIRED
     }
 
     struct ClaimInfo {
@@ -24,7 +25,30 @@ interface IClaimingRegistry {
         bool appeal;
         ClaimStatus status;
         uint256 claimAmount;
+        uint256 claimRefund;
     }
+
+    struct ClaimWithdrawalInfo {
+        uint256 readyToWithdrawDate;
+        bool committed;
+    }
+
+    struct RewardWithdrawalInfo {
+        uint256 rewardAmount;
+        uint256 readyToWithdrawDate;
+    }
+
+    enum WithdrawalStatus {NONE, PENDING, READY, EXPIRED}
+
+    function claimWithdrawalInfo(uint256 index)
+        external
+        view
+        returns (uint256 readyToWithdrawDate, bool committed);
+
+    function rewardWithdrawalInfo(address voter)
+        external
+        view
+        returns (uint256 rewardAmount, uint256 readyToWithdrawDate);
 
     /// @notice returns anonymous voting duration
     function anonymousVotingDuration(uint256 index) external view returns (uint256);
@@ -32,14 +56,23 @@ interface IClaimingRegistry {
     /// @notice returns the whole voting duration
     function votingDuration(uint256 index) external view returns (uint256);
 
+    /// @notice returns the whole voting duration + view verdict duration
+    function validityDuration(uint256 index) external view returns (uint256);
+
     /// @notice returns how many time should pass before anyone could calculate a claim result
     function anyoneCanCalculateClaimResultAfter(uint256 index) external view returns (uint256);
 
-    /// @notice returns true if a user can buy new policy of specified PolicyBook
-    function canBuyNewPolicy(address buyer, address policyBookAddress)
-        external
-        view
-        returns (bool);
+    /// @notice check if a user can buy new policy of specified PolicyBook and end the active one if there is
+    function canBuyNewPolicy(address buyer, address policyBookAddress) external;
+
+    /// @notice returns withdrawal status of requested claim
+    function getClaimWithdrawalStatus(uint256 index) external view returns (WithdrawalStatus);
+
+    /// @notice returns withdrawal status of requested reward
+    function getRewardWithdrawalStatus(address voter) external view returns (WithdrawalStatus);
+
+    /// @notice returns true if there is ongoing claiming procedure
+    function hasProcedureOngoing(address poolAddress) external view returns (bool);
 
     /// @notice submits new PolicyBook claim for the user
     function submitClaim(
@@ -124,18 +157,27 @@ interface IClaimingRegistry {
 
     function getAllPendingClaimsAmount() external view returns (uint256 _totalClaimsAmount);
 
+    function getAllPendingRewardsAmount() external view returns (uint256 _totalRewardsAmount);
+
     function getClaimableAmounts(uint256[] memory _claimIndexes) external view returns (uint256);
 
     /// @notice marks the user's claim as Accepted
-    function acceptClaim(uint256 index) external;
+    function acceptClaim(uint256 index, uint256 amount) external;
 
     /// @notice marks the user's claim as Rejected
     function rejectClaim(uint256 index) external;
 
+    /// @notice marks the user's claim as Expired
+    function expireClaim(uint256 index) external;
+
     /// @notice Update Image Uri in case it contains material that is ilegal
     ///         or offensive.
     /// @dev Only the owner of the PolicyBookAdmin can erase/update evidenceUri.
-    /// @param _claimIndex Claim Index that is going to be updated
+    /// @param claim_Index Claim Index that is going to be updated
     /// @param _newEvidenceURI New evidence uri. It can be blank.
-    function updateImageUriOfClaim(uint256 _claimIndex, string calldata _newEvidenceURI) external;
+    function updateImageUriOfClaim(uint256 claim_Index, string calldata _newEvidenceURI) external;
+
+    function requestClaimWithdrawal(uint256 index) external;
+
+    function requestRewardWithdrawal(address voter, uint256 rewardAmount) external;
 }

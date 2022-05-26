@@ -2,10 +2,12 @@ const PolicyBookRegistry = artifacts.require("PolicyBookRegistry");
 const PolicyBookFabric = artifacts.require("PolicyBookFabric");
 const ContractsRegistry = artifacts.require("ContractsRegistry");
 const STBLMock = artifacts.require("STBLMock");
+const BSCSTBLMock = artifacts.require("BSCSTBLMock");
+const MATICSTBLMock = artifacts.require("MATICSTBLMock");
+
 const PolicyBookAdmin = artifacts.require("PolicyBookAdmin");
 const RewardsGenerator = artifacts.require("RewardsGenerator");
 const LiquidityRegistry = artifacts.require("LiquidityRegistry");
-const LiquidityMining = artifacts.require("LiquidityMining");
 const NFTStaking = artifacts.require("NFTStaking");
 const BMIUtilityNFT = artifacts.require("BMIUtilityNFT");
 const LiquidityMiningStakingMock = artifacts.require("LiquidityMiningStakingMock");
@@ -21,9 +23,10 @@ const PolicyQuote = artifacts.require("PolicyQuote");
 const UserLeveragePool = artifacts.require("UserLeveragePool");
 const PriceFeed = artifacts.require("PriceFeed");
 const BMIMock = artifacts.require("BMIMock");
-const WETHMock = artifacts.require("WETHMock");
+const WETHMock = artifacts.require("WrappedTokenMock");
 const SushiswapRouterMock = artifacts.require("UniswapRouterMock");
 const LeveragePortfolioView = artifacts.require("LeveragePortfolioView");
+const YieldGenerator = artifacts.require("YieldGenerator");
 
 const PolicyBook = artifacts.require("PolicyBook");
 const PolicyBookMock = artifacts.require("PolicyBookMock");
@@ -33,6 +36,7 @@ const Reverter = require("./helpers/reverter");
 const BigNumber = require("bignumber.js");
 const truffleAssert = require("truffle-assertions");
 const { assert } = require("chai");
+const { getStableAmount, getNetwork, Networks } = require("./helpers/utils");
 
 const ContractType = {
   CONTRACT: 0,
@@ -62,24 +66,22 @@ contract("PolicyBookAdmin", async (accounts) => {
   const DEFAULT_MAX_CAPACITY = 3500000 * DECIMALS18;
   const NEW_MAX_CAPACITY = 3600000 * DECIMALS18;
 
-  const DEFAULT_TARGET_UR = 45 * PRECISION;
-  const NEW_TARGET_UR = 46 * PRECISION;
+  const DEFAULT_TARGET_UR = toBN(PRECISION).times(45);
+  const NEW_TARGET_UR = toBN(PRECISION).times(40);
 
-  const DEFAULT_D_CONSTANT = 5 * PRECISION;
-  const NEW_D_CONSTANT = 6 * PRECISION;
+  const DEFAULT_D_CONSTANT = toBN(PRECISION).times(5);
+  const NEW_D_CONSTANT = toBN(PRECISION).times(3);
 
-  const DEFAULT_A_CONSTANT = 100 * PRECISION;
-  const NEW_A_CONSTANT = 101 * PRECISION;
+  const DEFAULT_A_CONSTANT = toBN(PRECISION).times(100);
+  const NEW_A_CONSTANT = toBN(PRECISION).times(90);
 
-  const DEFAULT_MAX_CONSTANT = 100 * PRECISION;
-  const NEW_MAX_CONSTANT = 101 * PRECISION;
+  const DEFAULT_MAX_CONSTANT = toBN(PRECISION).times(100);
+  const NEW_MAX_CONSTANT = toBN(PRECISION).times(90);
 
   const USER_LEVERAGE_MPL = 2;
   const REINSURANCE_POOL_MPL = 2;
 
-  const initialDeposit = wei("1000");
-  const stblAmount = toBN(wei("100000", "mwei"));
-  const amount = toBN(wei("1000"));
+  let initialDeposit, stblInitialDeposit, amount, stblAmount;
 
   let contractsRegistry;
   let stbl;
@@ -101,15 +103,25 @@ contract("PolicyBookAdmin", async (accounts) => {
   let policyBookFacades = [];
   let policyBookFacadeAddresses = [];
 
+  let network;
+
   const USER1 = accounts[4];
   const USER2 = accounts[5];
   const NOTHING = accounts[9];
-  const insuranceContracts = [accounts[0], accounts[1], accounts[2], accounts[3]];
+  const insuranceContracts = [accounts[0], accounts[1], accounts[2], accounts[3], accounts[6]];
   const DISTRIBUTORS = [accounts[0], accounts[1], accounts[2], accounts[3]];
 
   before("setup", async () => {
+    network = await getNetwork();
     contractsRegistry = await ContractsRegistry.new();
-    stbl = await STBLMock.new("stbl", "stbl", 6);
+    if (network == Networks.ETH) {
+      stbl = await STBLMock.new("stbl", "stbl", 6);
+    } else if (network == Networks.BSC) {
+      stbl = await BSCSTBLMock.new();
+    } else if (network == Networks.POL) {
+      stbl = await MATICSTBLMock.new();
+      await stbl.initialize("stbl", "stbl", 6, accounts[0]);
+    }
     bmi = await BMIMock.new(USER1);
     const weth = await WETHMock.new("weth", "weth");
     const sushiswapRouterMock = await SushiswapRouterMock.new();
@@ -128,7 +140,6 @@ contract("PolicyBookAdmin", async (accounts) => {
     const _claimVoting = await ClaimVoting.new();
     const _rewardsGenerator = await RewardsGenerator.new();
     const _liquidityRegistry = await LiquidityRegistry.new();
-    const _liquidityMining = await LiquidityMining.new();
     const _nftStaking = await NFTStaking.new();
     const _bmiUtilityNFT = await BMIUtilityNFT.new();
     const _stakingMock = await LiquidityMiningStakingMock.new();
@@ -138,24 +149,25 @@ contract("PolicyBookAdmin", async (accounts) => {
     const _policyQuote = await PolicyQuote.new();
     const _leveragePortfolioView = await LeveragePortfolioView.new();
     const _priceFeed = await PriceFeed.new();
+    const _yieldGenerator = await YieldGenerator.new();
 
     await contractsRegistry.__ContractsRegistry_init();
 
     await contractsRegistry.addContract(await contractsRegistry.BMI_UTILITY_NFT_NAME(), NOTHING);
     await contractsRegistry.addContract(await contractsRegistry.BMI_STAKING_NAME(), NOTHING);
-    await contractsRegistry.addContract(await contractsRegistry.LEGACY_REWARDS_GENERATOR_NAME(), NOTHING);
-    await contractsRegistry.addContract(await contractsRegistry.AAVE_PROTOCOL_NAME(), NOTHING);
-    await contractsRegistry.addContract(await contractsRegistry.COMPOUND_PROTOCOL_NAME(), NOTHING);
-    await contractsRegistry.addContract(await contractsRegistry.YEARN_PROTOCOL_NAME(), NOTHING);
-    await contractsRegistry.addContract(await contractsRegistry.YIELD_GENERATOR_NAME(), NOTHING);
+    await contractsRegistry.addContract(await contractsRegistry.BMI_TREASURY_NAME(), NOTHING);
+    await contractsRegistry.addContract(await contractsRegistry.DEFI_PROTOCOL_1_NAME(), NOTHING);
+    await contractsRegistry.addContract(await contractsRegistry.DEFI_PROTOCOL_2_NAME(), NOTHING);
+    await contractsRegistry.addContract(await contractsRegistry.DEFI_PROTOCOL_3_NAME(), NOTHING);
     await contractsRegistry.addContract(await contractsRegistry.BMI_UTILITY_NFT_NAME(), NOTHING);
     await contractsRegistry.addContract(await contractsRegistry.REPUTATION_SYSTEM_NAME(), NOTHING);
-    await contractsRegistry.addContract(await contractsRegistry.VBMI_NAME(), NOTHING);
+    await contractsRegistry.addContract(await contractsRegistry.STKBMI_STAKING_NAME(), NOTHING);
+    await contractsRegistry.addContract(await contractsRegistry.LIQUIDITY_BRIDGE_NAME(), NOTHING);
 
     await contractsRegistry.addContract(await contractsRegistry.USDT_NAME(), stbl.address);
     await contractsRegistry.addContract(await contractsRegistry.BMI_NAME(), bmi.address);
-    await contractsRegistry.addContract(await contractsRegistry.WETH_NAME(), weth.address);
-    await contractsRegistry.addContract(await contractsRegistry.SUSHISWAP_ROUTER_NAME(), sushiswapRouterMock.address);
+    await contractsRegistry.addContract(await contractsRegistry.WRAPPEDTOKEN_NAME(), weth.address);
+    await contractsRegistry.addContract(await contractsRegistry.AMM_ROUTER_NAME(), sushiswapRouterMock.address);
 
     await contractsRegistry.addProxyContract(
       await contractsRegistry.REWARDS_GENERATOR_NAME(),
@@ -181,7 +193,6 @@ contract("PolicyBookAdmin", async (accounts) => {
     await contractsRegistry.addProxyContract(await contractsRegistry.CLAIM_VOTING_NAME(), _claimVoting.address);
     await contractsRegistry.addProxyContract(await contractsRegistry.POLICY_REGISTRY_NAME(), _policyRegistry.address);
     await contractsRegistry.addContract(await contractsRegistry.LIQUIDITY_REGISTRY_NAME(), _liquidityRegistry.address);
-    await contractsRegistry.addProxyContract(await contractsRegistry.LIQUIDITY_MINING_NAME(), _liquidityMining.address);
     await contractsRegistry.addProxyContract(await contractsRegistry.NFT_STAKING_NAME(), _nftStaking.address);
     await contractsRegistry.addProxyContract(await contractsRegistry.BMI_UTILITY_NFT_NAME(), _bmiUtilityNFT.address);
     await contractsRegistry.addProxyContract(
@@ -210,6 +221,7 @@ contract("PolicyBookAdmin", async (accounts) => {
       _leveragePortfolioView.address
     );
     await contractsRegistry.addProxyContract(await contractsRegistry.PRICE_FEED_NAME(), _priceFeed.address);
+    await contractsRegistry.addProxyContract(await contractsRegistry.YIELD_GENERATOR_NAME(), _yieldGenerator.address);
 
     const policyRegistry = await PolicyRegistry.at(await contractsRegistry.getPolicyRegistryContract());
     policyBookRegistry = await PolicyBookRegistry.at(await contractsRegistry.getPolicyBookRegistryContract());
@@ -219,7 +231,6 @@ contract("PolicyBookAdmin", async (accounts) => {
     claimingRegistry = await ClaimingRegistry.at(await contractsRegistry.getClaimingRegistryContract());
     claimVoting = await ClaimVoting.at(await contractsRegistry.getClaimVotingContract());
     const liquidityRegistry = await LiquidityRegistry.at(await contractsRegistry.getLiquidityRegistryContract());
-    const liquidityMining = await LiquidityMining.at(await contractsRegistry.getLiquidityMiningContract());
     const rewardsGenerator = await RewardsGenerator.at(await contractsRegistry.getRewardsGeneratorContract());
     const capitalPool = await CapitalPool.at(await contractsRegistry.getCapitalPoolContract());
     const reinsurancePool = await ReinsurancePool.at(await contractsRegistry.getReinsurancePoolContract());
@@ -227,6 +238,7 @@ contract("PolicyBookAdmin", async (accounts) => {
     const bmiCoverStakingView = await BMICoverStakingView.at(await contractsRegistry.getBMICoverStakingViewContract());
     const nftStaking = await NFTStaking.at(await contractsRegistry.getNFTStakingContract());
     const shieldMining = await ShieldMining.at(await contractsRegistry.getShieldMiningContract());
+    const yieldGenerator = await YieldGenerator.at(await contractsRegistry.getYieldGeneratorContract());
 
     await policyBookAdmin.__PolicyBookAdmin_init(
       _policyBookImpl.address,
@@ -236,12 +248,12 @@ contract("PolicyBookAdmin", async (accounts) => {
     await policyBookFabric.__PolicyBookFabric_init();
     await claimingRegistry.__ClaimingRegistry_init();
     await claimVoting.__ClaimVoting_init();
-    await liquidityMining.__LiquidityMining_init();
     await rewardsGenerator.__RewardsGenerator_init();
     await capitalPool.__CapitalPool_init();
     await reinsurancePool.__ReinsurancePool_init();
     await bmiCoverStaking.__BMICoverStaking_init();
     await nftStaking.__NFTStaking_init();
+    await yieldGenerator.__YieldGenerator_init(network);
 
     await contractsRegistry.injectDependencies(await contractsRegistry.POLICY_BOOK_ADMIN_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.POLICY_BOOK_FABRIC_NAME());
@@ -250,7 +262,6 @@ contract("PolicyBookAdmin", async (accounts) => {
     await contractsRegistry.injectDependencies(await contractsRegistry.CLAIMING_REGISTRY_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.CLAIM_VOTING_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.LIQUIDITY_REGISTRY_NAME());
-    await contractsRegistry.injectDependencies(await contractsRegistry.LIQUIDITY_MINING_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.REWARDS_GENERATOR_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.CAPITAL_POOL_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.REINSURANCE_POOL_NAME());
@@ -260,21 +271,44 @@ contract("PolicyBookAdmin", async (accounts) => {
     await contractsRegistry.injectDependencies(await contractsRegistry.SHIELD_MINING_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.PRICE_FEED_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.LEVERAGE_PORTFOLIO_VIEW_NAME());
+    await contractsRegistry.injectDependencies(await contractsRegistry.POLICY_QUOTE_NAME());
 
-    await sushiswapRouterMock.setReserve(stbl.address, wei(toBN(10 ** 3).toString()));
+    if (network == Networks.ETH || network == Networks.POL) {
+      await sushiswapRouterMock.setReserve(stbl.address, wei(toBN(10 ** 3).toString()));
+    } else if (network == Networks.BSC) {
+      await sushiswapRouterMock.setReserve(stbl.address, wei(toBN(10 ** 15).toString()));
+    }
+
     await sushiswapRouterMock.setReserve(weth.address, wei(toBN(10 ** 15).toString()));
     await sushiswapRouterMock.setReserve(bmi.address, wei(toBN(10 ** 15).toString()));
+
+    await policyBookAdmin.setupPricingModel(
+      toBN(PRECISION).times(80),
+      toBN(PRECISION).times(80),
+      toBN(PRECISION).times(2),
+      toBN(PRECISION).times(2),
+      wei("10"),
+      toBN(PRECISION).times(10),
+      toBN(PRECISION).times(50),
+      toBN(PRECISION).times(25),
+      toBN(PRECISION).times(100)
+    );
 
     await reverter.snapshot();
   });
 
   beforeEach("creation of PB & UL", async () => {
+    initialDeposit = wei("1000");
+    stblInitialDeposit = getStableAmount("1000");
+    stblAmount = getStableAmount("100000");
+    amount = toBN(wei("1000"));
+
     policyBooks = [];
     policyBookAddresses = [];
     policyBookFacades = [];
     policyBookFacadeAddresses = [];
     await stbl.approve(policyBookFabric.address, 0);
-    await stbl.approve(policyBookFabric.address, toBN(initialDeposit).times(4));
+    await stbl.approve(policyBookFabric.address, stblInitialDeposit.times(4));
 
     for (i = 0; i < 4; i++) {
       const tx = await policyBookFabric.create(
@@ -294,7 +328,12 @@ contract("PolicyBookAdmin", async (accounts) => {
       policyBookFacades.push(policyBookFacade);
       policyBookFacadeAddresses.push(policyBookFacade.address);
     }
-    const tx = await policyBookFabric.createLeveragePools(ContractType.VARIOUS, "User Leverage Pool", "USDT");
+    const tx = await policyBookFabric.createLeveragePools(
+      insuranceContracts[4],
+      ContractType.VARIOUS,
+      "User Leverage Pool",
+      "USDT"
+    );
     const userLeveragePoolAddress = tx.logs[0].args.at;
     userLeveragePool = await UserLeveragePool.at(userLeveragePoolAddress);
     await policyBookAdmin.whitelist(userLeveragePoolAddress, true);
@@ -359,17 +398,17 @@ contract("PolicyBookAdmin", async (accounts) => {
     it("upgradePolicyBooksAndCall", async () => {
       const _policyBookImpl2 = await PolicyBookMock.new();
 
-      const infoAdmin = await policyBookAdmin.upgradePolicyBooksAndCall(
+      const numberStats = await policyBookAdmin.upgradePolicyBooksAndCall(
         _policyBookImpl2.address,
         0,
         await policyBookRegistry.count(),
-        "info()"
+        "numberStats()"
       );
 
       const policyBook = await PolicyBook.at(policyBooks[0].address);
       assert.equal(await policyBookAdmin.getCurrentPolicyBooksImplementation(), _policyBookImpl2.address);
 
-      //assert.equal(await policyBook.info()[0], infoAdmin[0]);
+      //assert.equal(await policyBook.numberStats()[0], numberStats[0]);
     });
   });
 
@@ -437,17 +476,17 @@ contract("PolicyBookAdmin", async (accounts) => {
     it("upgradePolicyBookFacadesAndCall", async () => {
       const _policyBookFacadeImpl2 = await PolicyBookFacade.new();
 
-      const poolDataAdmin = await policyBookAdmin.upgradePolicyBookFacadesAndCall(
+      const userLeveragePools = await policyBookAdmin.upgradePolicyBookFacadesAndCall(
         _policyBookFacadeImpl2.address,
         0,
         await policyBookRegistry.count(),
-        "getPoolsData()"
+        "countUserLeveragePools()"
       );
 
       const policyBookFacade = await PolicyBookFacade.at(policyBookFacades[0].address);
       assert.equal(await policyBookAdmin.getCurrentPolicyBooksFacadeImplementation(), _policyBookFacadeImpl2.address);
 
-      //assert.equal(await policyBookFacade.getPoolsData()[0], poolDataAdmin[0]);
+      //assert.equal(await policyBookFacade.countUserLeveragePools()[0], userLeveragePools[0]);
     });
   });
 

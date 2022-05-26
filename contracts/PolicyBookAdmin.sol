@@ -85,17 +85,31 @@ contract PolicyBookAdmin is IPolicyBookAdmin, OwnableUpgradeable, AbstractDepend
         policyQuote = IPolicyQuote(_contractsRegistry.getPolicyQuoteContract());
     }
 
-    function injectDependenciesToExistingPolicies(uint256 offset, uint256 limit)
-        external
-        onlyOwner
-    {
+    function injectDependenciesToExistingPolicies(
+        uint256 offset,
+        uint256 limit,
+        PoolTypes _poolType
+    ) external onlyOwner {
         address[] memory _policies = policyBookRegistry.list(offset, limit);
         IContractsRegistry _contractsRegistry = contractsRegistry;
 
         uint256 to = (offset.add(limit)).min(_policies.length).max(offset);
 
         for (uint256 i = offset; i < to; i++) {
-            AbstractDependant dependant = AbstractDependant(_policies[i]);
+            address _pool;
+            if (_poolType == PoolTypes.POLICY_BOOK || _poolType == PoolTypes.POLICY_FACADE) {
+                if (policyBookRegistry.isUserLeveragePool(_policies[i])) continue;
+                _pool = _policies[i];
+                if (_poolType == PoolTypes.POLICY_FACADE) {
+                    IPolicyBook _policyBook = IPolicyBook(_pool);
+                    _pool = address(_policyBook.policyBookFacade());
+                }
+            } else {
+                if (!policyBookRegistry.isUserLeveragePool(_policies[i])) continue;
+                _pool = _policies[i];
+            }
+
+            AbstractDependant dependant = AbstractDependant(_pool);
 
             if (dependant.injector() == address(0)) {
                 dependant.setInjector(address(this));
@@ -456,7 +470,7 @@ contract PolicyBookAdmin is IPolicyBookAdmin, OwnableUpgradeable, AbstractDepend
     }
 
     /// @notice sets the user leverage pool Rebalancing Threshold
-    /// @param _LeveragePoolAddress address of the policybook facade
+    /// @param _LeveragePoolAddress address of the user leverage pool or reinsurance pool
     /// @param _newRebalancingThreshold uint256 value of Rebalancing Threshold
     function setLeveragePortfolioRebalancingThreshold(
         address _LeveragePoolAddress,
@@ -496,16 +510,20 @@ contract PolicyBookAdmin is IPolicyBookAdmin, OwnableUpgradeable, AbstractDepend
     }
 
     /// @notice setup all pricing model varlues
-    ///@param _riskyAssetThresholdPercentage URRp Utilization ration for pricing model when the assets is considered risky, %
-    ///@param _minimumCostPercentage MC minimum cost of cover (Premium), %;
+    ///@param _highRiskRiskyAssetThresholdPercentage URRp Utilization ration for pricing model when the assets is considered risky, %
+    ///@param _lowRiskRiskyAssetThresholdPercentage URRp Utilization ration for pricing model when the assets is not considered risky, %
+    ///@param _highRiskMinimumCostPercentage MC minimum cost of cover (Premium) when the assets is considered risky, %;
+    ///@param _lowRiskMinimumCostPercentage MC minimum cost of cover (Premium), when the assets is not considered risky, %
     ///@param _minimumInsuranceCost minimum cost of insurance (Premium) , (10**18)
     ///@param _lowRiskMaxPercentPremiumCost TMCI target maximum cost of cover when the asset is not considered risky (Premium)
     ///@param _lowRiskMaxPercentPremiumCost100Utilization MCI not risky
     ///@param _highRiskMaxPercentPremiumCost TMCI target maximum cost of cover when the asset is considered risky (Premium)
     ///@param _highRiskMaxPercentPremiumCost100Utilization MCI risky
     function setupPricingModel(
-        uint256 _riskyAssetThresholdPercentage,
-        uint256 _minimumCostPercentage,
+        uint256 _highRiskRiskyAssetThresholdPercentage,
+        uint256 _lowRiskRiskyAssetThresholdPercentage,
+        uint256 _highRiskMinimumCostPercentage,
+        uint256 _lowRiskMinimumCostPercentage,
         uint256 _minimumInsuranceCost,
         uint256 _lowRiskMaxPercentPremiumCost,
         uint256 _lowRiskMaxPercentPremiumCost100Utilization,
@@ -513,8 +531,10 @@ contract PolicyBookAdmin is IPolicyBookAdmin, OwnableUpgradeable, AbstractDepend
         uint256 _highRiskMaxPercentPremiumCost100Utilization
     ) external override onlyOwner {
         policyQuote.setupPricingModel(
-            _riskyAssetThresholdPercentage,
-            _minimumCostPercentage,
+            _highRiskRiskyAssetThresholdPercentage,
+            _lowRiskRiskyAssetThresholdPercentage,
+            _highRiskMinimumCostPercentage,
+            _lowRiskMinimumCostPercentage,
             _minimumInsuranceCost,
             _lowRiskMaxPercentPremiumCost,
             _lowRiskMaxPercentPremiumCost100Utilization,

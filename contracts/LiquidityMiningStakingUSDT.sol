@@ -15,8 +15,7 @@ contract LiquidityMiningStakingUSDT is AbstractLiquidityMiningStaking {
     {
         rewardsToken = IERC20(_contractsRegistry.getBMIContract());
         bmiStaking = IBMIStaking(_contractsRegistry.getBMIStakingContract());
-        stakingToken = _contractsRegistry.getSushiswapBMIToUSDTPairContract();
-        liquidityMining = ILiquidityMining(_contractsRegistry.getLiquidityMiningContract());
+        stakingToken = _contractsRegistry.getAMMBMIToUSDTPairContract();
         nftStakingAddress = _contractsRegistry.getNFTStakingContract();
         sushiswapMasterChefV2Address = _contractsRegistry.getSushiSwapMasterChefV2Contract();
     }

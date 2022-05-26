@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.7.4;
 
-import "../interfaces/IPolicyQuote.sol";
+import "../PolicyQuote.sol";
 
-contract PolicyQuoteMock is IPolicyQuote {
+contract PolicyQuoteMock is PolicyQuote {
     uint256 public mockQuote;
 
     function setQuote(uint256 _quote) external {
@@ -28,16 +28,4 @@ contract PolicyQuoteMock is IPolicyQuote {
     ) external view override returns (uint256) {
         return mockQuote;
     }
-
-    function setupPricingModel(
-        uint256 _riskyAssetThresholdPercentage,
-        uint256 _minimumCostPercentage,
-        uint256 _minimumInsuranceCost,
-        uint256 _lowRiskMaxPercentPremiumCost,
-        uint256 _lowRiskMaxPercentPremiumCost100Utilization,
-        uint256 _highRiskMaxPercentPremiumCost,
-        uint256 _highRiskMaxPercentPremiumCost100Utilization
-    ) external override {}
-
-    function getMINUR(bool _safePricingModel) external view override returns (uint256 _minUR) {}
 }

@@ -25,6 +25,7 @@ library DecimalsConverter {
     }
 
     function convertTo18(uint256 amount, uint256 baseDecimals) internal pure returns (uint256) {
+        if (baseDecimals == 18) return amount;
         return convert(amount, baseDecimals, 18);
     }
 
@@ -33,6 +34,7 @@ library DecimalsConverter {
         pure
         returns (uint256)
     {
+        if (destinationDecimals == 18) return amount;
         return convert(amount, 18, destinationDecimals);
     }
 }

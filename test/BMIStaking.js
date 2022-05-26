@@ -2,8 +2,9 @@ const ContractsRegistry = artifacts.require("ContractsRegistry");
 const BMIStaking = artifacts.require("BMIStaking");
 const BMIMock = artifacts.require("BMIMock");
 const StkBMIToken = artifacts.require("STKBMIToken");
-const LiquidityMiningMock = artifacts.require("LiquidityMiningMock");
-const VBMI = artifacts.require("VBMI");
+
+// const LiquidityBridge = artifacts.require("LiquidityBridge");
+const StkBMIStaking = artifacts.require("StkBMIStaking");
 
 const Reverter = require("./helpers/reverter");
 const { expectEvent, expectRevert, time, BN } = require("@openzeppelin/test-helpers");
@@ -16,12 +17,6 @@ const wei = web3.utils.toWei;
 
 function toBN(number) {
   return new BigNumber(number);
-}
-
-function stringToRegularNumber(string) {
-  return toBN(string)
-    .div(10 ** 18)
-    .toNumber();
 }
 
 contract("BMIStaking", async (accounts) => {
@@ -39,8 +34,8 @@ contract("BMIStaking", async (accounts) => {
   let bmiStaking;
   let bmiMock;
   let stkBMIToken;
-  let liquidityMiningMock;
-  let vBMI;
+  let stkBMIStaking;
+  // let liquidityBridge;
 
   const USER1PrivateKey = "c4ce20adf2b728fe3005be128fb850397ec352d1ea876e3035e46d547343404f";
 
@@ -49,8 +44,9 @@ contract("BMIStaking", async (accounts) => {
     bmiMock = await BMIMock.new(OWNER);
     const _bmiStaking = await BMIStaking.new();
     const _stkBMIToken = await StkBMIToken.new();
-    const _liquidityMiningMock = await LiquidityMiningMock.new();
-    const _vBMI = await VBMI.new();
+    const _stkBMIStaking = await StkBMIStaking.new();
+
+    // _liquidityBridge = await LiquidityBridge.new();
 
     await contractsRegistry.__ContractsRegistry_init();
 
@@ -59,38 +55,31 @@ contract("BMIStaking", async (accounts) => {
     await contractsRegistry.addContract(await contractsRegistry.LIQUIDITY_MINING_STAKING_USDT_NAME(), NOTHING);
     await contractsRegistry.addContract(await contractsRegistry.BMI_UTILITY_NFT_NAME(), NOTHING);
     await contractsRegistry.addContract(await contractsRegistry.POLICY_BOOK_REGISTRY_NAME(), NOTHING);
-    await contractsRegistry.addContract(await contractsRegistry.LEGACY_BMI_STAKING_NAME(), NOTHING);
+
     await contractsRegistry.addContract(await contractsRegistry.CLAIM_VOTING_NAME(), NOTHING);
     await contractsRegistry.addContract(await contractsRegistry.REINSURANCE_POOL_NAME(), NOTHING);
+    await contractsRegistry.addContract(await contractsRegistry.LIQUIDITY_BRIDGE_NAME(), NOTHING);
 
     await contractsRegistry.addContract(await contractsRegistry.BMI_NAME(), bmiMock.address);
 
     await contractsRegistry.addProxyContract(await contractsRegistry.BMI_STAKING_NAME(), _bmiStaking.address);
     await contractsRegistry.addProxyContract(await contractsRegistry.STKBMI_NAME(), _stkBMIToken.address);
-    await contractsRegistry.addProxyContract(
-      await contractsRegistry.LIQUIDITY_MINING_NAME(),
-      _liquidityMiningMock.address
-    );
-    await contractsRegistry.addProxyContract(await contractsRegistry.VBMI_NAME(), _vBMI.address);
+
+    await contractsRegistry.addProxyContract(await contractsRegistry.STKBMI_STAKING_NAME(), _stkBMIStaking.address);
+
+    await contractsRegistry.addContract(await contractsRegistry.LIQUIDITY_BRIDGE_NAME(), NOTHING);
 
     bmiStaking = await BMIStaking.at(await contractsRegistry.getBMIStakingContract());
     stkBMIToken = await StkBMIToken.at(await contractsRegistry.getSTKBMIContract());
-    liquidityMiningMock = await LiquidityMiningMock.at(await contractsRegistry.getLiquidityMiningContract());
-    vBMI = await VBMI.at(await contractsRegistry.getVBMIContract());
+    stkBMIStaking = await StkBMIStaking.at(await contractsRegistry.getStkBMIStakingContract());
 
     await bmiStaking.__BMIStaking_init(wei("10"));
     await stkBMIToken.__STKBMIToken_init();
-    await vBMI.__VBMI_init();
-    await liquidityMiningMock.__LiquidityMining_init();
+    await stkBMIStaking.__StkBMIStaking_init();
 
     await contractsRegistry.injectDependencies(await contractsRegistry.BMI_STAKING_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.STKBMI_NAME());
-    await contractsRegistry.injectDependencies(await contractsRegistry.LIQUIDITY_MINING_NAME());
-    await contractsRegistry.injectDependencies(await contractsRegistry.VBMI_NAME());
-
-    const liqTiming = await time.latest();
-
-    await liquidityMiningMock.setStartTime(liqTiming);
+    await contractsRegistry.injectDependencies(await contractsRegistry.STKBMI_STAKING_NAME());
 
     await bmiMock.transfer(bmiStaking.address, wei("100000"));
 
@@ -107,11 +96,11 @@ contract("BMIStaking", async (accounts) => {
   describe("basic init", () => {
     describe("constructor", () => {
       it("should set reward per block", async () => {
-        expect((await bmiStaking.rewardPerBlock()).toString()).to.equal(wei("10"));
+        expect(await bmiStaking.rewardPerBlock()).to.be.a.bignumber.equal(wei("10"));
       });
 
       it("should set lastUpdateBlock", async () => {
-        expect((await bmiStaking.lastUpdateBlock()).toNumber()).to.above(0);
+        expect(await bmiStaking.lastUpdateBlock()).to.be.a.bignumber.above("0");
       });
     });
   });
@@ -143,12 +132,12 @@ contract("BMIStaking", async (accounts) => {
 
       describe("should transfer BMI tokens", () => {
         it("should transfer BMI tokens", async () => {
-          expect((await bmiMock.balanceOf(USER1)).toString()).to.equal(wei("100000"));
-          expect((await bmiMock.balanceOf(bmiStaking.address)).toString()).to.equal(wei("100000"));
+          expect(await bmiMock.balanceOf(USER1)).to.be.a.bignumber.equal(wei("100000"));
+          expect(await bmiMock.balanceOf(bmiStaking.address)).to.be.a.bignumber.equal(wei("100000"));
 
           await bmiStaking.stake(wei("100"), { from: USER1 });
-          expect((await bmiMock.balanceOf(USER1)).toString()).to.equal(wei("99900"));
-          expect((await bmiMock.balanceOf(bmiStaking.address)).toString()).to.equal(wei("100100"));
+          expect(await bmiMock.balanceOf(USER1)).to.be.a.bignumber.equal(wei("99900"));
+          expect(await bmiMock.balanceOf(bmiStaking.address)).to.be.a.bignumber.equal(wei("100100"));
         });
 
         it("should catch event Transfer", async () => {
@@ -159,61 +148,61 @@ contract("BMIStaking", async (accounts) => {
           });
           expect(await logs["from"]).to.be.equal(USER1);
           expect(await logs["to"]).to.be.equal(bmiStaking.address);
-          expect((await logs["value"]).toString()).to.equal(wei("100"));
+          expect(await logs["value"]).to.be.a.bignumber.equal(wei("100"));
         });
       });
 
       describe("should mint correct amount of sktBMI tokens:", () => {
         it("for first stake", async () => {
-          expect((await stkBMIToken.balanceOf(USER1)).toString()).to.equal("0");
+          expect(await stkBMIToken.balanceOf(USER1)).to.be.a.bignumber.equal("0");
 
           await bmiStaking.stake(wei("10"), { from: USER1 });
-          expect((await stkBMIToken.balanceOf(USER1)).toString()).to.equal(wei("10"));
+          expect(await stkBMIToken.balanceOf(USER1)).to.be.a.bignumber.equal(wei("10"));
         });
 
         it("for next stakes", async () => {
-          expect((await stkBMIToken.balanceOf(USER1)).toString()).to.equal("0");
+          expect(await stkBMIToken.balanceOf(USER1)).to.be.a.bignumber.equal("0");
 
           await bmiStaking.stake(wei("100"), { from: USER1 });
-          expect((await bmiStaking.totalPool()).toString()).to.equal(wei("100"));
+          expect(await bmiStaking.totalPool()).to.be.a.bignumber.equal(wei("100"));
           // rewardPool = 0, cuz we start adding a reward after the first stake
-          expect((await stkBMIToken.balanceOf(USER1)).toString()).to.equal(wei("100"));
+          expect(await stkBMIToken.balanceOf(USER1)).to.be.a.bignumber.equal(wei("100"));
 
           await bmiStaking.stake(wei("100"), { from: USER2 });
-          expect((await bmiStaking.totalPool()).toString()).to.equal(wei("210"));
-          expect(stringToRegularNumber(await stkBMIToken.balanceOf(USER2))).to.closeTo(
-            stringToRegularNumber(wei("90.9090909090909")),
-            stringToRegularNumber(wei("0.000000000001"))
+          expect(await bmiStaking.totalPool()).to.be.a.bignumber.equal(wei("210"));
+          expect(await stkBMIToken.balanceOf(USER2)).to.be.a.bignumber.closeTo(
+            wei("90.9090909090909"),
+            wei("0.000000000001")
           );
 
           await bmiStaking.stake(wei("200"), { from: USER3 });
-          expect((await bmiStaking.totalPool()).toString()).to.equal(wei("420"));
-          expect(stringToRegularNumber(await stkBMIToken.balanceOf(USER3))).to.closeTo(
-            stringToRegularNumber(wei("173.5537190082640")),
-            stringToRegularNumber(wei("0.000000000001"))
+          expect(await bmiStaking.totalPool()).to.be.a.bignumber.equal(wei("420"));
+          expect(await stkBMIToken.balanceOf(USER3)).to.be.a.bignumber.closeTo(
+            wei("173.5537190082640"),
+            wei("0.000000000001")
           );
 
           await bmiStaking.stake(wei("100"), { from: USER4 });
-          expect((await bmiStaking.totalPool()).toString()).to.equal(wei("530"));
-          expect(stringToRegularNumber(await stkBMIToken.balanceOf(USER4))).to.closeTo(
-            stringToRegularNumber(wei("84.7587930040361")),
-            stringToRegularNumber(wei("0.000000000001"))
+          expect(await bmiStaking.totalPool()).to.be.a.bignumber.equal(wei("530"));
+          expect(await stkBMIToken.balanceOf(USER4)).to.be.a.bignumber.closeTo(
+            wei("84.7587930040361"),
+            wei("0.000000000001")
           );
         });
       });
 
       it("should increase totalPool", async () => {
-        expect((await bmiStaking.totalPool()).toString()).to.equal(wei("0"));
+        expect(await bmiStaking.totalPool()).to.be.a.bignumber.equal(wei("0"));
         await bmiStaking.stake(wei("100"), { from: USER1 });
-        expect((await bmiStaking.totalPool()).toString()).to.equal(wei("100"));
+        expect(await bmiStaking.totalPool()).to.be.a.bignumber.equal(wei("100"));
       });
 
       it("should update lastUpdateBlock", async () => {
         await bmiStaking.stake(wei("100"), { from: USER1 });
         const latestBlock = await time.latestBlock();
-        expect((await bmiStaking.lastUpdateBlock()).toString()).to.equal(latestBlock.toString());
+        expect(await bmiStaking.lastUpdateBlock()).to.be.a.bignumber.equal(latestBlock);
         await bmiStaking.stake(wei("100"), { from: USER1 });
-        expect((await bmiStaking.lastUpdateBlock()).toString()).to.equal(new BN(latestBlock).add(new BN(1)).toString());
+        expect(await bmiStaking.lastUpdateBlock()).to.be.a.bignumber.equal(new BN(latestBlock).add(new BN(1)));
       });
 
       it("should catch event", async () => {
@@ -230,7 +219,7 @@ contract("BMIStaking", async (accounts) => {
     describe("stakeWithPermit", async () => {
       const amountToStake = toBN(1000);
 
-      it("should correct stake without approve", async () => {
+      it.skip("should correct stake without approve", async () => {
         const buffer = Buffer.from(USER1PrivateKey, "hex");
         const contractData = { name: "MBMI", verifyingContract: bmiMock.address };
         const transactionData = {
@@ -309,9 +298,6 @@ contract("BMIStaking", async (accounts) => {
       });
 
       it("should revert if user try to withdraw without unlock or before correct time", async () => {
-        const isBMIRewardUnlocked = await bmiStaking.isBMIRewardUnlocked();
-        assert.isFalse(isBMIRewardUnlocked);
-
         await expectRevert(bmiStaking.withdraw(), "BMIStaking: unlock not started/exp");
 
         await time.increase(time.duration.weeks(13)); // before 90 days
@@ -357,9 +343,9 @@ contract("BMIStaking", async (accounts) => {
       });
 
       it("should burn correct amount of sktBMI tokens", async () => {
-        expect(stringToRegularNumber(await stkBMIToken.totalSupply())).to.closeTo(
-          stringToRegularNumber(wei("449.221602921392")),
-          stringToRegularNumber(wei("0.000000000001"))
+        expect(await stkBMIToken.totalSupply()).to.be.a.bignumber.closeTo(
+          wei("449.221602921392"),
+          wei("0.000000000001")
         );
 
         await time.increase(time.duration.weeks(13)); // 90 days to unlock
@@ -371,54 +357,54 @@ contract("BMIStaking", async (accounts) => {
 
         await bmiStaking.withdraw({ from: USER1 });
 
-        expect(stringToRegularNumber(await stkBMIToken.balanceOf(USER1))).to.closeTo(
-          stringToRegularNumber(wei("62.564866423217374592")),
-          stringToRegularNumber(wei("0.000000000001"))
+        expect(await stkBMIToken.balanceOf(USER1)).to.be.a.bignumber.closeTo(
+          wei("62.564866423217374592"),
+          wei("0.000000000001")
         );
 
-        expect(stringToRegularNumber(await stkBMIToken.totalSupply())).to.closeTo(
-          stringToRegularNumber(wei("411.786469344608879490")),
-          stringToRegularNumber(wei("0.000000000001"))
+        expect(await stkBMIToken.totalSupply()).to.be.a.bignumber.closeTo(
+          wei("411.786469344608879490"),
+          wei("0.000000000001")
         );
 
         await bmiStaking.withdraw({ from: USER2 });
 
-        expect(stringToRegularNumber(await stkBMIToken.balanceOf(USER2))).to.closeTo(
-          stringToRegularNumber(wei("83.555761099365750528")),
-          stringToRegularNumber(wei("0.000000000001"))
+        expect(await stkBMIToken.balanceOf(USER2)).to.be.a.bignumber.closeTo(
+          wei("83.555761099365750528"),
+          wei("0.000000000001")
         );
 
-        expect(stringToRegularNumber(await stkBMIToken.totalSupply())).to.closeTo(
-          stringToRegularNumber(wei("404.433139534883720928")),
-          stringToRegularNumber(wei("0.000000000001"))
+        expect(await stkBMIToken.totalSupply()).to.be.a.bignumber.closeTo(
+          wei("404.433139534883720928"),
+          wei("0.000000000001")
         );
 
         await bmiStaking.withdraw({ from: USER3 });
 
-        expect(stringToRegularNumber(await stkBMIToken.balanceOf(USER3))).to.closeTo(
-          stringToRegularNumber(wei("122.999576566403997693")),
-          stringToRegularNumber(wei("0.000000000001"))
+        expect(await stkBMIToken.balanceOf(USER3)).to.be.a.bignumber.closeTo(
+          wei("122.999576566403997693"),
+          wei("0.000000000001")
         );
-        expect(stringToRegularNumber(await stkBMIToken.totalSupply())).to.closeTo(
-          stringToRegularNumber(wei("353.878997093023255812")),
-          stringToRegularNumber(wei("0.000000000001"))
+        expect(await stkBMIToken.totalSupply()).to.be.a.bignumber.closeTo(
+          wei("353.878997093023255812"),
+          wei("0.000000000001")
         );
 
         await bmiStaking.withdraw({ from: USER4 });
-        expect(stringToRegularNumber(await stkBMIToken.balanceOf(USER4))).to.closeTo(
-          stringToRegularNumber(wei("81.927761027291946953")),
-          stringToRegularNumber(wei("0.000000000001"))
+        expect(await stkBMIToken.balanceOf(USER4)).to.be.a.bignumber.closeTo(
+          wei("81.927761027291946953"),
+          wei("0.000000000001")
         );
-        expect(stringToRegularNumber(await stkBMIToken.totalSupply())).to.closeTo(
-          stringToRegularNumber(wei("351.047965116279069766")),
-          stringToRegularNumber(wei("0.000000000001"))
+        expect(await stkBMIToken.totalSupply()).to.be.a.bignumber.closeTo(
+          wei("351.047965116279069766"),
+          wei("0.000000000001")
         );
       });
 
       describe("should transfer BMI tokens", () => {
         it("should transfer BMI tokens", async () => {
-          expect((await bmiMock.balanceOf(USER1)).toString()).to.equal(wei("99900"));
-          expect((await bmiMock.balanceOf(bmiStaking.address)).toString()).to.equal(wei("100500"));
+          expect(await bmiMock.balanceOf(USER1)).to.be.a.bignumber.equal(wei("99900"));
+          expect(await bmiMock.balanceOf(bmiStaking.address)).to.be.a.bignumber.equal(wei("100500"));
 
           await time.increase(time.duration.weeks(13)); // 90 days to unlock
           await bmiStaking.unlockTokensToWithdraw(await stkBMIToken.balanceOf(USER1), { from: USER1 });
@@ -426,10 +412,10 @@ contract("BMIStaking", async (accounts) => {
 
           await bmiStaking.withdraw({ from: USER1 });
 
-          expect((await bmiMock.balanceOf(USER1)).toString()).to.equal(wei("100000"));
-          expect(stringToRegularNumber(await bmiMock.balanceOf(bmiStaking.address))).to.closeTo(
-            stringToRegularNumber(wei("100400.000000000000")),
-            stringToRegularNumber(wei("0.000000000001"))
+          expect(await bmiMock.balanceOf(USER1)).to.be.a.bignumber.equal(wei("100000"));
+          expect(await bmiMock.balanceOf(bmiStaking.address)).to.be.a.bignumber.closeTo(
+            wei("100400.000000000000"),
+            wei("0.000000000001")
           );
         });
 
@@ -445,38 +431,35 @@ contract("BMIStaking", async (accounts) => {
           });
           expect(await logs["from"]).to.be.equal(bmiStaking.address);
           expect(await logs["to"]).to.be.equal(USER1);
-          expect(stringToRegularNumber(await logs["value"])).to.closeTo(
-            stringToRegularNumber(wei("100.000000000000")),
-            stringToRegularNumber(wei("0.000000000001"))
-          );
+          expect(await logs["value"]).to.be.a.bignumber.closeTo(wei("100.000000000000"), wei("0.000000000001"));
         });
       });
 
       it("should decrease totalPool", async () => {
-        expect((await bmiStaking.totalPool()).toString()).to.equal(wei("530"));
+        expect(await bmiStaking.totalPool()).to.be.a.bignumber.equal(wei("530"));
 
         await time.increase(time.duration.weeks(13)); // 90 days to unlock
         await bmiStaking.unlockTokensToWithdraw(await stkBMIToken.balanceOf(USER1), { from: USER1 });
         await time.increase(time.duration.days(9)); // 9 days to be to withdraw
 
         await bmiStaking.withdraw({ from: USER1 });
-        expect(stringToRegularNumber(await bmiStaking.totalPool())).to.closeTo(
-          stringToRegularNumber(wei("470")), // +10 reward from block
-          stringToRegularNumber(wei("0.000000000003"))
+        expect(await bmiStaking.totalPool()).to.be.a.bignumber.closeTo(
+          wei("470"), // +10 reward from block
+          wei("0.000000000003")
         );
       });
 
       it("should update lastUpdateBlock", async () => {
         // await bmiStaking.stake(wei("100"), { from: USER1 });
         const latestBlock = await time.latestBlock();
-        expect((await bmiStaking.lastUpdateBlock()).toString()).to.equal(latestBlock.toString());
+        expect(await bmiStaking.lastUpdateBlock()).to.be.a.bignumber.equal(latestBlock);
 
         await time.increase(time.duration.weeks(13)); // 60 days to unlock
         await bmiStaking.unlockTokensToWithdraw(await stkBMIToken.balanceOf(USER1), { from: USER1 });
         await time.increase(time.duration.days(9)); // 9 days to be to withdraw
 
         await bmiStaking.withdraw({ from: USER1 });
-        expect((await bmiStaking.lastUpdateBlock()).toString()).to.equal(new BN(latestBlock).add(new BN(4)).toString());
+        expect(await bmiStaking.lastUpdateBlock()).to.be.a.bignumber.equal(new BN(latestBlock).add(new BN(4)));
       });
 
       it("should catch event BMIWithdrawn", async () => {
@@ -490,12 +473,9 @@ contract("BMIStaking", async (accounts) => {
           return events[0].args;
         });
 
-        expect(stringToRegularNumber(await logs["amountBMI"])).to.closeTo(
-          stringToRegularNumber(wei("10")),
-          stringToRegularNumber(wei("0.000000000001"))
-        );
+        expect(await logs["amountBMI"]).to.be.a.bignumber.closeTo(wei("10"), wei("0.000000000001"));
 
-        expect((await logs["burnedStkBMI"]).toString()).to.equal("7881080753006868506");
+        expect(await logs["burnedStkBMI"]).to.be.a.bignumber.equal("7881080753006868506");
         expect(await logs["recipient"]).to.be.equal(USER1);
       });
     });
@@ -515,9 +495,9 @@ contract("BMIStaking", async (accounts) => {
       describe("should return correct amount of BMI tokens", () => {
         it("when lastUpdateBlock == last mined block", async () => {
           await time.advanceBlock();
-          expect(stringToRegularNumber(await bmiStaking.stakingReward(wei("10")))).to.closeTo(
-            stringToRegularNumber(wei("12.0207932229496")),
-            stringToRegularNumber(wei("0.000000000001"))
+          expect(await bmiStaking.stakingReward(wei("10"))).to.be.a.bignumber.closeTo(
+            wei("12.0207932229496"),
+            wei("0.000000000001")
           );
         });
 
@@ -526,9 +506,9 @@ contract("BMIStaking", async (accounts) => {
           await time.advanceBlock();
           await time.advanceBlock();
 
-          expect(stringToRegularNumber(await bmiStaking.stakingReward(wei("10")))).to.closeTo(
-            stringToRegularNumber(wei("12.46600778676")),
-            stringToRegularNumber(wei("0.00000000001"))
+          expect(await bmiStaking.stakingReward(wei("10"))).to.be.a.bignumber.closeTo(
+            wei("12.46600778676"),
+            wei("0.00000000001")
           );
         });
       });
@@ -547,35 +527,35 @@ contract("BMIStaking", async (accounts) => {
         await bmiStaking.stake(wei("100"), { from: USER4 });
       });
 
-      describe("VBMI lock", async () => {
-        it("should return correct amount after VBMI lock", async () => {
+      describe("stkBMI lock", async () => {
+        it("should return correct amount after stkBMI lock", async () => {
           await time.advanceBlock();
 
-          expect(stringToRegularNumber(await bmiStaking.getStakedBMI(USER1))).to.closeTo(
-            stringToRegularNumber(wei("120.207932229496")),
-            stringToRegularNumber(wei("0.000000000001"))
+          expect(await bmiStaking.getStakedBMI(USER1)).to.be.a.bignumber.closeTo(
+            wei("120.207932229496"),
+            wei("0.000000000001")
           );
 
-          await stkBMIToken.approve(vBMI.address, await stkBMIToken.balanceOf(USER1), { from: USER1 });
-          await vBMI.lockStkBMI(await stkBMIToken.balanceOf(USER1), { from: USER1 });
+          await stkBMIToken.approve(stkBMIStaking.address, await stkBMIToken.balanceOf(USER1), { from: USER1 });
+          await stkBMIStaking.lockStkBMI(await stkBMIToken.balanceOf(USER1), { from: USER1 });
 
-          expect(stringToRegularNumber(await bmiStaking.getStakedBMI(USER1))).to.closeTo(
-            stringToRegularNumber(wei("124.6600778676")),
-            stringToRegularNumber(wei("0.0000000001"))
+          expect(await bmiStaking.getStakedBMI(USER1)).to.be.a.bignumber.closeTo(
+            wei("124.6600778676"),
+            wei("0.0000000001")
           );
         });
       });
 
       describe("should return correct amount of BMI tokens", () => {
         it("should return 0 if user has no stake", async () => {
-          expect((await bmiStaking.getStakedBMI(OWNER)).toString()).to.equal(wei("0"));
+          expect(await bmiStaking.getStakedBMI(OWNER)).to.be.a.bignumber.equal(wei("0"));
         });
 
         it("when lastUpdateBlock == last mined block", async () => {
           await time.advanceBlock();
-          expect(stringToRegularNumber(await bmiStaking.getStakedBMI(USER1))).to.closeTo(
-            stringToRegularNumber(wei("120.207932229496")),
-            stringToRegularNumber(wei("0.000000000001"))
+          expect(await bmiStaking.getStakedBMI(USER1)).to.be.a.bignumber.closeTo(
+            wei("120.207932229496"),
+            wei("0.000000000001")
           );
         });
 
@@ -584,9 +564,9 @@ contract("BMIStaking", async (accounts) => {
           await time.advanceBlock();
           await time.advanceBlock();
 
-          expect(stringToRegularNumber(await bmiStaking.getStakedBMI(USER1))).to.closeTo(
-            stringToRegularNumber(wei("124.6600778676")),
-            stringToRegularNumber(wei("0.0000000001"))
+          expect(await bmiStaking.getStakedBMI(USER1)).to.be.a.bignumber.closeTo(
+            wei("124.6600778676"),
+            wei("0.0000000001")
           );
         });
       });
@@ -601,9 +581,9 @@ contract("BMIStaking", async (accounts) => {
       });
 
       it("should set reward per block", async () => {
-        expect((await bmiStaking.rewardPerBlock()).toString()).to.equal(wei("10"));
+        expect(await bmiStaking.rewardPerBlock()).to.be.a.bignumber.equal(wei("10"));
         await bmiStaking.setRewardPerBlock(wei("12"));
-        expect((await bmiStaking.rewardPerBlock()).toString()).to.equal(wei("12"));
+        expect(await bmiStaking.rewardPerBlock()).to.be.a.bignumber.equal(wei("12"));
       });
     });
 
@@ -645,12 +625,12 @@ contract("BMIStaking", async (accounts) => {
       });
 
       it("should revoke unused tokens from reward poll", async () => {
-        expect((await bmiMock.balanceOf(bmiStaking.address)).toString()).to.equal(wei("100100"));
-        expect((await bmiMock.balanceOf(OWNER)).toString()).to.equal(wei("159500000"));
+        expect(await bmiMock.balanceOf(bmiStaking.address)).to.be.a.bignumber.equal(wei("100100"));
+        expect(await bmiMock.balanceOf(OWNER)).to.be.a.bignumber.equal(wei("159500000"));
 
         await bmiStaking.revokeUnusedRewardPool();
-        expect((await bmiMock.balanceOf(bmiStaking.address)).toString()).to.equal(wei("110"));
-        expect((await bmiMock.balanceOf(OWNER)).toString()).to.equal(wei("159599990"));
+        expect(await bmiMock.balanceOf(bmiStaking.address)).to.be.a.bignumber.equal(wei("110"));
+        expect(await bmiMock.balanceOf(OWNER)).to.be.a.bignumber.equal(wei("159599990"));
       });
 
       it("should cath event UnusedRewardPoolRevoked", async () => {
@@ -660,7 +640,7 @@ contract("BMIStaking", async (accounts) => {
           return events[0].args;
         });
         expect(await logs["recipient"]).to.be.equal(OWNER);
-        expect((await logs["amount"]).toString()).to.equal(wei("99990"));
+        expect(await logs["amount"]).to.be.a.bignumber.equal(wei("99990"));
       });
     });
   });
@@ -678,11 +658,8 @@ contract("BMIStaking", async (accounts) => {
       await bmiStaking.stake(wei("100"), { from: USER2 });
       await bmiStaking.stake(wei("200"), { from: USER3 });
       await bmiStaking.stake(wei("100"), { from: USER4 });
-      expect(stringToRegularNumber(await stkBMIToken.totalSupply())).to.closeTo(
-        stringToRegularNumber(wei("449.221602921392")),
-        stringToRegularNumber(wei("0.000000000001"))
-      );
-      expect((await bmiStaking.totalPool()).toString()).to.equal(wei("530"));
+      expect(await stkBMIToken.totalSupply()).to.be.a.bignumber.closeTo(wei("449.221602921392"), wei("0.000000000001"));
+      expect(await bmiStaking.totalPool()).to.be.a.bignumber.equal(wei("530"));
 
       await time.increase(time.duration.weeks(13)); // 90 days to unlock
       await bmiStaking.unlockTokensToWithdraw(await stkBMIToken.balanceOf(USER1), { from: USER1 });
@@ -696,45 +673,39 @@ contract("BMIStaking", async (accounts) => {
       await bmiStaking.withdraw({ from: USER3 });
       await bmiStaking.withdraw({ from: USER4 });
 
-      expect((await stkBMIToken.totalSupply()).toString()).to.equal("124722104053117704468");
-      expect((await bmiStaking.totalPool()).toString()).to.equal("180778397078608495102");
+      expect(await stkBMIToken.totalSupply()).to.be.a.bignumber.equal("124722104053117704468");
+      expect(await bmiStaking.totalPool()).to.be.a.bignumber.equal("180778397078608495102");
     });
 
     it("make a few stake and unstake", async () => {
-      expect((await bmiStaking.totalPool()).toString()).to.equal(wei("0"));
+      expect(await bmiStaking.totalPool()).to.be.a.bignumber.equal(wei("0"));
 
       await bmiStaking.stake(wei("100"), { from: USER1 });
       // stkBMI TS - 100
-      expect((await bmiStaking.totalPool()).toString()).to.equal(wei("100"));
-      expect((await stkBMIToken.totalSupply()).toString()).to.equal(wei("100"));
-      expect((await stkBMIToken.balanceOf(USER1)).toString()).to.equal(wei("100"));
-      expect((await bmiMock.balanceOf(USER1)).toString()).to.equal(wei("99900"));
+      expect(await bmiStaking.totalPool()).to.be.a.bignumber.equal(wei("100"));
+      expect(await stkBMIToken.totalSupply()).to.be.a.bignumber.equal(wei("100"));
+      expect(await stkBMIToken.balanceOf(USER1)).to.be.a.bignumber.equal(wei("100"));
+      expect(await bmiMock.balanceOf(USER1)).to.be.a.bignumber.equal(wei("99900"));
 
       await bmiStaking.stake(wei("100"), { from: USER2 });
       // stkBMI TS - 190.909090909090
-      expect((await bmiStaking.totalPool()).toString()).to.equal(wei("210"));
-      expect(stringToRegularNumber(await stkBMIToken.totalSupply())).to.closeTo(
-        stringToRegularNumber(wei("190.909090909090")),
-        stringToRegularNumber(wei("0.000000000001"))
+      expect(await bmiStaking.totalPool()).to.be.a.bignumber.equal(wei("210"));
+      expect(await stkBMIToken.totalSupply()).to.be.a.bignumber.closeTo(wei("190.909090909090"), wei("0.000000000001"));
+      expect(await stkBMIToken.balanceOf(USER2)).to.be.a.bignumber.closeTo(
+        wei("90.909090909090"),
+        wei("0.000000000001")
       );
-      expect(stringToRegularNumber(await stkBMIToken.balanceOf(USER2))).to.closeTo(
-        stringToRegularNumber(wei("90.909090909090")),
-        stringToRegularNumber(wei("0.000000000001"))
-      );
-      expect((await bmiMock.balanceOf(USER2)).toString()).to.equal(wei("99900"));
+      expect(await bmiMock.balanceOf(USER2)).to.be.a.bignumber.equal(wei("99900"));
 
       await bmiStaking.stake(wei("200"), { from: USER3 });
       // stkBMI TS - 364.462809917355
-      expect((await bmiStaking.totalPool()).toString()).to.equal(wei("420"));
-      expect(stringToRegularNumber(await stkBMIToken.totalSupply())).to.closeTo(
-        stringToRegularNumber(wei("364.462809917355")),
-        stringToRegularNumber(wei("0.000000000001"))
+      expect(await bmiStaking.totalPool()).to.be.a.bignumber.equal(wei("420"));
+      expect(await stkBMIToken.totalSupply()).to.be.a.bignumber.closeTo(wei("364.462809917355"), wei("0.000000000001"));
+      expect(await stkBMIToken.balanceOf(USER3)).to.be.a.bignumber.closeTo(
+        wei("173.553719008264"),
+        wei("0.000000000001")
       );
-      expect(stringToRegularNumber(await stkBMIToken.balanceOf(USER3))).to.closeTo(
-        stringToRegularNumber(wei("173.553719008264")),
-        stringToRegularNumber(wei("0.000000000001"))
-      );
-      expect((await bmiMock.balanceOf(USER3)).toString()).to.equal(wei("99800"));
+      expect(await bmiMock.balanceOf(USER3)).to.be.a.bignumber.equal(wei("99800"));
 
       await time.increase(time.duration.weeks(13)); // 90 days to unlock
       await bmiStaking.unlockTokensToWithdraw(await stkBMIToken.balanceOf(USER2), { from: USER2 });
@@ -742,72 +713,51 @@ contract("BMIStaking", async (accounts) => {
 
       await bmiStaking.withdraw({ from: USER2 });
       // stkBMI TS - 273.5537190082640, BMI +107.256235827664
-      expect(stringToRegularNumber(await bmiStaking.totalPool())).to.closeTo(
-        stringToRegularNumber(wei("369.090909090909")),
-        stringToRegularNumber(wei("0.000000000001"))
-      );
-      expect(stringToRegularNumber(await stkBMIToken.totalSupply())).to.closeTo(
-        stringToRegularNumber(wei("292.434586613530")),
-        stringToRegularNumber(wei("0.000000000001"))
-      );
-      expect((await stkBMIToken.balanceOf(USER2)).toString()).to.equal("18880867605265736779");
-      expect(stringToRegularNumber(await bmiMock.balanceOf(USER2))).to.closeTo(
-        stringToRegularNumber(wei("99990.909090909090")),
-        stringToRegularNumber(wei("0.000000000001"))
+      expect(await bmiStaking.totalPool()).to.be.a.bignumber.closeTo(wei("369.090909090909"), wei("0.000000000001"));
+      expect(await stkBMIToken.totalSupply()).to.be.a.bignumber.closeTo(wei("292.434586613530"), wei("0.000000000001"));
+      expect(await stkBMIToken.balanceOf(USER2)).to.be.a.bignumber.equal("18880867605265736779");
+      expect(await bmiMock.balanceOf(USER2)).to.be.a.bignumber.closeTo(
+        wei("99990.909090909090"),
+        wei("0.000000000001")
       );
 
       await bmiStaking.stake(wei("50"), { from: USER1 });
       // stkBMI TS - 314.659480928206, stkBMI 141.105761919941
-      expect(stringToRegularNumber(await bmiStaking.totalPool())).to.closeTo(
-        stringToRegularNumber(wei("429.090909090909")),
-        stringToRegularNumber(wei("0.000000000001"))
+      expect(await bmiStaking.totalPool()).to.be.a.bignumber.closeTo(wei("429.090909090909"), wei("0.000000000001"));
+      expect(await stkBMIToken.totalSupply()).to.be.a.bignumber.closeTo(
+        wei("331.0050956392955"),
+        wei("0.000000000001")
       );
-      expect(stringToRegularNumber(await stkBMIToken.totalSupply())).to.closeTo(
-        stringToRegularNumber(wei("331.0050956392955")),
-        stringToRegularNumber(wei("0.000000000001"))
+      expect(await stkBMIToken.balanceOf(USER1)).to.be.a.bignumber.closeTo(
+        wei("138.570509025765"),
+        wei("0.000000000001")
       );
-      expect(stringToRegularNumber(await stkBMIToken.balanceOf(USER1))).to.closeTo(
-        stringToRegularNumber(wei("138.570509025765")),
-        stringToRegularNumber(wei("0.000000000001"))
-      );
-      expect((await bmiMock.balanceOf(USER1)).toString()).to.equal(wei("99850"));
+      expect(await bmiMock.balanceOf(USER1)).to.be.a.bignumber.equal(wei("99850"));
 
       await bmiStaking.stake(wei("50"), { from: USER4 });
       // stkBMI TS - 354.718612305036, stkBMI 40.059131376829
-      expect(stringToRegularNumber(await bmiStaking.totalPool())).to.closeTo(
-        stringToRegularNumber(wei("489.090909090909")),
-        stringToRegularNumber(wei("0.000000000001"))
+      expect(await bmiStaking.totalPool()).to.be.a.bignumber.closeTo(wei("489.090909090909"), wei("0.000000000001"));
+      expect(await stkBMIToken.totalSupply()).to.be.a.bignumber.closeTo(wei("368.697187275240"), wei("0.000000000001"));
+      expect(await stkBMIToken.balanceOf(USER4)).to.be.a.bignumber.closeTo(
+        wei("37.692091635944"),
+        wei("0.000000000001")
       );
-      expect(stringToRegularNumber(await stkBMIToken.totalSupply())).to.closeTo(
-        stringToRegularNumber(wei("368.697187275240")),
-        stringToRegularNumber(wei("0.000000000001"))
-      );
-      expect(stringToRegularNumber(await stkBMIToken.balanceOf(USER4))).to.closeTo(
-        stringToRegularNumber(wei("37.692091635944")),
-        stringToRegularNumber(wei("0.000000000001"))
-      );
-      expect((await bmiMock.balanceOf(USER4)).toString()).to.equal(wei("99950"));
+      expect(await bmiMock.balanceOf(USER4)).to.be.a.bignumber.equal(wei("99950"));
 
       await bmiStaking.unlockTokensToWithdraw(wei("50"), { from: USER3 });
       await time.increase(time.duration.days(9)); // 9 days to be to withdraw
 
       await bmiStaking.withdraw({ from: USER3 });
       // stkBMI TS - 304.718612305036, stkBMI 123.5537190082640, BMI + 63.817311591054
-      expect(stringToRegularNumber(await bmiStaking.totalPool())).to.closeTo(
-        stringToRegularNumber(wei("469.090909090909")),
-        stringToRegularNumber(wei("0.000000000001"))
+      expect(await bmiStaking.totalPool()).to.be.a.bignumber.closeTo(wei("469.090909090909"), wei("0.000000000001"));
+      expect(await stkBMIToken.totalSupply()).to.be.a.bignumber.closeTo(wei("333.183447695313"), wei("0.000000000001"));
+      expect(await stkBMIToken.balanceOf(USER3)).to.be.a.bignumber.closeTo(
+        wei("138.039979428337"),
+        wei("0.000000000001")
       );
-      expect(stringToRegularNumber(await stkBMIToken.totalSupply())).to.closeTo(
-        stringToRegularNumber(wei("333.183447695313")),
-        stringToRegularNumber(wei("0.000000000001"))
-      );
-      expect(stringToRegularNumber(await stkBMIToken.balanceOf(USER3))).to.closeTo(
-        stringToRegularNumber(wei("138.039979428337")),
-        stringToRegularNumber(wei("0.000000000001"))
-      );
-      expect(stringToRegularNumber(await bmiMock.balanceOf(USER3))).to.closeTo(
-        stringToRegularNumber(wei("99850.000000000000")),
-        stringToRegularNumber(wei("0.000000000001"))
+      expect(await bmiMock.balanceOf(USER3)).to.be.a.bignumber.closeTo(
+        wei("99850.000000000000"),
+        wei("0.000000000001")
       );
     });
 
@@ -815,30 +765,30 @@ contract("BMIStaking", async (accounts) => {
       await bmiStaking.stake(wei("100"), { from: USER1 });
       await bmiStaking.stake(wei("100"), { from: USER2 });
 
-      expect((await stkBMIToken.balanceOf(USER3)).toString()).to.equal("0");
-      expect(stringToRegularNumber(await stkBMIToken.balanceOf(USER2))).to.closeTo(
-        stringToRegularNumber(wei("90.909090909090")),
-        stringToRegularNumber(wei("0.000000000001"))
+      expect(await stkBMIToken.balanceOf(USER3)).to.be.a.bignumber.equal("0");
+      expect(await stkBMIToken.balanceOf(USER2)).to.be.a.bignumber.closeTo(
+        wei("90.909090909090"),
+        wei("0.000000000001")
       );
 
       await stkBMIToken.transfer(USER3, wei("50"), { from: USER2 });
-      expect((await stkBMIToken.balanceOf(USER3)).toString()).to.equal(wei("50"));
-      expect(stringToRegularNumber(await stkBMIToken.balanceOf(USER2))).to.closeTo(
-        stringToRegularNumber(wei("40.909090909090")),
-        stringToRegularNumber(wei("0.000000000001"))
+      expect(await stkBMIToken.balanceOf(USER3)).to.be.a.bignumber.equal(wei("50"));
+      expect(await stkBMIToken.balanceOf(USER2)).to.be.a.bignumber.closeTo(
+        wei("40.909090909090"),
+        wei("0.000000000001")
       );
 
-      expect((await bmiMock.balanceOf(USER3)).toString()).to.equal(wei("100000"));
+      expect(await bmiMock.balanceOf(USER3)).to.be.a.bignumber.equal(wei("100000"));
 
       await time.increase(time.duration.weeks(13)); // 90 days to unlock
       await bmiStaking.unlockTokensToWithdraw(wei("30"), { from: USER3 });
       await time.increase(time.duration.days(9)); // 9 days to be to withdraw
 
       await bmiStaking.withdraw({ from: USER3 });
-      expect((await stkBMIToken.balanceOf(USER3)).toString()).to.equal(wei("27.972027972027972029"));
-      expect(stringToRegularNumber(await bmiMock.balanceOf(USER3))).to.closeTo(
-        stringToRegularNumber(wei("100030.000000000000")),
-        stringToRegularNumber(wei("0.000000000001"))
+      expect(await stkBMIToken.balanceOf(USER3)).to.be.a.bignumber.equal(wei("27.972027972027972029"));
+      expect(await bmiMock.balanceOf(USER3)).to.be.a.bignumber.closeTo(
+        wei("100030.000000000000"),
+        wei("0.000000000001")
       );
     });
   });

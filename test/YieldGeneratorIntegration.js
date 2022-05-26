@@ -1,11 +1,12 @@
 const ContractsRegistry = artifacts.require("ContractsRegistry");
 const CapitalPool = artifacts.require("CapitalPoolMock");
-const UserLeveragePool = artifacts.require("UserLeveragePool");
 const ReinsurancePool = artifacts.require("ReinsurancePool");
-const YieldGenerator = artifacts.require("YieldGenerator");
+const YieldGenerator = artifacts.require("YieldGeneratorMock");
 const LeveragePortfolioView = artifacts.require("LeveragePortfolioView");
 
 const STBLMock = artifacts.require("STBLMock");
+const BSCSTBLMock = artifacts.require("BSCSTBLMock");
+const MATICSTBLMock = artifacts.require("MATICSTBLMock");
 
 const PolicyBookAdmin = artifacts.require("PolicyBookAdmin");
 const PolicyBookFabric = artifacts.require("PolicyBookFabric");
@@ -14,7 +15,6 @@ const PolicyBookRegistry = artifacts.require("PolicyBookRegistry");
 const PolicyQuote = artifacts.require("PolicyQuote");
 const ClaimingRegistry = artifacts.require("ClaimingRegistry");
 const LiquidityRegistry = artifacts.require("LiquidityRegistry");
-const LiquidityMining = artifacts.require("LiquidityMining");
 const RewardsGenerator = artifacts.require("RewardsGenerator");
 const BMICoverStaking = artifacts.require("BMICoverStaking");
 const BMICoverStakingView = artifacts.require("BMICoverStakingView");
@@ -23,6 +23,7 @@ const ShieldMining = artifacts.require("ShieldMining");
 
 const PolicyBook = artifacts.require("PolicyBook");
 const PolicyBookFacade = artifacts.require("PolicyBookFacade");
+const UserLeveragePool = artifacts.require("UserLeveragePool");
 
 // AAVE
 const AaveProtocol = artifacts.require("AaveProtocol");
@@ -37,12 +38,13 @@ const Comptroller = artifacts.require("ComptrollerMock");
 const Comp = artifacts.require("CompMock");
 
 // YEARN
-const YearnProtocol = artifacts.require("YearnProtocol");
+const YearnProtocol = artifacts.require("YearnProtocolMock");
 const Vault = artifacts.require("VaultMock");
 
 const Reverter = require("./helpers/reverter");
 const truffleAssert = require("truffle-assertions");
 const BigNumber = require("bignumber.js");
+const { getStableAmount, getNetwork, Networks } = require("./helpers/utils");
 
 const { assert } = require("chai");
 
@@ -69,21 +71,25 @@ function toBN(number) {
 }
 
 const wei = web3.utils.toWei;
-const { toWei } = web3.utils;
-
 const PRECISION = toBN(10).pow(25);
 const PRECESSION = toBN(10).pow(6);
 
-const stblAmount = wei("10000", "mwei");
-const initialDeposit = toWei("1000");
+const SECONDS_IN_YEAR = 365 * 24 * 60 * 60;
+const DAYS_IN_YEAR = 365;
+const BLOCKS_PER_DAY = 6450;
+const BLOCKS_PER_YEAR = DAYS_IN_YEAR * BLOCKS_PER_DAY;
 
-const compoundExchangeReate = toBN(10).pow(10).times(20070);
+let stblAmount = getStableAmount("10000");
+let stblInitialDeposit;
+let depositAmount;
+let withdrawAmount;
+let rewardAmount;
 
 contract("YieldGenerator", async (accounts) => {
   const reverter = new Reverter(web3);
 
   const owner = accounts[0];
-  const insuranceContract = accounts[1];
+  const leverageContract = accounts[1];
   const NOTHING = accounts[9];
 
   let contractsRegistry;
@@ -95,6 +101,7 @@ contract("YieldGenerator", async (accounts) => {
 
   let aaveProtocol;
   let aToken;
+  let lendingPool;
   let lendingPoolAddressesProvider;
 
   let compoundProtocol;
@@ -105,10 +112,19 @@ contract("YieldGenerator", async (accounts) => {
   let yearnProtocol;
   let vault;
 
-  before("setup", async () => {
-    contractsRegistry = await ContractsRegistry.new();
-    stblMock = await STBLMock.new("mockSTBL", "MSTBL", 6);
+  let network;
 
+  before("setup", async () => {
+    network = await getNetwork();
+    contractsRegistry = await ContractsRegistry.new();
+    if (network == Networks.ETH) {
+      stblMock = await STBLMock.new("stbl", "stbl", 6);
+    } else if (network == Networks.BSC) {
+      stblMock = await BSCSTBLMock.new();
+    } else if (network == Networks.POL) {
+      stbl = await MATICSTBLMock.new();
+      await stbl.initialize("stbl", "stbl", 6, accounts[0]);
+    }
     const _capitalPool = await CapitalPool.new();
     const _reinsurancePool = await ReinsurancePool.new();
     const _yieldGenerator = await YieldGenerator.new();
@@ -121,7 +137,6 @@ contract("YieldGenerator", async (accounts) => {
     const _policyQuote = await PolicyQuote.new();
     const _claimingRegistry = await ClaimingRegistry.new();
     const _liquidityRegistry = await LiquidityRegistry.new();
-    const _liquidityMining = await LiquidityMining.new();
     const _rewardsGenerator = await RewardsGenerator.new();
     const _bmiCoverStaking = await BMICoverStaking.new();
     const _bmiCoverStakingView = await BMICoverStakingView.new();
@@ -134,7 +149,7 @@ contract("YieldGenerator", async (accounts) => {
 
     // AAVE DEPLOYMENT
     aToken = await AToken.new(stblMock.address, toBN(10).pow(27));
-    const lendingPool = await LendingPool.new(aToken.address);
+    lendingPool = await LendingPool.new(aToken.address);
     lendingPoolAddressesProvider = await LendingPoolAddressesProvider.new(lendingPool.address);
     const _aaveProtocol = await AaveProtocol.new();
 
@@ -157,16 +172,17 @@ contract("YieldGenerator", async (accounts) => {
     await contractsRegistry.addContract(await contractsRegistry.BMI_NAME(), NOTHING);
     await contractsRegistry.addContract(await contractsRegistry.BMI_STAKING_NAME(), NOTHING);
     await contractsRegistry.addContract(await contractsRegistry.BMI_UTILITY_NFT_NAME(), NOTHING);
-    await contractsRegistry.addContract(await contractsRegistry.LEGACY_REWARDS_GENERATOR_NAME(), NOTHING);
+    await contractsRegistry.addContract(await contractsRegistry.BMI_TREASURY_NAME(), NOTHING);
     await contractsRegistry.addContract(await contractsRegistry.CLAIMING_REGISTRY_NAME(), NOTHING);
     await contractsRegistry.addContract(await contractsRegistry.CLAIM_VOTING_NAME(), NOTHING);
     await contractsRegistry.addContract(await contractsRegistry.LIQUIDITY_REGISTRY_NAME(), NOTHING);
-    await contractsRegistry.addContract(await contractsRegistry.LIQUIDITY_MINING_NAME(), NOTHING);
+
     await contractsRegistry.addContract(await contractsRegistry.LIQUIDITY_MINING_STAKING_ETH_NAME(), NOTHING);
     await contractsRegistry.addContract(await contractsRegistry.LIQUIDITY_MINING_STAKING_USDT_NAME(), NOTHING);
     await contractsRegistry.addContract(await contractsRegistry.POLICY_BOOK_REGISTRY_NAME(), NOTHING);
     await contractsRegistry.addContract(await contractsRegistry.POLICY_BOOK_ADMIN_NAME(), NOTHING);
     await contractsRegistry.addContract(await contractsRegistry.SHIELD_MINING_NAME(), NOTHING);
+    await contractsRegistry.addContract(await contractsRegistry.LIQUIDITY_BRIDGE_NAME(), NOTHING);
 
     await contractsRegistry.addContract(
       await contractsRegistry.AAVE_LENDPOOL_ADDRESS_PROVIDER_NAME(),
@@ -199,7 +215,6 @@ contract("YieldGenerator", async (accounts) => {
       await contractsRegistry.LIQUIDITY_REGISTRY_NAME(),
       _liquidityRegistry.address
     );
-    await contractsRegistry.addProxyContract(await contractsRegistry.LIQUIDITY_MINING_NAME(), _liquidityMining.address);
     await contractsRegistry.addProxyContract(
       await contractsRegistry.REWARDS_GENERATOR_NAME(),
       _rewardsGenerator.address
@@ -222,12 +237,9 @@ contract("YieldGenerator", async (accounts) => {
       _leveragePortfolioView.address
     );
     await contractsRegistry.addProxyContract(await contractsRegistry.YIELD_GENERATOR_NAME(), _yieldGenerator.address);
-    await contractsRegistry.addProxyContract(await contractsRegistry.AAVE_PROTOCOL_NAME(), _aaveProtocol.address);
-    await contractsRegistry.addProxyContract(
-      await contractsRegistry.COMPOUND_PROTOCOL_NAME(),
-      _compoundProtocol.address
-    );
-    await contractsRegistry.addProxyContract(await contractsRegistry.YEARN_PROTOCOL_NAME(), _yearnProtocol.address);
+    await contractsRegistry.addProxyContract(await contractsRegistry.DEFI_PROTOCOL_1_NAME(), _aaveProtocol.address);
+    await contractsRegistry.addProxyContract(await contractsRegistry.DEFI_PROTOCOL_2_NAME(), _compoundProtocol.address);
+    await contractsRegistry.addProxyContract(await contractsRegistry.DEFI_PROTOCOL_3_NAME(), _yearnProtocol.address);
 
     // DEPLOY PROTOCOLS
     const policyRegistry = await PolicyRegistry.at(await contractsRegistry.getPolicyRegistryContract());
@@ -237,7 +249,6 @@ contract("YieldGenerator", async (accounts) => {
     const policyQuote = await PolicyQuote.at(await contractsRegistry.getPolicyQuoteContract());
     const claimingRegistry = await ClaimingRegistry.at(await contractsRegistry.getClaimingRegistryContract());
     const liquidityRegistry = await LiquidityRegistry.at(await contractsRegistry.getLiquidityRegistryContract());
-    const liquidityMining = await LiquidityMining.at(await contractsRegistry.getLiquidityMiningContract());
     const rewardsGenerator = await RewardsGenerator.at(await contractsRegistry.getRewardsGeneratorContract());
     const bmiCoverStaking = await BMICoverStaking.at(await contractsRegistry.getBMICoverStakingContract());
     const bmiCoverStakingView = await BMICoverStakingView.at(await contractsRegistry.getBMICoverStakingViewContract());
@@ -247,9 +258,9 @@ contract("YieldGenerator", async (accounts) => {
     capitalPool = await CapitalPool.at(await contractsRegistry.getCapitalPoolContract());
     reinsurancePool = await ReinsurancePool.at(await contractsRegistry.getReinsurancePoolContract());
     yieldGenerator = await YieldGenerator.at(await contractsRegistry.getYieldGeneratorContract());
-    aaveProtocol = await AaveProtocol.at(await contractsRegistry.getAaveProtocolContract());
-    compoundProtocol = await CompoundProtocol.at(await contractsRegistry.getCompoundProtocolContract());
-    yearnProtocol = await YearnProtocol.at(await contractsRegistry.getYearnProtocolContract());
+    aaveProtocol = await AaveProtocol.at(await contractsRegistry.getDefiProtocol1Contract());
+    compoundProtocol = await CompoundProtocol.at(await contractsRegistry.getDefiProtocol2Contract());
+    yearnProtocol = await YearnProtocol.at(await contractsRegistry.getDefiProtocol3Contract());
 
     await policyBookAdmin.__PolicyBookAdmin_init(
       _policyBookImpl.address,
@@ -258,14 +269,16 @@ contract("YieldGenerator", async (accounts) => {
     );
     await policyBookFabric.__PolicyBookFabric_init();
     await claimingRegistry.__ClaimingRegistry_init();
-    await liquidityMining.__LiquidityMining_init();
     await rewardsGenerator.__RewardsGenerator_init();
     await bmiCoverStaking.__BMICoverStaking_init();
     await nftStaking.__NFTStaking_init();
 
     await capitalPool.__CapitalPool_init();
     await reinsurancePool.__ReinsurancePool_init();
-    await yieldGenerator.__YieldGenerator_init();
+    await yieldGenerator.__YieldGenerator_init(network);
+    if (network == Networks.BSC || network == Networks.POL) {
+      await yieldGenerator.updateProtocolNumbers(3);
+    }
     await aaveProtocol.__AaveProtocol_init();
     await compoundProtocol.__CompoundProtocol_init();
     await yearnProtocol.__YearnProtocol_init();
@@ -276,18 +289,48 @@ contract("YieldGenerator", async (accounts) => {
     await contractsRegistry.injectDependencies(await contractsRegistry.POLICY_BOOK_REGISTRY_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.CLAIMING_REGISTRY_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.LIQUIDITY_REGISTRY_NAME());
-    await contractsRegistry.injectDependencies(await contractsRegistry.LIQUIDITY_MINING_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.REWARDS_GENERATOR_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.BMI_COVER_STAKING_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.BMI_COVER_STAKING_VIEW_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.NFT_STAKING_NAME());
+    await contractsRegistry.injectDependencies(await contractsRegistry.NFT_STAKING_NAME());
+    await contractsRegistry.injectDependencies(await contractsRegistry.SHIELD_MINING_NAME());
+    await contractsRegistry.injectDependencies(await contractsRegistry.LEVERAGE_PORTFOLIO_VIEW_NAME());
+    await contractsRegistry.injectDependencies(await contractsRegistry.POLICY_QUOTE_NAME());
 
     await contractsRegistry.injectDependencies(await contractsRegistry.CAPITAL_POOL_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.REINSURANCE_POOL_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.YIELD_GENERATOR_NAME());
-    await contractsRegistry.injectDependencies(await contractsRegistry.AAVE_PROTOCOL_NAME());
-    await contractsRegistry.injectDependencies(await contractsRegistry.COMPOUND_PROTOCOL_NAME());
-    await contractsRegistry.injectDependencies(await contractsRegistry.YEARN_PROTOCOL_NAME());
+    await contractsRegistry.injectDependencies(await contractsRegistry.DEFI_PROTOCOL_1_NAME());
+    await contractsRegistry.injectDependencies(await contractsRegistry.DEFI_PROTOCOL_2_NAME());
+    await contractsRegistry.injectDependencies(await contractsRegistry.DEFI_PROTOCOL_3_NAME());
+
+    await policyBookAdmin.setupPricingModel(
+      PRECISION.times(80),
+      PRECISION.times(80),
+      PRECISION.times(2),
+      PRECISION.times(2),
+      wei("10"),
+      PRECISION.times(10),
+      PRECISION.times(50),
+      PRECISION.times(25),
+      PRECISION.times(100)
+    );
+
+    stblInitialDeposit = getStableAmount("1000");
+
+    await stblMock.approve(policyBookFabric.address, stblInitialDeposit.times(6));
+
+    // CREATION LP
+    tx = await policyBookFabric.createLeveragePools(
+      leverageContract,
+      ContractType.VARIOUS,
+      "User Leverage Pool",
+      "USDT"
+    );
+    const userLeveragePoolAddress = tx.logs[0].args.at;
+    userLeveragePool = await UserLeveragePool.at(userLeveragePoolAddress);
+    await policyBookAdmin.whitelist(userLeveragePoolAddress, true);
 
     await aToken.setPool(lendingPool.address);
 
@@ -297,308 +340,326 @@ contract("YieldGenerator", async (accounts) => {
   afterEach("revert", reverter.revert);
 
   describe("Aave protocol", async () => {
-    beforeEach("setup", async () => {
-      await capitalPool.addVirtualUsdtAccumulatedBalance(stblAmount);
-      assert.equal((await capitalPool.virtualUsdtAccumulatedBalance()).toString(), stblAmount);
-      await yieldGenerator.setProtocolSettings(
-        [true, true, true],
-        [toBN(60).times(PRECISION), toBN(20).times(PRECISION), toBN(20).times(PRECISION)],
-        [true, true, true]
-      );
+    beforeEach("setup", async function () {
+      if (network == parseInt(Networks.ETH)) {
+        stblAmount = getStableAmount("10000");
+        await capitalPool.addVirtualUsdtAccumulatedBalance(stblAmount);
+        assert.equal((await capitalPool.virtualUsdtAccumulatedBalance()).toString(), stblAmount.toFixed().toString());
+        await yieldGenerator.setProtocolSettings(
+          [true, true, true],
+          [toBN(60).times(PRECISION), toBN(20).times(PRECISION), toBN(20).times(PRECISION)],
+          [wei("0.002", "mwei"), wei("0.002", "mwei"), wei("0.002", "mwei")]
+        );
+      } else {
+        this.skip();
+      }
+    });
+    it("getAPR", async () => {
+      depositAmount = getStableAmount("1000");
+
+      const oneDayGain = toBN(await yieldGenerator.getOneDayGain(0)).div(PRECISION);
+     
+
+      const rate = toBN((await lendingPool.getReserveData(stblMock.address)).currentLiquidityRate);
+
+      const expectedOneDayGain = toBN(rate).div(365).div(100);
+      assert.equal(oneDayGain.toString(), expectedOneDayGain.div(PRECISION).toString());
+
+      const oneDayReturn = oneDayGain.times(depositAmount); // 84377.94094353089 mgetStableAmount = 0.08 usdt
+     
     });
     it("deposit", async () => {
-      const depositAmount = wei("1000", "mwei");
+      depositAmount = getStableAmount("1000");
       await stblMock.mintArbitrary(capitalPool.address, depositAmount);
       await capitalPool.deposit(depositAmount);
 
       assert.equal((await stblMock.balanceOf(capitalPool.address)).toString(), 0);
-      assert.equal((await stblMock.balanceOf(aToken.address)).toString(), depositAmount);
-      assert.equal(toBN(await aToken.balanceOf(aaveProtocol.address)).toString(), depositAmount);
+      assert.equal((await stblMock.balanceOf(aToken.address)).toString(), depositAmount.toFixed().toString());
+      assert.equal(toBN(await aToken.balanceOf(aaveProtocol.address)).toString(), depositAmount.toString());
 
-      assert.equal(toBN(await yieldGenerator.totalDeposit()).toString(), depositAmount);
-      assert.equal(toBN(await aaveProtocol.totalDeposit()).toString(), depositAmount);
+      assert.equal(toBN(await yieldGenerator.totalDeposit()).toString(), depositAmount.toString());
+      assert.equal(toBN(await aaveProtocol.totalDeposit()).toString(), depositAmount.toString());
     });
 
-    it("withdraw ", async () => {
-      const depositAmount = wei("5000", "mwei");
-      const withdrawAmount = wei("1000", "mwei");
+    it("withdraw", async () => {
+      depositAmount = getStableAmount("5000");
+      withdrawAmount = getStableAmount("1000");
 
-      await stblMock.mintArbitrary(capitalPool.address, 2 * depositAmount);
+      await stblMock.mintArbitrary(capitalPool.address, depositAmount.times(2));
       await capitalPool.deposit(depositAmount);
       await capitalPool.deposit(depositAmount);
       await capitalPool.withdraw(withdrawAmount);
 
-      assert.equal((await stblMock.balanceOf(capitalPool.address)).toString(), toBN(withdrawAmount).plus(1).toString());
-      assert.equal((await stblMock.balanceOf(aToken.address)).toString(), wei("5397.058823", "mwei"));
-      assert.equal(toBN(await aToken.balanceOf(aaveProtocol.address)).toString(), wei("5397.058823", "mwei"));
+      assert.equal(
+        (await stblMock.balanceOf(capitalPool.address)).toString(),
+        toBN(withdrawAmount).plus(1).toFixed().toString()
+      );
+      assert.equal(
+        toBN(await stblMock.balanceOf(aToken.address)).toString(),
+        getStableAmount("5397.058823").toString()
+      );
+      assert.equal(
+        toBN(await aToken.balanceOf(aaveProtocol.address)).toString(),
+        getStableAmount("5323.083778").toString()
+      );
 
-      assert.equal(toBN(await yieldGenerator.totalDeposit()).toString(), wei("8999.999999", "mwei"));
-      assert.equal(toBN(await aaveProtocol.totalDeposit()).toString(), wei("5397.058823", "mwei"));
+      assert.equal(toBN(await yieldGenerator.totalDeposit()).toString(), getStableAmount("8999.999999").toString());
+      assert.equal(toBN(await aaveProtocol.totalDeposit()).toString(), getStableAmount("5397.058823").toString());
     });
 
-    // TODO it can't test with mocks , it tested in mainnet test
-    it.skip("claimRewards", async () => {
-      const depositAmount = wei("1000", "mwei");
-      const rewardAmount = wei("100", "mwei");
-
+    
+    it("claimRewards", async () => {
+      depositAmount = getStableAmount("1000");
       await stblMock.mintArbitrary(capitalPool.address, depositAmount);
       await capitalPool.deposit(depositAmount);
 
-      //  configure yiled rewards which will mint to ths aave protocol
-      await stblMock.mintArbitrary(owner, rewardAmount);
-      await stblMock.approve(aToken.address, rewardAmount, { from: owner });
-
-      const newLiquidityIndex = toBN(10).pow(26).times(11);
-      await aToken.setLiquidityIndex(newLiquidityIndex);
-      await aToken.mintInterest(aaveProtocol.address, { from: owner });
-
+      rewardAmount = getStableAmount("100");
+      await stblMock.mintArbitrary(aToken.address, rewardAmount);
       await yieldGenerator.claimRewards();
 
       assert.equal((await stblMock.balanceOf(reinsurancePool.address)).toString(), 0);
-      assert.equal((await stblMock.balanceOf(capitalPool.address)).toString(), wei("100", "mwei"));
-      assert.equal((await stblMock.balanceOf(aToken.address)).toString(), depositAmount);
+      assert.equal((await stblMock.balanceOf(capitalPool.address)).toString(), rewardAmount.toString());
+      assert.equal((await stblMock.balanceOf(aToken.address)).toString(), depositAmount.toFixed().toString());
+
+      const liquidityIndex = await aToken.liquidityIndex();
 
       assert.closeTo(
         toBN(await aToken.balanceOf(aaveProtocol.address)).toNumber(),
-        toBN(depositAmount).toNumber(),
-        toBN(wei("0.000001", "mwei")).toNumber()
+        toBN(depositAmount).times(toBN(10).pow(27)).div(liquidityIndex).toNumber(),
+        getStableAmount("0.000001").toNumber()
       );
 
       assert.equal(toBN(await yieldGenerator.totalDeposit()).toString(), depositAmount);
       assert.equal(toBN(await aaveProtocol.totalDeposit()).toString(), depositAmount);
-      assert.equal(toBN(await aaveProtocol.totalRewards()).toString(), wei("100", "mwei"));
+      assert.equal(toBN(await aaveProtocol.totalRewards()).toString(), rewardAmount);
     });
   });
 
   describe("Compound protocol", async () => {
-    beforeEach("setup", async () => {
-      await capitalPool.addVirtualUsdtAccumulatedBalance(stblAmount);
-      assert.equal((await capitalPool.virtualUsdtAccumulatedBalance()).toString(), stblAmount);
-      await yieldGenerator.setProtocolSettings(
-        [true, true, true],
-        [toBN(20).times(PRECISION), toBN(60).times(PRECISION), toBN(20).times(PRECISION)],
-        [true, true, true]
-      );
+    let compoundExchangeRateInit;
 
-      const newCompoundExchangeReate = toBN(10).pow(10).times(20070);
-      await cToken.setExchangeRateStored(newCompoundExchangeReate);
+    beforeEach("setup", async function () {
+      if (network == parseInt(Networks.ETH)) {
+        stblAmount = getStableAmount("10000");
+
+        await capitalPool.addVirtualUsdtAccumulatedBalance(stblAmount);
+        assert.equal((await capitalPool.virtualUsdtAccumulatedBalance()).toString(), stblAmount.toFixed().toString());
+        await yieldGenerator.setProtocolSettings(
+          [true, true, true],
+          [toBN(20).times(PRECISION), toBN(60).times(PRECISION), toBN(20).times(PRECISION)],
+          [getStableAmount("0.002"), getStableAmount("0.002"), getStableAmount("0.002")]
+        );
+        compoundExchangeRateInit = await cToken.exchangeRateCurrent();
+      } else {
+        this.skip();
+      }
+    });
+    it("getAPR", async () => {
+      depositAmount = getStableAmount("1000");
+
+      const oneDayGain = toBN(await yieldGenerator.getOneDayGain(1)).div(PRECISION);
+     
+
+      const rate = toBN(await cToken.getSupplyRatePerBlock())
+        .times(BLOCKS_PER_DAY)
+        .times(PRECISION);
+      const mantissa = toBN(10).pow(18);
+
+      const expectedOneDayGain = toBN(rate).div(mantissa);
+      assert.equal(oneDayGain.toString(), expectedOneDayGain.div(PRECISION).toString());
+
+      const oneDayReturn = oneDayGain.times(depositAmount); // 78685.62858345 mgetStableAmount = 0.07 usdt
+      
     });
     it("deposit", async () => {
-      const depositAmount = wei("1000", "mwei");
+      depositAmount = getStableAmount("1000");
       await stblMock.mintArbitrary(capitalPool.address, depositAmount);
       await capitalPool.deposit(depositAmount);
 
       assert.equal((await stblMock.balanceOf(capitalPool.address)).toString(), 0);
-      assert.equal((await stblMock.balanceOf(cToken.address)).toString(), depositAmount);
+      assert.equal((await stblMock.balanceOf(cToken.address)).toString(), depositAmount.toFixed().toString());
 
       assert.closeTo(
         toBN(await cToken.balanceOf(compoundProtocol.address)).toNumber(),
-        toBN(depositAmount).times(toBN(10).pow(18)).div(compoundExchangeReate).decimalPlaces(0).toNumber(),
-        toBN(wei("0.000001", "mwei")).toNumber()
+        toBN(depositAmount).times(toBN(10).pow(18)).div(compoundExchangeRateInit).decimalPlaces(0).toNumber(),
+        getStableAmount("0.000001").toNumber()
       );
 
-      assert.equal(toBN(await yieldGenerator.totalDeposit()).toString(), depositAmount);
-      assert.equal(toBN(await compoundProtocol.totalDeposit()).toString(), depositAmount);
+      assert.equal(toBN(await yieldGenerator.totalDeposit()).toString(), depositAmount.toString());
+      assert.equal(toBN(await compoundProtocol.totalDeposit()).toString(), depositAmount.toString());
     });
 
-    it("withdraw ", async () => {
-      const depositAmount = wei("5000", "mwei");
-      const withdrawAmount = wei("1000", "mwei");
+    it("withdraw", async () => {
+      depositAmount = getStableAmount("5000");
+      withdrawAmount = getStableAmount("1000");
 
-      await stblMock.mintArbitrary(capitalPool.address, 2 * depositAmount);
+      await stblMock.mintArbitrary(capitalPool.address, depositAmount.times(2));
       await capitalPool.deposit(depositAmount);
+      const mint1 = toBN(getStableAmount("3750"))
+        .times(toBN(10).pow(18))
+        .div(compoundExchangeRateInit)
+        .decimalPlaces(0);
+      const compoundExchangeRate1 = await cToken.exchangeRateCurrent();
       await capitalPool.deposit(depositAmount);
+      const mint2 = toBN(getStableAmount("2647.05882"))
+        .times(toBN(10).pow(18))
+        .div(compoundExchangeRate1)
+        .decimalPlaces(0);
+      const compoundExchangeRate2 = await cToken.exchangeRateCurrent();
+
       await capitalPool.withdraw(withdrawAmount);
+      const burn = toBN(getStableAmount("1000")).times(toBN(10).pow(18)).div(compoundExchangeRate2).decimalPlaces(0);
 
-      assert.equal((await stblMock.balanceOf(capitalPool.address)).toString(), toBN(withdrawAmount).plus(1));
-      assert.equal((await stblMock.balanceOf(cToken.address)).toString(), wei("5397.058823", "mwei"));
+      assert.equal(
+        (await stblMock.balanceOf(capitalPool.address)).toString(),
+        toBN(withdrawAmount).plus(1).toFixed().toString()
+      );
+      assert.equal(
+        toBN(await stblMock.balanceOf(cToken.address)).toString(),
+        getStableAmount("5397.058823").toString()
+      );
 
       assert.closeTo(
         toBN(await cToken.balanceOf(compoundProtocol.address)).toNumber(),
-        toBN(wei("5397.058823", "mwei")).times(toBN(10).pow(18)).div(compoundExchangeReate).decimalPlaces(0).toNumber(),
-        toBN(wei("0.000001", "mwei")).toNumber()
+        toBN(mint1).plus(mint2).minus(burn).toNumber(),
+        toBN(getStableAmount("0.1")).toNumber()
       );
 
-      assert.equal(toBN(await yieldGenerator.totalDeposit()).toString(), wei("8999.999999", "mwei"));
-      assert.equal(toBN(await compoundProtocol.totalDeposit()).toString(), wei("5397.058823", "mwei"));
+      assert.equal(toBN(await yieldGenerator.totalDeposit()).toString(), getStableAmount("8999.999999").toString());
+      assert.equal(toBN(await compoundProtocol.totalDeposit()).toString(), getStableAmount("5397.058823").toString());
     });
 
     it("claimRewards", async () => {
-      const depositAmount = wei("1000", "mwei");
-      const rewardAmount = wei("75.784753", "mwei");
+      depositAmount = getStableAmount("1000");
       await stblMock.mintArbitrary(capitalPool.address, depositAmount);
       await capitalPool.deposit(depositAmount);
 
-      //  configure yiled rewards which will mint to ths compound protocol
-      await stblMock.mintArbitrary(owner, rewardAmount);
-      await stblMock.approve(cToken.address, rewardAmount, { from: owner });
-
-      const newCompoundExchangeReate = toBN(10).pow(10).times(21591);
-      await cToken.setExchangeRateStored(newCompoundExchangeReate);
-      await cToken.mintInterest(compoundProtocol.address, { from: owner });
-
+      rewardAmount = getStableAmount("75.784753");
+      await stblMock.mintArbitrary(cToken.address, rewardAmount);
       await yieldGenerator.claimRewards();
 
       assert.equal((await stblMock.balanceOf(reinsurancePool.address)).toString(), 0);
-      assert.equal((await stblMock.balanceOf(capitalPool.address)).toString(), rewardAmount);
-      assert.equal(await stblMock.balanceOf(cToken.address), depositAmount);
+      assert.equal(toBN(await stblMock.balanceOf(capitalPool.address)).toString(), rewardAmount.toString());
+      assert.equal(toBN(await stblMock.balanceOf(cToken.address)).toString(), depositAmount.toString());
 
+      const compoundExchangeRate = await cToken.exchangeRateCurrent();
       assert.closeTo(
         toBN(await cToken.balanceOf(compoundProtocol.address)).toNumber(),
-        toBN(depositAmount).times(toBN(10).pow(18)).div(newCompoundExchangeReate).decimalPlaces(0).toNumber(),
-        toBN(wei("0.001683", "mwei")).toNumber()
+        toBN(depositAmount).times(toBN(10).pow(18)).div(compoundExchangeRate).decimalPlaces(0).toNumber(),
+        toBN(getStableAmount("0.001683")).toNumber()
       );
 
-      //assert.equal((await comp.balanceOf(reinsurancePool.address)).toString(), wei("1"));
+      //assert.equal((await comp.balanceOf(reinsurancePool.address)).toString(), getStableAmount("1"));
 
       assert.equal(toBN(await yieldGenerator.totalDeposit()).toString(), depositAmount);
       assert.equal(toBN(await compoundProtocol.totalDeposit()).toString(), depositAmount);
-      assert.equal(toBN(await compoundProtocol.totalRewards()).toString(), rewardAmount);
+      assert.equal(toBN(await compoundProtocol.totalRewards()).toString(), rewardAmount.toString());
     });
   });
 
   describe("Yearn protocol", async () => {
-    const PRICE_PER_SHARE_1 = toBN(10).pow(0);
-    const PRICE_PER_SHARE_MORE = toBN(10).pow(1);
+    let pricePerShareInit;
 
-    beforeEach("setup", async () => {
-      await capitalPool.addVirtualUsdtAccumulatedBalance(stblAmount);
-      assert.equal((await capitalPool.virtualUsdtAccumulatedBalance()).toString(), stblAmount);
-      await yieldGenerator.setProtocolSettings(
-        [true, true, true],
-        [toBN(20).times(PRECISION), toBN(20).times(PRECISION), toBN(60).times(PRECISION)],
-        [true, true, true]
-      );
+    beforeEach("setup", async function () {
+      if (network == parseInt(Networks.ETH)) {
+        stblAmount = getStableAmount("10000");
+
+        await capitalPool.addVirtualUsdtAccumulatedBalance(stblAmount);
+        assert.equal((await capitalPool.virtualUsdtAccumulatedBalance()).toString(), stblAmount.toFixed().toString());
+        await yieldGenerator.setProtocolSettings(
+          [true, true, true],
+          [toBN(20).times(PRECISION), toBN(20).times(PRECISION), toBN(60).times(PRECISION)],
+          [getStableAmount("0.002"), getStableAmount("0.002"), getStableAmount("0.002")]
+        );
+        await yearnProtocol.updatePriceAndBlock();
+        pricePerShareInit = await vault.pricePerShare();
+        await vault.setPricePerShare(1047212); // + 83 in one day => 10000 in 4 months (approx reality)
+      } else {
+        this.skip();
+      }
     });
 
-    it("deposit when price per share = 1", async function () {
-      const depositAmount = wei("1000", "mwei");
-      await vault.setPricePerShare(PRICE_PER_SHARE_1);
+    it("getAPR", async () => {
+      depositAmount = getStableAmount("1000");
+
+      const oneDayGain = toBN(await yieldGenerator.getOneDayGain(2)).div(PRECISION);
+      
+
+      const priceChange = toBN(await vault.pricePerShare())
+        .minus(pricePerShareInit)
+        .times(PRECISION);
+      const nbDay = 0;
+
+      const expectedOneDayGain = toBN(priceChange).div(PRECESSION);
+      assert.equal(oneDayGain.toNumber(), expectedOneDayGain.div(PRECISION).toNumber());
+
+      const oneDayReturn = oneDayGain.times(depositAmount); // 83333.33333333333 mgetStableAmount = 0.08 usdt
+     
+    });
+
+    it("deposit", async function () {
+      depositAmount = getStableAmount("1000");
       await stblMock.mintArbitrary(capitalPool.address, depositAmount);
       await capitalPool.deposit(depositAmount);
 
       assert.equal((await stblMock.balanceOf(capitalPool.address)).toString(), 0);
 
-      assert.equal((await stblMock.balanceOf(vault.address)).toString(), depositAmount);
+      assert.equal((await stblMock.balanceOf(vault.address)).toString(), depositAmount.toFixed().toString());
       assert.equal(
         toBN(await vault.balanceOf(yearnProtocol.address)).toString(),
-        toBN(depositAmount)
-          .times(await vault.pricePerShare())
-          .div(PRECESSION)
-          .toString()
+        toBN(depositAmount).times(1047212).div(PRECESSION).toString()
       );
-      assert.equal(toBN(await yieldGenerator.totalDeposit()).toString(), depositAmount);
-      assert.equal(toBN(await yearnProtocol.totalDeposit()).toString(), depositAmount);
-    });
-    it("deposit when price per share = 10", async function () {
-      const depositAmount = wei("1000", "mwei");
-      await vault.setPricePerShare(PRICE_PER_SHARE_MORE);
-      await stblMock.mintArbitrary(capitalPool.address, depositAmount);
-      await capitalPool.deposit(depositAmount);
-
-      assert.equal((await stblMock.balanceOf(capitalPool.address)).toString(), 0);
-
-      assert.equal((await stblMock.balanceOf(vault.address)).toString(), depositAmount);
-      assert.equal(
-        toBN(await vault.balanceOf(yearnProtocol.address)).toString(),
-        toBN(depositAmount)
-          .times(await vault.pricePerShare())
-          .div(PRECESSION)
-          .toString()
-      );
-      assert.equal(toBN(await yieldGenerator.totalDeposit()).toString(), depositAmount);
-      assert.equal(toBN(await yearnProtocol.totalDeposit()).toString(), depositAmount);
+      assert.equal(toBN(await yieldGenerator.totalDeposit()).toString(), depositAmount.toString());
+      assert.equal(toBN(await yearnProtocol.totalDeposit()).toString(), depositAmount.toString());
     });
 
-    it("withdraw when price per share remains the same", async function () {
-      const depositAmount = wei("5000", "mwei");
-      const withdrawAmount = wei("1000", "mwei");
+    it("withdraw", async function () {
+      depositAmount = getStableAmount("5000");
+      withdrawAmount = getStableAmount("1000");
 
-      await vault.setPricePerShare(PRICE_PER_SHARE_1);
-      await stblMock.mintArbitrary(capitalPool.address, 2 * depositAmount);
+      await stblMock.mintArbitrary(capitalPool.address, depositAmount.times(2));
       await capitalPool.deposit(depositAmount);
       await capitalPool.deposit(depositAmount);
+
       await capitalPool.withdraw(withdrawAmount);
 
-      assert.equal((await stblMock.balanceOf(capitalPool.address)).toString(), toBN(withdrawAmount).plus(1).toString());
-      assert.equal((await stblMock.balanceOf(vault.address)).toString(), wei("5397.058823", "mwei"));
-      assert.equal(toBN(await vault.balanceOf(yearnProtocol.address)).toString(), wei("5397.058823", "mwei"));
-
-      assert.equal(toBN(await yieldGenerator.totalDeposit()).toString(), wei("8999.999999", "mwei"));
-      assert.equal(toBN(await yearnProtocol.totalDeposit()).toString(), wei("5397.058823", "mwei"));
-    });
-
-    it("withdraw when price per share = 10", async function () {
-      const depositAmount = wei("5000", "mwei");
-      const withdrawAmount = wei("1000", "mwei");
-
-      await vault.setPricePerShare(PRICE_PER_SHARE_1);
-      await stblMock.mintArbitrary(capitalPool.address, 2 * depositAmount);
-      await capitalPool.deposit(depositAmount);
-      await capitalPool.deposit(depositAmount);
-
-      await vault.setPricePerShare(PRICE_PER_SHARE_MORE);
-      await capitalPool.withdraw(withdrawAmount);
-
-      assert.equal((await stblMock.balanceOf(capitalPool.address)).toString(), toBN(withdrawAmount).plus(1).toString());
-      assert.equal((await stblMock.balanceOf(vault.address)).toString(), wei("5397.058823", "mwei"));
-      assert.equal(toBN(await vault.balanceOf(yearnProtocol.address)).toString(), wei("6297.058823", "mwei"));
-
-      assert.equal(toBN(await yieldGenerator.totalDeposit()).toString(), wei("8999.999999", "mwei"));
-      assert.equal(toBN(await yearnProtocol.totalDeposit()).toString(), wei("5397.058823", "mwei"));
-    });
-
-    it("claims no reward when price per share remains the same", async function () {
-      const depositAmount = wei("1000", "mwei");
-      const rewardAmount = wei("100", "mwei");
-      await vault.setPricePerShare(PRICE_PER_SHARE_1);
-      await stblMock.mintArbitrary(capitalPool.address, depositAmount);
-      await capitalPool.deposit(depositAmount);
-
-      await stblMock.mintArbitrary(owner, rewardAmount);
-      await stblMock.approve(vault.address, rewardAmount, { from: owner });
-      await vault.mintInterest(yearnProtocol.address, { from: owner });
-
-      await yieldGenerator.claimRewards();
-
-      assert.equal((await stblMock.balanceOf(capitalPool.address)).toString(), 0);
-      assert.equal((await stblMock.balanceOf(vault.address)).toString(), depositAmount);
-      assert.equal((await stblMock.balanceOf(reinsurancePool.address)).toString(), 0);
+      assert.equal(
+        (await stblMock.balanceOf(capitalPool.address)).toString(),
+        toBN(withdrawAmount).plus(1).toFixed().toString()
+      );
+      assert.equal(toBN(await stblMock.balanceOf(vault.address)).toString(), getStableAmount("3750.000000").toString());
       assert.equal(
         toBN(await vault.balanceOf(yearnProtocol.address)).toString(),
-        toBN(depositAmount)
-          .times(await vault.pricePerShare())
-          .div(PRECESSION)
-          .toString()
+        getStableAmount("3927.045000").toString()
       );
 
-      assert.equal(toBN(await yieldGenerator.totalDeposit()).toString(), depositAmount);
-      assert.equal(toBN(await yearnProtocol.totalDeposit()).toString(), depositAmount);
-      assert.equal(toBN(await yearnProtocol.totalRewards()).toString(), 0);
+      assert.equal(toBN(await yieldGenerator.totalDeposit()).toString(), getStableAmount("8999.999999").toString());
+      assert.equal(toBN(await yearnProtocol.totalDeposit()).toString(), getStableAmount("3750.000000").toString());
     });
 
-    it("claims reward when price per share = 10", async function () {
-      const depositAmount = wei("1000", "mwei");
-      const rewardAmount = wei("9000", "mwei");
-      await vault.setPricePerShare(PRICE_PER_SHARE_1);
+    it("claimsRewards", async function () {
+      depositAmount = getStableAmount("1000");
       await stblMock.mintArbitrary(capitalPool.address, depositAmount);
       await capitalPool.deposit(depositAmount);
 
-      await vault.setPricePerShare(PRICE_PER_SHARE_MORE);
-      await stblMock.mintArbitrary(owner, rewardAmount);
-      await stblMock.approve(vault.address, rewardAmount, { from: owner });
-      await vault.mintInterest(yearnProtocol.address, { from: owner });
-
+      rewardAmount = getStableAmount("107.125091");
+      await stblMock.mintArbitrary(vault.address, rewardAmount);
       await yieldGenerator.claimRewards();
 
       assert.equal((await stblMock.balanceOf(reinsurancePool.address)).toString(), 0);
-      assert.equal((await stblMock.balanceOf(capitalPool.address)).toString(), wei("9000", "mwei"));
-      assert.equal((await stblMock.balanceOf(vault.address)).toString(), depositAmount);
-      assert.equal(toBN(await vault.balanceOf(yearnProtocol.address)).toString(), wei("100", "mwei"));
+      assert.equal(toBN(await stblMock.balanceOf(capitalPool.address)).toString(), rewardAmount.toString());
+      assert.equal(toBN(await stblMock.balanceOf(vault.address)).toString(), depositAmount.toString());
+
+      const pricePerShare = await vault.pricePerShare();
+      assert.closeTo(
+        toBN(await vault.balanceOf(yearnProtocol.address)).toNumber(),
+        toBN(depositAmount).times(PRECESSION).div(pricePerShare).toNumber(),
+        toBN(getStableAmount("0.000001")).toNumber()
+      );
 
       assert.equal(toBN(await yieldGenerator.totalDeposit()).toString(), depositAmount);
       assert.equal(toBN(await yearnProtocol.totalDeposit()).toString(), depositAmount);
-      assert.equal(toBN(await yearnProtocol.totalRewards()).toString(), wei("9000", "mwei"));
+      assert.equal(toBN(await yearnProtocol.totalRewards()).toString(), rewardAmount.toString());
     });
   });
 });

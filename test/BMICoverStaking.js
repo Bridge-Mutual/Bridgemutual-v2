@@ -5,16 +5,16 @@ const ContractsRegistry = artifacts.require("ContractsRegistry");
 const PolicyBookFabric = artifacts.require("PolicyBookFabric");
 const PolicyBookRegistry = artifacts.require("PolicyBookRegistry");
 const STBLMock = artifacts.require("STBLMock");
+const BSCSTBLMock = artifacts.require("BSCSTBLMock");
 const BMIMock = artifacts.require("BMIMock");
-const WETHMock = artifacts.require("WETHMock");
+const WETHMock = artifacts.require("WrappedTokenMock");
 const PolicyBookAdmin = artifacts.require("PolicyBookAdmin");
 const BMIStaking = artifacts.require("BMIStaking");
 const StkBMIToken = artifacts.require("STKBMIToken");
-const LiquidityMiningMock = artifacts.require("LiquidityMiningMock");
 const LiquidityRegistry = artifacts.require("LiquidityRegistry");
 const PriceFeed = artifacts.require("PriceFeed");
 const SushiswapRouterMock = artifacts.require("UniswapRouterMock");
-const VBMI = artifacts.require("VBMI");
+const StkBMIStaking = artifacts.require("StkBMIStaking");
 const NFTStaking = artifacts.require("NFTStaking");
 const PolicyRegistry = artifacts.require("PolicyRegistry");
 const PolicyQuote = artifacts.require("PolicyQuote");
@@ -23,6 +23,8 @@ const CapitalPool = artifacts.require("CapitalPool");
 const ReinsurancePool = artifacts.require("ReinsurancePool");
 const ShieldMining = artifacts.require("ShieldMining");
 const LeveragePortfolioView = artifacts.require("LeveragePortfolioView");
+const YieldGenerator = artifacts.require("YieldGenerator");
+const MATICSTBLMock = artifacts.require("MATICSTBLMock");
 
 const PolicyBookMock = artifacts.require("PolicyBookMock");
 const PolicyBookFacade = artifacts.require("PolicyBookFacade");
@@ -34,6 +36,7 @@ const truffleAssert = require("truffle-assertions");
 const { setCurrentTime, advanceBlockAtTime } = require("./helpers/ganacheTimeTraveler");
 const Reverter = require("./helpers/reverter");
 const { sign2612 } = require("./helpers/signatures");
+const { getStableAmount, getNetwork, Networks } = require("./helpers/utils");
 
 const ContractType = {
   CONTRACT: 0,
@@ -81,15 +84,24 @@ contract("BMICoverStaking", async (accounts) => {
   let bmiCoverStaking, bmiCoverStakingView;
   let rewardsGenerator;
   let bmiStaking;
-  let liquidityMiningMock;
   let policyBookAdmin;
+  let network;
 
   before("setup", async () => {
+    network = await getNetwork();
     const mockInsuranceContractAddress1 = "0x0000000000000000000000000000000000000001";
     const mockInsuranceContractAddress2 = "0x0000000000000000000000000000000000000002";
 
     const contractsRegistry = await ContractsRegistry.new();
-    stblMock = await STBLMock.new("mockSTBL", "MSTBL", 6);
+
+    if (network == Networks.ETH) {
+      stblMock = await STBLMock.new("stbl", "stbl", 6);
+    } else if (network == Networks.BSC) {
+      stblMock = await BSCSTBLMock.new();
+    } else if (network == Networks.POL) {
+      stbl = await MATICSTBLMock.new();
+      await stbl.initialize("stbl", "stbl", 6, accounts[0]);
+    }
     bmiMock = await BMIMock.new(NOTHING);
     const wethMock = await WETHMock.new("weth", "weth");
 
@@ -101,11 +113,10 @@ contract("BMICoverStaking", async (accounts) => {
     const _rewardsGenerator = await RewardsGenerator.new();
     const _bmiStaking = await BMIStaking.new();
     const _bmiCoverStakingView = await BMICoverStakingView.new();
-    const _liquidityMiningMock = await LiquidityMiningMock.new();
     const _stkBMIToken = await StkBMIToken.new();
     const _liquidityRegistry = await LiquidityRegistry.new();
     const _priceFeed = await PriceFeed.new();
-    const _vBMI = await VBMI.new();
+    const _stkBMIStaking = await StkBMIStaking.new();
     const _nftStaking = await NFTStaking.new();
     const _policyRegistry = await PolicyRegistry.new();
     const _policyQuote = await PolicyQuote.new();
@@ -114,6 +125,7 @@ contract("BMICoverStaking", async (accounts) => {
     const _reinsurancePool = await ReinsurancePool.new();
     const _shieldMining = await ShieldMining.new();
     const _leveragePortfolioView = await LeveragePortfolioView.new();
+    const _yieldGenerator = await YieldGenerator.new();
 
     const _policyBookImpl = await PolicyBookMock.new();
     const _policyBookFacadeImpl = await PolicyBookFacade.new();
@@ -123,25 +135,21 @@ contract("BMICoverStaking", async (accounts) => {
 
     await contractsRegistry.addContract(await contractsRegistry.CLAIM_VOTING_NAME(), NOTHING);
 
-    await contractsRegistry.addContract(
-      await contractsRegistry.LEGACY_REWARDS_GENERATOR_NAME(),
-      LEGACY_REWARDS_GENERATOR
-    );
-    await contractsRegistry.addContract(await contractsRegistry.YIELD_GENERATOR_NAME(), NOTHING);
-    await contractsRegistry.addContract(await contractsRegistry.AAVE_PROTOCOL_NAME(), NOTHING);
-    await contractsRegistry.addContract(await contractsRegistry.COMPOUND_PROTOCOL_NAME(), NOTHING);
-    await contractsRegistry.addContract(await contractsRegistry.YEARN_PROTOCOL_NAME(), NOTHING);
+    await contractsRegistry.addContract(await contractsRegistry.DEFI_PROTOCOL_1_NAME(), NOTHING);
+    await contractsRegistry.addContract(await contractsRegistry.DEFI_PROTOCOL_2_NAME(), NOTHING);
+    await contractsRegistry.addContract(await contractsRegistry.DEFI_PROTOCOL_3_NAME(), NOTHING);
+    await contractsRegistry.addContract(await contractsRegistry.BMI_TREASURY_NAME(), NOTHING);
 
-    await contractsRegistry.addContract(await contractsRegistry.LEGACY_BMI_STAKING_NAME(), NOTHING);
     await contractsRegistry.addContract(await contractsRegistry.BMI_UTILITY_NFT_NAME(), NOTHING);
     await contractsRegistry.addContract(await contractsRegistry.REINSURANCE_POOL_NAME(), NOTHING);
     await contractsRegistry.addContract(await contractsRegistry.LIQUIDITY_MINING_STAKING_ETH_NAME(), NOTHING);
     await contractsRegistry.addContract(await contractsRegistry.LIQUIDITY_MINING_STAKING_USDT_NAME(), NOTHING);
+    await contractsRegistry.addContract(await contractsRegistry.LIQUIDITY_BRIDGE_NAME(), NOTHING);
 
-    await contractsRegistry.addContract(await contractsRegistry.WETH_NAME(), wethMock.address);
+    await contractsRegistry.addContract(await contractsRegistry.WRAPPEDTOKEN_NAME(), wethMock.address);
     await contractsRegistry.addContract(await contractsRegistry.USDT_NAME(), stblMock.address);
     await contractsRegistry.addContract(await contractsRegistry.BMI_NAME(), bmiMock.address);
-    await contractsRegistry.addContract(await contractsRegistry.SUSHISWAP_ROUTER_NAME(), sushiswapRouterMock.address);
+    await contractsRegistry.addContract(await contractsRegistry.AMM_ROUTER_NAME(), sushiswapRouterMock.address);
 
     await contractsRegistry.addProxyContract(await contractsRegistry.PRICE_FEED_NAME(), _priceFeed.address);
     await contractsRegistry.addProxyContract(
@@ -174,12 +182,9 @@ contract("BMICoverStaking", async (accounts) => {
       _liquidityRegistry.address
     );
     await contractsRegistry.addProxyContract(await contractsRegistry.BMI_STAKING_NAME(), _bmiStaking.address);
-    await contractsRegistry.addProxyContract(
-      await contractsRegistry.LIQUIDITY_MINING_NAME(),
-      _liquidityMiningMock.address
-    );
 
-    await contractsRegistry.addProxyContract(await contractsRegistry.VBMI_NAME(), _vBMI.address);
+    await contractsRegistry.addProxyContract(await contractsRegistry.STKBMI_STAKING_NAME(), _stkBMIStaking.address);
+
     await contractsRegistry.addProxyContract(await contractsRegistry.NFT_STAKING_NAME(), _nftStaking.address);
     await contractsRegistry.addProxyContract(await contractsRegistry.POLICY_REGISTRY_NAME(), _policyRegistry.address);
     await contractsRegistry.addProxyContract(await contractsRegistry.POLICY_QUOTE_NAME(), _policyQuote.address);
@@ -194,6 +199,7 @@ contract("BMICoverStaking", async (accounts) => {
       await contractsRegistry.LEVERAGE_PORTFOLIO_VIEW_NAME(),
       _leveragePortfolioView.address
     );
+    await contractsRegistry.addProxyContract(await contractsRegistry.YIELD_GENERATOR_NAME(), _yieldGenerator.address);
 
     const policyBookFabric = await PolicyBookFabric.at(await contractsRegistry.getPolicyBookFabricContract());
     const stkBMIToken = await StkBMIToken.at(await contractsRegistry.getSTKBMIContract());
@@ -201,8 +207,7 @@ contract("BMICoverStaking", async (accounts) => {
     bmiCoverStaking = await BMICoverStaking.at(await contractsRegistry.getBMICoverStakingContract());
     rewardsGenerator = await RewardsGenerator.at(await contractsRegistry.getRewardsGeneratorContract());
     bmiStaking = await BMIStaking.at(await contractsRegistry.getBMIStakingContract());
-    liquidityMiningMock = await LiquidityMiningMock.at(await contractsRegistry.getLiquidityMiningContract());
-    const vBMI = await VBMI.at(await contractsRegistry.getVBMIContract());
+    const stkBMIStaking = await StkBMIStaking.at(await contractsRegistry.getStkBMIStakingContract());
 
     const policyRegistry = await PolicyRegistry.at(await contractsRegistry.getPolicyRegistryContract());
     const policyBookRegistry = await PolicyBookRegistry.at(await contractsRegistry.getPolicyBookRegistryContract());
@@ -214,13 +219,13 @@ contract("BMICoverStaking", async (accounts) => {
     bmiCoverStakingView = await BMICoverStakingView.at(await contractsRegistry.getBMICoverStakingViewContract());
     const nftStaking = await NFTStaking.at(await contractsRegistry.getNFTStakingContract());
     const shieldMining = await ShieldMining.at(await contractsRegistry.getShieldMiningContract());
+    const yieldGenerator = await YieldGenerator.at(await contractsRegistry.getYieldGeneratorContract());
 
     await stkBMIToken.__STKBMIToken_init();
     await bmiCoverStaking.__BMICoverStaking_init();
     await rewardsGenerator.__RewardsGenerator_init();
     await bmiStaking.__BMIStaking_init(0);
-    await liquidityMiningMock.__LiquidityMining_init();
-    await vBMI.__VBMI_init();
+    await stkBMIStaking.__StkBMIStaking_init();
 
     await policyBookAdmin.__PolicyBookAdmin_init(
       _policyBookImpl.address,
@@ -232,6 +237,7 @@ contract("BMICoverStaking", async (accounts) => {
     await capitalPool.__CapitalPool_init();
     await reinsurancePool.__ReinsurancePool_init();
     await nftStaking.__NFTStaking_init();
+    await yieldGenerator.__YieldGenerator_init(network);
 
     await contractsRegistry.injectDependencies(await contractsRegistry.PRICE_FEED_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.POLICY_BOOK_REGISTRY_NAME());
@@ -241,9 +247,8 @@ contract("BMICoverStaking", async (accounts) => {
     await contractsRegistry.injectDependencies(await contractsRegistry.REWARDS_GENERATOR_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.BMI_STAKING_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.STKBMI_NAME());
-    await contractsRegistry.injectDependencies(await contractsRegistry.LIQUIDITY_MINING_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.POLICY_BOOK_FABRIC_NAME());
-    await contractsRegistry.injectDependencies(await contractsRegistry.VBMI_NAME());
+    await contractsRegistry.injectDependencies(await contractsRegistry.STKBMI_STAKING_NAME());
 
     await contractsRegistry.injectDependencies(await contractsRegistry.POLICY_REGISTRY_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.CLAIMING_REGISTRY_NAME());
@@ -256,12 +261,18 @@ contract("BMICoverStaking", async (accounts) => {
 
     await contractsRegistry.injectDependencies(await contractsRegistry.POLICY_QUOTE_NAME());
 
-    await sushiswapRouterMock.setReserve(stblMock.address, wei(toBN(10 ** 3).toString()));
+    if (network == Networks.ETH || network == Networks.POL) {
+      await sushiswapRouterMock.setReserve(stblMock.address, wei(toBN(10 ** 3).toString()));
+    } else if (network == Networks.BSC) {
+      await sushiswapRouterMock.setReserve(stblMock.address, wei(toBN(10 ** 15).toString()));
+    }
     await sushiswapRouterMock.setReserve(wethMock.address, wei(toBN(10 ** 15).toString()));
     await sushiswapRouterMock.setReserve(bmiMock.address, wei(toBN(10 ** 15).toString()));
 
     await policyBookAdmin.setupPricingModel(
       PRECISION.times(80),
+      PRECISION.times(80),
+      PRECISION.times(2),
       PRECISION.times(2),
       wei("10"),
       PRECISION.times(10),
@@ -272,7 +283,7 @@ contract("BMICoverStaking", async (accounts) => {
 
     const initialDeposit = toBN(wei("1000"));
 
-    await stblMock.approve(policyBookFabric.address, initialDeposit);
+    await stblMock.approve(policyBookFabric.address, getStableAmount("1000"));
 
     await setCurrentTime(1);
 
@@ -294,19 +305,20 @@ contract("BMICoverStaking", async (accounts) => {
     await policyBookAdmin.whitelist(policyBookAddress, true);
 
     const liquidity = toBN(wei("1000000"));
+    const stblLiquidity = getStableAmount("1000000");
 
-    await stblMock.approve(policyBookAddress, liquidity);
+    await stblMock.approve(policyBookAddress, stblLiquidity);
     await policyBookFacade.addLiquidity(liquidity);
 
-    await stblMock.mintArbitrary(HELP, wei("1000000", "mwei"));
+    await stblMock.mintArbitrary(HELP, stblLiquidity);
 
     await stblMock.approve(policyBookAddress, 0, { from: HELP });
-    await stblMock.approve(policyBookAddress, liquidity, { from: HELP });
+    await stblMock.approve(policyBookAddress, stblLiquidity, { from: HELP });
     await policyBookFacade.addLiquidity(liquidity, { from: HELP });
 
     await stblMock.approve(policyBookFabric.address, 0, { from: HELP });
     await stblMock.approve(policyBookFabric.address, 0);
-    await stblMock.approve(policyBookFabric.address, initialDeposit);
+    await stblMock.approve(policyBookFabric.address, getStableAmount("1000"));
 
     // await setCurrentTime(1);
 
@@ -326,16 +338,14 @@ contract("BMICoverStaking", async (accounts) => {
     policyBookFacade2 = await PolicyBookFacade.at(policyBookFacadeAddress2);
 
     await policyBookAdmin.whitelist(policyBook2Address, true);
-    await stblMock.mintArbitrary(HELP, wei("1000000", "mwei"));
-    await stblMock.approve(policyBook2Address, liquidity);
+    await stblMock.mintArbitrary(HELP, stblLiquidity);
+    await stblMock.approve(policyBook2Address, stblLiquidity);
     await policyBookFacade2.addLiquidity(liquidity);
 
-    await stblMock.approve(policyBook2Address, liquidity, { from: HELP });
+    await stblMock.approve(policyBook2Address, stblLiquidity, { from: HELP });
     await policyBookFacade2.addLiquidity(liquidity, { from: HELP });
 
     // await setCurrentTime(1);
-
-    await liquidityMiningMock.startLiquidityMining();
 
     await rewardsGenerator.setRewardPerBlock(wei("100"));
 
@@ -495,7 +505,6 @@ contract("BMICoverStaking", async (accounts) => {
     it("should be able to withdraw", async () => {
       await bmiMock.mintArbitrary(bmiCoverStaking.address, wei("10000"));
       await policyBook.approve(bmiCoverStaking.address, wei("2000"));
-      await liquidityMiningMock.setStartTime(1);
 
       await bmiCoverStaking.stakeBMIX(wei("1000"), policyBook.address);
 
@@ -524,20 +533,12 @@ contract("BMICoverStaking", async (accounts) => {
       const slashingPercentage = await bmiCoverStaking.getSlashingPercentage();
 
       // data needed to get slashing percentage
-      const startTime = await liquidityMiningMock.getStartTime();
 
       const MAX_EXIT_FEE = toBN(90).times(PRECISION);
       const MIN_EXIT_FEE = toBN(20).times(PRECISION);
       const EXIT_FEE_DURATION = 100 * 24 * 60 * 60; // 100 days in seconds
 
-      const blockTimestamp = toBN(await getCurrentBlockTimestamp());
-
-      const feeSpan = MAX_EXIT_FEE.minus(MIN_EXIT_FEE);
-      const feePerSecond = feeSpan.dividedToIntegerBy(EXIT_FEE_DURATION);
-      const fee = BigNumber.min(blockTimestamp.minus(startTime).times(feePerSecond), feeSpan);
-      const calculatedSlashingPercentage = MAX_EXIT_FEE.minus(fee);
-
-      assert.equal(slashingPercentage.toString(10), calculatedSlashingPercentage.toString(10));
+      assert.equal(slashingPercentage.toString(10), MIN_EXIT_FEE.toString(10));
     });
 
     it("should not be possible to aggregate NFT from different Policies", async () => {
@@ -661,7 +662,6 @@ contract("BMICoverStaking", async (accounts) => {
   describe("restakeBMIProfit", async () => {
     it("should restake BMIs", async () => {
       // await setCurrentTime(1);
-      await liquidityMiningMock.setStartTime(1);
 
       await bmiMock.mintArbitrary(bmiCoverStaking.address, wei("10000"));
       await policyBook.approve(bmiCoverStaking.address, wei("1000"));
@@ -686,7 +686,6 @@ contract("BMICoverStaking", async (accounts) => {
 
     it("should restake all BMIs", async () => {
       // await setCurrentTime(1);
-      await liquidityMiningMock.setStartTime(1);
 
       await bmiMock.mintArbitrary(bmiCoverStaking.address, wei("10000"));
       await policyBook.approve(bmiCoverStaking.address, wei("1000"));
@@ -757,7 +756,7 @@ contract("BMICoverStaking", async (accounts) => {
       assert.equal(result.logs[0].args.policyBookAddress, policyBook.address);
       assert.closeTo(
         toBN(result.logs[0].args.amount).toNumber(),
-        toBN(wei("10")).toNumber(),
+        toBN(wei("80")).toNumber(),
         toBN(wei("0.0004")).toNumber() // rewards are bigger when all test run
       );
       assert.equal(result.logs[0].args.to, MAIN);
@@ -777,7 +776,7 @@ contract("BMICoverStaking", async (accounts) => {
       assert.equal(result.logs[1].args.policyBookAddress, policyBook.address);
       assert.closeTo(
         toBN(result.logs[1].args.amount).toNumber(),
-        toBN(wei("15")).toNumber(),
+        toBN(wei("120")).toNumber(),
         toBN(wei("0.0006")).toNumber() // higher rewards when all test running
       );
       assert.equal(result.logs[1].args.to, MAIN);
@@ -787,7 +786,7 @@ contract("BMICoverStaking", async (accounts) => {
       assert.equal(result.logs[0].args.policyBookAddress, policyBook.address);
       assert.closeTo(
         toBN(result.logs[0].args.amount).toNumber(),
-        toBN(wei("5")).toNumber(),
+        toBN(wei("40")).toNumber(),
         toBN(wei("0.0003")).toNumber() // higher rewards when all test running
       );
       assert.equal(result.logs[0].args.to, MAIN);
@@ -842,7 +841,6 @@ contract("BMICoverStaking", async (accounts) => {
       assert.equal(await bmiCoverStaking.balanceOf(MAIN), 1);
       assert.equal(await bmiCoverStaking.ownerOf(1), MAIN);
 
-      await liquidityMiningMock.setStartTime(1);
       await setCurrentTime(50 * 24 * 60 * 60);
 
       const result = await bmiCoverStaking.withdrawFundsWithProfit(1);
@@ -859,9 +857,9 @@ contract("BMICoverStaking", async (accounts) => {
       assert.equal(result.logs[0].args.to, MAIN);
       assert.closeTo(
         toBN(result.logs[0].args.amount).toNumber(),
-        toBN(wei("135")).toNumber(),
+        toBN(wei("160")).toNumber(),
         toBN(wei("0.001")).toNumber()
-      ); // slashed 45%
+      ); // slashed 20%
 
       assert.equal(result.logs[1].event, "StakingFundsWithdrawn");
       assert.equal(result.logs[1].args.policyBookAddress, policyBook.address);
@@ -881,8 +879,6 @@ contract("BMICoverStaking", async (accounts) => {
 
       await bmiCoverStaking.stakeBMIX(wei("1000"), policyBook.address);
 
-      await liquidityMiningMock.setStartTime(1);
-
       await bmiCoverStaking.stakeBMIX(wei("1000"), policyBook.address);
 
       const result = await bmiCoverStaking.withdrawStakerFundsWithProfit(policyBook.address);
@@ -899,9 +895,9 @@ contract("BMICoverStaking", async (accounts) => {
       assert.equal(result.logs[0].args.to, MAIN);
       assert.closeTo(
         toBN(result.logs[0].args.amount).toNumber(),
-        toBN(wei("5")).toNumber(),
+        toBN(wei("40")).toNumber(),
         toBN(wei("0.0003")).toNumber()
-      ); // slashed 90% (shared 1 block with 2)
+      ); // slashed 20% (shared 1 block with 2)
 
       assert.equal(result.logs[1].event, "StakingFundsWithdrawn");
       assert.equal(result.logs[1].args.policyBookAddress, policyBook.address);
@@ -918,9 +914,9 @@ contract("BMICoverStaking", async (accounts) => {
       assert.equal(result.logs[4].args.to, MAIN);
       assert.closeTo(
         toBN(result.logs[4].args.amount).toNumber(),
-        toBN(wei("25")).toNumber(),
+        toBN(wei("120")).toNumber(),
         toBN(wei("0.0013")).toNumber()
-      ); // slashed 90% (shared 1 block with 2)
+      ); // slashed 20% (shared 1 block with 2)
 
       assert.equal(result.logs[5].event, "StakingFundsWithdrawn");
       assert.equal(result.logs[5].args.policyBookAddress, policyBook.address);
@@ -935,30 +931,9 @@ contract("BMICoverStaking", async (accounts) => {
 
   describe("slashing", async () => {
     beforeEach(async () => {
-      await liquidityMiningMock.setStartTime(1);
       await bmiMock.mintArbitrary(bmiCoverStaking.address, wei("10000"));
       await policyBook.approve(bmiCoverStaking.address, wei("1000"));
       await bmiCoverStaking.stakeBMIX(wei("1000"), policyBook.address);
-    });
-
-    it("should be 90%", async () => {
-      await setCurrentTime((await getCurrentBlockTimestamp()) + 200);
-
-      const reward = toBN(await bmiCoverStaking.getSlashedBMIProfit(1));
-      const reward2 = toBN(await bmiCoverStaking.getSlashedStakerBMIProfit(MAIN, policyBook.address, 0, 1));
-
-      assert.closeTo(reward.toNumber(), toBN(wei("10")).toNumber(), toBN(wei("0.003")).toNumber());
-      assert.equal(reward.toString(), reward2.toString());
-    });
-
-    it("should be 45%", async () => {
-      await setCurrentTime((await getCurrentBlockTimestamp()) + 86400 * 50 + 200);
-
-      assert.closeTo(
-        toBN(await bmiCoverStaking.getSlashedBMIProfit(1)).toNumber(),
-        toBN(wei("45")).toNumber(),
-        toBN(wei("0.003")).toNumber()
-      );
     });
 
     it("should be 20%", async () => {
@@ -977,7 +952,7 @@ contract("BMICoverStaking", async (accounts) => {
       contractData = { name: await policyBook.symbol(), verifyingContract: policyBook.address };
     });
 
-    it("should stake with permit", async () => {
+    it.skip("should stake with permit", async () => {
       const transactionData = {
         owner: MAIN,
         spender: bmiCoverStaking.address,
@@ -995,7 +970,7 @@ contract("BMICoverStaking", async (accounts) => {
       assert.equal(await bmiCoverStaking.balanceOf(MAIN), 1);
     });
 
-    it("should fail if stake with permit 0 tokens", async () => {
+    it.skip("should fail if stake with permit 0 tokens", async () => {
       const buffer = Buffer.from(MAIN_PRIVATE_KEY, "hex");
       const contractData = { name: await policyBook.symbol(), verifyingContract: policyBook.address };
 
@@ -1049,96 +1024,6 @@ contract("BMICoverStaking", async (accounts) => {
 
       const nonExistingPolicyBook = await bmiCoverStakingView.policyBookByNFT(10);
       assert.equal(nonExistingPolicyBook, ZERO);
-    });
-  });
-
-  describe("migrate", async () => {
-    it("should test migration exhaustively", async () => {
-      await bmiMock.mintArbitrary(bmiCoverStaking.address, wei("100000"));
-
-      // await setCurrentTime(1);
-      await liquidityMiningMock.setStartTime(1);
-
-      await policyBook.approve(bmiCoverStaking.address, wei("1000"));
-      await bmiCoverStaking.stakeBMIX(wei("1000"), policyBook.address);
-
-      await policyBook.approve(bmiCoverStaking.address, wei("1000"));
-      await bmiCoverStaking.stakeBMIX(wei("1000"), policyBook.address);
-
-      await setCurrentTime((await getCurrentBlockTimestamp()) + 100);
-
-      const reward1 = toBN(await bmiCoverStaking.getBMIProfit(1));
-
-      assert.closeTo(reward1.toNumber(), toBN(wei("250")).toNumber(), toBN(wei("0.0000001")).toNumber());
-
-      const reward2 = toBN(await bmiCoverStaking.getBMIProfit(2));
-
-      assert.closeTo(reward2.toNumber(), toBN(wei("50")).toNumber(), toBN(wei("0.0000001")).toNumber());
-
-      await rewardsGenerator.reset(policyBook.address, 1);
-
-      await truffleAssert.reverts(bmiCoverStaking.restakeBMIProfit(1), "RewardsGenerator: Not staked");
-      await truffleAssert.reverts(bmiCoverStaking.withdrawBMIProfit(1), "RewardsGenerator: Not staked");
-      await truffleAssert.reverts(
-        bmiCoverStaking.aggregateNFTs(policyBook.address, [1, 2]),
-        "RewardsGenerator: Aggregated not staked"
-      );
-
-      await rewardsGenerator.reset(policyBook.address, 2);
-
-      assert.equal(toBN(await bmiCoverStaking.getBMIProfit(1)).toString(), "0");
-      assert.equal(toBN(await bmiCoverStaking.getBMIProfit(2)).toString(), "0");
-
-      await policyBook.forceUpdateBMICoverStakingRewardMultiplier();
-
-      await rewardsGenerator.migrationStake(policyBook.address, 1, wei("1000"), reward1.toFixed(), {
-        from: LEGACY_REWARDS_GENERATOR,
-      });
-
-      await rewardsGenerator.migrationStake(policyBook.address, 2, wei("1000"), reward2.toFixed(), {
-        from: LEGACY_REWARDS_GENERATOR,
-      });
-
-      assert.closeTo(
-        toBN(await bmiCoverStaking.getBMIProfit(1)).toNumber(),
-        reward1.plus(wei("100")).toNumber(),
-        toBN(wei("0.0000001")).toNumber()
-      );
-
-      assert.closeTo(
-        toBN(await bmiCoverStaking.getBMIProfit(2)).toNumber(),
-        reward2.toNumber(),
-        toBN(wei("0.0000001")).toNumber()
-      );
-
-      await bmiCoverStaking.aggregateNFTs(policyBook.address, [1, 2]);
-
-      assert.closeTo(
-        toBN(await bmiCoverStaking.getBMIProfit(3)).toNumber(),
-        toBN(wei("500")).toNumber(),
-        toBN(wei("0.0000001")).toNumber()
-      );
-
-      // nothing should change except the reward (1 block passes here)
-      await policyBook.forceUpdateBMICoverStakingRewardMultiplier({ from: HELP });
-
-      const result = await bmiCoverStaking.withdrawFundsWithProfit(3);
-
-      assert.equal(result.logs.length, 4);
-      assert.equal(result.logs[0].event, "StakingBMIProfitWithdrawn");
-      assert.equal(result.logs[0].args.policyBookAddress, policyBook.address);
-      assert.equal(result.logs[0].args.id, 3);
-      assert.equal(result.logs[0].args.to, MAIN);
-      assert.closeTo(
-        toBN(result.logs[0].args.amount).toNumber(),
-        toBN(wei("70")).toNumber(),
-        toBN(wei("0.011")).toNumber()
-      ); // slashed 20%
-
-      assert.equal(result.logs[1].event, "StakingFundsWithdrawn");
-      assert.equal(result.logs[1].args.policyBookAddress, policyBook.address);
-      assert.equal(result.logs[1].args.id, 3);
-      assert.equal(result.logs[1].args.to, MAIN);
     });
   });
 });

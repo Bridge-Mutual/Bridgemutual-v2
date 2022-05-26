@@ -5,11 +5,18 @@ pragma experimental ABIEncoderV2;
 import "@openzeppelin/contracts-upgradeable/proxy/Initializable.sol";
 import "@openzeppelin/contracts/utils/EnumerableSet.sol";
 import "@openzeppelin/contracts/math/SafeMath.sol";
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+
+import "./libraries/DecimalsConverter.sol";
 
 import "./interfaces/IContractsRegistry.sol";
 import "./interfaces/IClaimingRegistry.sol";
 import "./interfaces/IPolicyBook.sol";
 import "./interfaces/IPolicyRegistry.sol";
+import "./interfaces/IPolicyBookRegistry.sol";
+import "./interfaces/ILeveragePortfolio.sol";
+import "./interfaces/ICapitalPool.sol";
+import "./interfaces/IClaimVoting.sol";
 
 import "./abstract/AbstractDependant.sol";
 import "./Globals.sol";
@@ -17,12 +24,14 @@ import "./Globals.sol";
 contract ClaimingRegistry is IClaimingRegistry, Initializable, AbstractDependant {
     using SafeMath for uint256;
     using EnumerableSet for EnumerableSet.UintSet;
+    using EnumerableSet for EnumerableSet.AddressSet;
 
-    uint256 internal constant ANONYMOUS_VOTING_DURATION_CONTRACT = 1 weeks;
-    uint256 internal constant ANONYMOUS_VOTING_DURATION_EXCHANGE = 90 days;
-
+    uint256 internal constant ANONYMOUS_VOTING_DURATION = 1 weeks;
     uint256 internal constant EXPOSE_VOTE_DURATION = 1 weeks;
+
     uint256 internal constant PRIVATE_CLAIM_DURATION = 3 days;
+    uint256 internal constant VIEW_VERDICT_DURATION = 10 days;
+    uint256 public constant READY_TO_WITHDRAW_PERIOD = 8 days;
 
     IPolicyRegistry public policyRegistry;
     address public claimVotingAddress;
@@ -40,6 +49,20 @@ contract ClaimingRegistry is IClaimingRegistry, Initializable, AbstractDependant
 
     address internal policyBookAdminAddress;
 
+    ICapitalPool public capitalPool;
+
+    // claim withdraw
+    EnumerableSet.UintSet internal _withdrawClaimRequestIndexList;
+    mapping(uint256 => ClaimWithdrawalInfo) public override claimWithdrawalInfo; // index -> info
+    //reward withdraw
+    EnumerableSet.AddressSet internal _withdrawRewardRequestVoterList;
+    mapping(address => RewardWithdrawalInfo) public override rewardWithdrawalInfo; // address -> info
+    IClaimVoting public claimVoting;
+    IPolicyBookRegistry public policyBookRegistry;
+    mapping(address => EnumerableSet.UintSet) internal _policyBookClaims; // book -> index
+    ERC20 public stblToken;
+    uint256 public stblDecimals;
+
     event AppealPending(address claimer, address policyBookAddress, uint256 claimIndex);
     event ClaimPending(address claimer, address policyBookAddress, uint256 claimIndex);
     event ClaimAccepted(
@@ -49,7 +72,15 @@ contract ClaimingRegistry is IClaimingRegistry, Initializable, AbstractDependant
         uint256 claimIndex
     );
     event ClaimRejected(address claimer, address policyBookAddress, uint256 claimIndex);
+    event ClaimExpired(address claimer, address policyBookAddress, uint256 claimIndex);
     event AppealRejected(address claimer, address policyBookAddress, uint256 claimIndex);
+    event WithdrawalRequested(
+        address _claimer,
+        uint256 _claimRefundAmount,
+        uint256 _readyToWithdrawDate
+    );
+    event ClaimWithdrawn(address _claimer, uint256 _claimRefundAmount);
+    event RewardWithdrawn(address _voter, uint256 _rewardAmount);
 
     modifier onlyClaimVoting() {
         require(
@@ -84,6 +115,13 @@ contract ClaimingRegistry is IClaimingRegistry, Initializable, AbstractDependant
         policyRegistry = IPolicyRegistry(_contractsRegistry.getPolicyRegistryContract());
         claimVotingAddress = _contractsRegistry.getClaimVotingContract();
         policyBookAdminAddress = _contractsRegistry.getPolicyBookAdminContract();
+        capitalPool = ICapitalPool(_contractsRegistry.getCapitalPoolContract());
+        policyBookRegistry = IPolicyBookRegistry(
+            _contractsRegistry.getPolicyBookRegistryContract()
+        );
+        claimVoting = IClaimVoting(_contractsRegistry.getClaimVotingContract());
+        stblToken = ERC20(_contractsRegistry.getUSDTContract());
+        stblDecimals = stblToken.decimals();
     }
 
     function _isClaimAwaitingCalculation(uint256 index)
@@ -108,6 +146,12 @@ contract ClaimingRegistry is IClaimingRegistry, Initializable, AbstractDependant
             block.timestamp);
     }
 
+    function _isClaimExpired(uint256 index) internal view withExistingClaim(index) returns (bool) {
+        return (_allClaimsByIndexInfo[index].status == ClaimStatus.PENDING &&
+            _allClaimsByIndexInfo[index].dateSubmitted.add(validityDuration(index)) <=
+            block.timestamp);
+    }
+
     function anonymousVotingDuration(uint256 index)
         public
         view
@@ -115,15 +159,21 @@ contract ClaimingRegistry is IClaimingRegistry, Initializable, AbstractDependant
         withExistingClaim(index)
         returns (uint256)
     {
-        return
-            IPolicyBook(_allClaimsByIndexInfo[index].policyBookAddress).contractType() ==
-                IPolicyBookFabric.ContractType.EXCHANGE
-                ? ANONYMOUS_VOTING_DURATION_EXCHANGE
-                : ANONYMOUS_VOTING_DURATION_CONTRACT;
+        return ANONYMOUS_VOTING_DURATION;
     }
 
     function votingDuration(uint256 index) public view override returns (uint256) {
         return anonymousVotingDuration(index).add(EXPOSE_VOTE_DURATION);
+    }
+
+    function validityDuration(uint256 index)
+        public
+        view
+        override
+        withExistingClaim(index)
+        returns (uint256)
+    {
+        return votingDuration(index).add(VIEW_VERDICT_DURATION);
     }
 
     function anyoneCanCalculateClaimResultAfter(uint256 index)
@@ -135,18 +185,127 @@ contract ClaimingRegistry is IClaimingRegistry, Initializable, AbstractDependant
         return votingDuration(index).add(PRIVATE_CLAIM_DURATION);
     }
 
-    function canBuyNewPolicy(address buyer, address policyBookAddress)
-        external
-        view
-        override
-        returns (bool)
-    {
+    function canBuyNewPolicy(address buyer, address policyBookAddress) external override {
+        bool previousEnded = !policyRegistry.isPolicyActive(buyer, policyBookAddress);
         uint256 index = _allClaimsToIndex[policyBookAddress][buyer];
 
+        require(
+            (previousEnded &&
+                (!claimExists(index) ||
+                    (!_pendingClaimsIndexes.contains(index) &&
+                        claimStatus(index) != ClaimStatus.REJECTED_CAN_APPEAL))) ||
+                (!previousEnded && !claimExists(index)),
+            "PB: Claim is pending"
+        );
+
+        if (!previousEnded) {
+            IPolicyBook(policyBookAddress).endActivePolicy(buyer);
+        }
+    }
+
+    function canWithdrawLockedBMI(uint256 index) public view returns (bool) {
         return
-            !claimExists(index) ||
-            (!_pendingClaimsIndexes.contains(index) &&
-                claimStatus(index) != ClaimStatus.REJECTED_CAN_APPEAL);
+            (_allClaimsByIndexInfo[index].status == ClaimStatus.EXPIRED) ||
+            (_allClaimsByIndexInfo[index].status == ClaimStatus.ACCEPTED &&
+                _withdrawClaimRequestIndexList.contains(index) &&
+                getClaimWithdrawalStatus(index) == WithdrawalStatus.EXPIRED &&
+                !policyRegistry.isPolicyActive(
+                    _allClaimsByIndexInfo[index].claimer,
+                    _allClaimsByIndexInfo[index].policyBookAddress
+                ));
+    }
+
+    function getClaimWithdrawalStatus(uint256 index)
+        public
+        view
+        override
+        returns (WithdrawalStatus)
+    {
+        if (claimWithdrawalInfo[index].readyToWithdrawDate == 0) {
+            return WithdrawalStatus.NONE;
+        }
+
+        if (block.timestamp < claimWithdrawalInfo[index].readyToWithdrawDate) {
+            return WithdrawalStatus.PENDING;
+        }
+
+        if (
+            block.timestamp >=
+            claimWithdrawalInfo[index].readyToWithdrawDate.add(READY_TO_WITHDRAW_PERIOD)
+        ) {
+            return WithdrawalStatus.EXPIRED;
+        }
+
+        return WithdrawalStatus.READY;
+    }
+
+    function getRewardWithdrawalStatus(address voter)
+        public
+        view
+        override
+        returns (WithdrawalStatus)
+    {
+        if (rewardWithdrawalInfo[voter].readyToWithdrawDate == 0) {
+            return WithdrawalStatus.NONE;
+        }
+
+        if (block.timestamp < rewardWithdrawalInfo[voter].readyToWithdrawDate) {
+            return WithdrawalStatus.PENDING;
+        }
+
+        if (
+            block.timestamp >=
+            rewardWithdrawalInfo[voter].readyToWithdrawDate.add(READY_TO_WITHDRAW_PERIOD)
+        ) {
+            return WithdrawalStatus.EXPIRED;
+        }
+
+        return WithdrawalStatus.READY;
+    }
+
+    function hasProcedureOngoing(address poolAddress) external view override returns (bool) {
+        if (policyBookRegistry.isUserLeveragePool(poolAddress)) {
+            ILeveragePortfolio userLeveragePool = ILeveragePortfolio(poolAddress);
+            address[] memory _coveragePools =
+                userLeveragePool.listleveragedCoveragePools(
+                    0,
+                    userLeveragePool.countleveragedCoveragePools()
+                );
+
+            for (uint256 i = 0; i < _coveragePools.length; i++) {
+                if (_hasProcedureOngoing(_coveragePools[i])) {
+                    return true;
+                }
+            }
+        } else {
+            if (_hasProcedureOngoing(poolAddress)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    function _hasProcedureOngoing(address policyBookAddress)
+        internal
+        view
+        returns (bool hasProcedure)
+    {
+        for (uint256 i = 0; i < _policyBookClaims[policyBookAddress].length(); i++) {
+            uint256 index = _policyBookClaims[policyBookAddress].at(i);
+            ClaimStatus status = claimStatus(index);
+            address claimer = _allClaimsByIndexInfo[index].claimer;
+            if (
+                !(status == ClaimStatus.EXPIRED || // has expired
+                    status == ClaimStatus.REJECTED || // has been rejected || appeal expired
+                    (status == ClaimStatus.ACCEPTED &&
+                        getClaimWithdrawalStatus(index) == WithdrawalStatus.NONE) || // has been accepted and withdrawn or has withdrawn locked BMI at policy end
+                    (status == ClaimStatus.ACCEPTED &&
+                        getClaimWithdrawalStatus(index) == WithdrawalStatus.EXPIRED &&
+                        !policyRegistry.isPolicyActive(claimer, policyBookAddress))) // has been accepted and never withdrawn but cannot request withdraw anymore
+            ) {
+                return true;
+            }
+        }
     }
 
     function submitClaim(
@@ -170,12 +329,17 @@ contract ClaimingRegistry is IClaimingRegistry, Initializable, AbstractDependant
         require(
             (!appeal && active && status == ClaimStatus.CAN_CLAIM) ||
                 (appeal && status == ClaimStatus.REJECTED_CAN_APPEAL) ||
+                (!appeal && active && status == ClaimStatus.EXPIRED) ||
                 (!appeal &&
                     active &&
                     (status == ClaimStatus.REJECTED ||
                         (policyRegistry.policyStartTime(claimer, policyBookAddress) >
                             _allClaimsByIndexInfo[index].dateSubmitted &&
-                            status == ClaimStatus.ACCEPTED))),
+                            status == ClaimStatus.ACCEPTED))) ||
+                (!appeal &&
+                    active &&
+                    status == ClaimStatus.ACCEPTED &&
+                    !_withdrawClaimRequestIndexList.contains(index)),
             "ClaimingRegistry: The claimer can't submit this claim"
         );
 
@@ -186,6 +350,7 @@ contract ClaimingRegistry is IClaimingRegistry, Initializable, AbstractDependant
         _myClaims[claimer].add(_claimIndex);
 
         _allClaimsToIndex[policyBookAddress][claimer] = _claimIndex;
+        _policyBookClaims[policyBookAddress].add(_claimIndex);
 
         _allClaimsByIndexInfo[_claimIndex] = ClaimInfo(
             claimer,
@@ -195,7 +360,8 @@ contract ClaimingRegistry is IClaimingRegistry, Initializable, AbstractDependant
             0,
             appeal,
             ClaimStatus.PENDING,
-            cover
+            cover,
+            0
         );
 
         _pendingClaimsIndexes.add(_claimIndex);
@@ -327,7 +493,9 @@ contract ClaimingRegistry is IClaimingRegistry, Initializable, AbstractDependant
                 _allClaimsByIndexInfo[index].dateSubmitted;
 
         if (
-            status == ClaimStatus.REJECTED || (newPolicyBought && status == ClaimStatus.ACCEPTED)
+            status == ClaimStatus.REJECTED ||
+            status == ClaimStatus.EXPIRED ||
+            (newPolicyBought && status == ClaimStatus.ACCEPTED)
         ) {
             return ClaimStatus.CAN_CLAIM;
         }
@@ -339,7 +507,9 @@ contract ClaimingRegistry is IClaimingRegistry, Initializable, AbstractDependant
         if (_isClaimAppealExpired(index)) {
             return ClaimStatus.REJECTED;
         }
-
+        if (_isClaimExpired(index)) {
+            return ClaimStatus.EXPIRED;
+        }
         if (_isClaimAwaitingCalculation(index)) {
             return ClaimStatus.AWAITING_CALCULATION;
         }
@@ -376,7 +546,8 @@ contract ClaimingRegistry is IClaimingRegistry, Initializable, AbstractDependant
             _allClaimsByIndexInfo[index].dateEnded,
             _allClaimsByIndexInfo[index].appeal,
             claimStatus(index),
-            _allClaimsByIndexInfo[index].claimAmount
+            _allClaimsByIndexInfo[index].claimAmount,
+            _allClaimsByIndexInfo[index].claimRefund
         );
     }
 
@@ -388,18 +559,66 @@ contract ClaimingRegistry is IClaimingRegistry, Initializable, AbstractDependant
         override
         returns (uint256 _totalClaimsAmount)
     {
+        WithdrawalStatus _currentStatus;
         uint256 index;
-        for (uint256 i = 0; i < _pendingClaimsIndexes.length(); i++) {
-            index = _pendingClaimsIndexes.at(i);
-            ///@dev exclude all calims until before awaiting calculation date by 24 hrs
+
+        for (uint256 i = 0; i < _withdrawClaimRequestIndexList.length(); i++) {
+            index = _withdrawClaimRequestIndexList.at(i);
+            _currentStatus = getClaimWithdrawalStatus(index);
+
+            if (
+                _currentStatus == WithdrawalStatus.NONE ||
+                _currentStatus == WithdrawalStatus.EXPIRED
+            ) {
+                continue;
+            }
+
+            ///@dev exclude all ready request until before ready to withdraw date by 24 hrs
             /// + 1 hr (spare time for transaction execution time)
             if (
                 block.timestamp >=
-                _allClaimsByIndexInfo[index].dateSubmitted.add(votingDuration(index)).sub(
-                    REBALANCE_DURATION.add(60 * 60)
+                claimWithdrawalInfo[index].readyToWithdrawDate.sub(
+                    ICapitalPool(capitalPool).rebalanceDuration().add(60 * 60)
                 )
             ) {
-                _totalClaimsAmount += _allClaimsByIndexInfo[index].claimAmount;
+                _totalClaimsAmount = _totalClaimsAmount.add(
+                    _allClaimsByIndexInfo[index].claimRefund
+                );
+            }
+        }
+    }
+
+    function getAllPendingRewardsAmount()
+        external
+        view
+        override
+        returns (uint256 _totalRewardsAmount)
+    {
+        WithdrawalStatus _currentStatus;
+        address voter;
+
+        for (uint256 i = 0; i < _withdrawRewardRequestVoterList.length(); i++) {
+            voter = _withdrawRewardRequestVoterList.at(i);
+            _currentStatus = getRewardWithdrawalStatus(voter);
+
+            if (
+                _currentStatus == WithdrawalStatus.NONE ||
+                _currentStatus == WithdrawalStatus.EXPIRED
+            ) {
+                continue;
+            }
+
+            ///@dev exclude all ready request until before ready to withdraw date by 24 hrs
+            /// + 1 hr (spare time for transaction execution time)
+            if (
+                block.timestamp >=
+                rewardWithdrawalInfo[voter].readyToWithdrawDate.sub(
+                    ICapitalPool(capitalPool).rebalanceDuration().add(60 * 60)
+                )
+            ) {
+                _totalRewardsAmount = _totalRewardsAmount.add(
+                    rewardWithdrawalInfo[voter].rewardAmount
+                );
             }
         }
     }
@@ -415,22 +634,27 @@ contract ClaimingRegistry is IClaimingRegistry, Initializable, AbstractDependant
     {
         uint256 _acumulatedClaimAmount;
         for (uint256 i = 0; i < _claimIndexes.length; i++) {
-            _acumulatedClaimAmount += _allClaimsByIndexInfo[i].claimAmount;
+            _acumulatedClaimAmount = _acumulatedClaimAmount.add(
+                _allClaimsByIndexInfo[i].claimAmount
+            );
         }
         return _acumulatedClaimAmount;
     }
 
-    function _modifyClaim(uint256 index, bool accept) internal {
-        require(_isClaimAwaitingCalculation(index), "ClaimingRegistry: The claim is not awaiting");
-
+    function _modifyClaim(uint256 index, ClaimStatus status) internal {
         address claimer = _allClaimsByIndexInfo[index].claimer;
         address policyBookAddress = _allClaimsByIndexInfo[index].policyBookAddress;
         uint256 claimAmount = _allClaimsByIndexInfo[index].claimAmount;
 
-        if (accept) {
+        if (status == ClaimStatus.ACCEPTED) {
             _allClaimsByIndexInfo[index].status = ClaimStatus.ACCEPTED;
+            _requestClaimWithdrawal(claimer, index);
 
             emit ClaimAccepted(claimer, policyBookAddress, claimAmount, index);
+        } else if (status == ClaimStatus.EXPIRED) {
+            _allClaimsByIndexInfo[index].status = ClaimStatus.EXPIRED;
+
+            emit ClaimExpired(claimer, policyBookAdminAddress, index);
         } else if (!_allClaimsByIndexInfo[index].appeal) {
             _allClaimsByIndexInfo[index].status = ClaimStatus.REJECTED_CAN_APPEAL;
 
@@ -438,6 +662,7 @@ contract ClaimingRegistry is IClaimingRegistry, Initializable, AbstractDependant
         } else {
             _allClaimsByIndexInfo[index].status = ClaimStatus.REJECTED;
             delete _allClaimsToIndex[policyBookAddress][claimer];
+            _policyBookClaims[policyBookAddress].remove(index);
 
             emit AppealRejected(claimer, policyBookAddress, index);
         }
@@ -445,26 +670,216 @@ contract ClaimingRegistry is IClaimingRegistry, Initializable, AbstractDependant
         _allClaimsByIndexInfo[index].dateEnded = block.timestamp;
 
         _pendingClaimsIndexes.remove(index);
+
+        IPolicyBook(_allClaimsByIndexInfo[index].policyBookAddress).commitClaim(
+            claimer,
+            block.timestamp,
+            _allClaimsByIndexInfo[index].status // ACCEPTED, REJECTED_CAN_APPEAL, REJECTED, EXPIRED
+        );
     }
 
-    function acceptClaim(uint256 index) external override onlyClaimVoting {
-        _modifyClaim(index, true);
+    function acceptClaim(uint256 index, uint256 amount) external override onlyClaimVoting {
+        require(_isClaimAwaitingCalculation(index), "ClaimingRegistry: The claim is not awaiting");
+        _allClaimsByIndexInfo[index].claimRefund = amount;
+        _modifyClaim(index, ClaimStatus.ACCEPTED);
     }
 
     function rejectClaim(uint256 index) external override onlyClaimVoting {
-        _modifyClaim(index, false);
+        require(_isClaimAwaitingCalculation(index), "ClaimingRegistry: The claim is not awaiting");
+
+        _modifyClaim(index, ClaimStatus.REJECTED);
+    }
+
+    function expireClaim(uint256 index) external override onlyClaimVoting {
+        require(_isClaimExpired(index), "ClaimingRegistry: The claim is not expired");
+
+        _modifyClaim(index, ClaimStatus.EXPIRED);
     }
 
     /// @notice Update Image Uri in case it contains material that is ilegal
     ///         or offensive.
     /// @dev Only the owner of the PolicyBookAdmin can erase/update evidenceUri.
-    /// @param _claimIndex Claim Index that is going to be updated
+    /// @param claim_Index Claim Index that is going to be updated
     /// @param _newEvidenceURI New evidence uri. It can be blank.
-    function updateImageUriOfClaim(uint256 _claimIndex, string calldata _newEvidenceURI)
+    function updateImageUriOfClaim(uint256 claim_Index, string calldata _newEvidenceURI)
         external
         override
         onlyPolicyBookAdmin
     {
-        _allClaimsByIndexInfo[_claimIndex].evidenceURI = _newEvidenceURI;
+        _allClaimsByIndexInfo[claim_Index].evidenceURI = _newEvidenceURI;
+    }
+
+    function requestClaimWithdrawal(uint256 index) external override {
+        require(
+            claimStatus(index) == IClaimingRegistry.ClaimStatus.ACCEPTED,
+            "ClaimingRegistry: Claim is not accepted"
+        );
+        address claimer = _allClaimsByIndexInfo[index].claimer;
+        require(msg.sender == claimer, "ClaimingRegistry: Not allowed to request");
+        address policyBookAddress = _allClaimsByIndexInfo[index].policyBookAddress;
+        require(
+            policyRegistry.isPolicyActive(claimer, policyBookAddress) &&
+                policyRegistry.policyStartTime(claimer, policyBookAddress) <
+                _allClaimsByIndexInfo[index].dateEnded,
+            "ClaimingRegistry: The policy is expired"
+        );
+        require(
+            getClaimWithdrawalStatus(index) == WithdrawalStatus.NONE ||
+                getClaimWithdrawalStatus(index) == WithdrawalStatus.EXPIRED,
+            "ClaimingRegistry: The claim is already requested"
+        );
+        _requestClaimWithdrawal(claimer, index);
+    }
+
+    function _requestClaimWithdrawal(address claimer, uint256 index) internal {
+        _withdrawClaimRequestIndexList.add(index);
+        uint256 _readyToWithdrawDate = block.timestamp.add(capitalPool.getWithdrawPeriod());
+        bool _committed = claimWithdrawalInfo[index].committed;
+        claimWithdrawalInfo[index] = ClaimWithdrawalInfo(_readyToWithdrawDate, _committed);
+
+        emit WithdrawalRequested(
+            claimer,
+            _allClaimsByIndexInfo[index].claimRefund,
+            _readyToWithdrawDate
+        );
+    }
+
+    function requestRewardWithdrawal(address voter, uint256 rewardAmount)
+        external
+        override
+        onlyClaimVoting
+    {
+        require(
+            getRewardWithdrawalStatus(voter) == WithdrawalStatus.NONE ||
+                getRewardWithdrawalStatus(voter) == WithdrawalStatus.EXPIRED,
+            "ClaimingRegistry: The reward is already requested"
+        );
+        _requestRewardWithdrawal(voter, rewardAmount);
+    }
+
+    function _requestRewardWithdrawal(address voter, uint256 rewardAmount) internal {
+        _withdrawRewardRequestVoterList.add(voter);
+        uint256 _readyToWithdrawDate = block.timestamp.add(capitalPool.getWithdrawPeriod());
+        rewardWithdrawalInfo[voter] = RewardWithdrawalInfo(rewardAmount, _readyToWithdrawDate);
+
+        emit WithdrawalRequested(voter, rewardAmount, _readyToWithdrawDate);
+    }
+
+    function withdrawClaim(uint256 index) public virtual {
+        address claimer = _allClaimsByIndexInfo[index].claimer;
+        require(claimer == msg.sender, "ClaimingRegistry: Not the claimer");
+        require(
+            getClaimWithdrawalStatus(index) == WithdrawalStatus.READY,
+            "ClaimingRegistry: Withdrawal is not ready"
+        );
+
+        address policyBookAddress = _allClaimsByIndexInfo[index].policyBookAddress;
+
+        uint256 claimRefundConverted =
+            DecimalsConverter.convertFrom18(
+                _allClaimsByIndexInfo[index].claimRefund,
+                stblDecimals
+            );
+
+        uint256 _actualAmount =
+            capitalPool.fundClaim(claimer, claimRefundConverted, policyBookAddress);
+
+        claimRefundConverted = claimRefundConverted.sub(_actualAmount);
+
+        if (!claimWithdrawalInfo[index].committed) {
+            IPolicyBook(policyBookAddress).commitWithdrawnClaim(msg.sender);
+            claimWithdrawalInfo[index].committed = true;
+        }
+
+        if (claimRefundConverted == 0) {
+            _allClaimsByIndexInfo[index].claimRefund = 0;
+            _withdrawClaimRequestIndexList.remove(index);
+            delete claimWithdrawalInfo[index];
+        } else {
+            _allClaimsByIndexInfo[index].claimRefund = DecimalsConverter.convertTo18(
+                claimRefundConverted,
+                stblDecimals
+            );
+            _requestClaimWithdrawal(claimer, index);
+        }
+
+        claimVoting.transferLockedBMI(index, claimer);
+
+        emit ClaimWithdrawn(
+            msg.sender,
+            DecimalsConverter.convertTo18(_actualAmount, stblDecimals)
+        );
+    }
+
+    function withdrawReward() public {
+        require(
+            getRewardWithdrawalStatus(msg.sender) == WithdrawalStatus.READY,
+            "ClaimingRegistry: Withdrawal is not ready"
+        );
+
+        uint256 rewardAmountConverted =
+            DecimalsConverter.convertFrom18(
+                rewardWithdrawalInfo[msg.sender].rewardAmount,
+                stblDecimals
+            );
+
+        uint256 _actualAmount = capitalPool.fundReward(msg.sender, rewardAmountConverted);
+
+        rewardAmountConverted = rewardAmountConverted.sub(_actualAmount);
+
+        if (rewardAmountConverted == 0) {
+            rewardWithdrawalInfo[msg.sender].rewardAmount = 0;
+            _withdrawRewardRequestVoterList.remove(msg.sender);
+            delete rewardWithdrawalInfo[msg.sender];
+        } else {
+            rewardWithdrawalInfo[msg.sender].rewardAmount = DecimalsConverter.convertTo18(
+                rewardAmountConverted,
+                stblDecimals
+            );
+
+            _requestRewardWithdrawal(msg.sender, rewardWithdrawalInfo[msg.sender].rewardAmount);
+        }
+
+        emit RewardWithdrawn(
+            msg.sender,
+            DecimalsConverter.convertTo18(_actualAmount, stblDecimals)
+        );
+    }
+
+    function withdrawLockedBMI(uint256 index) public virtual {
+        address claimer = _allClaimsByIndexInfo[index].claimer;
+        require(claimer == msg.sender, "ClaimingRegistry: Not the claimer");
+
+        require(
+            canWithdrawLockedBMI(index),
+            "ClaimingRegistry: Claim is not expired or can still be withdrawn"
+        );
+
+        address policyBookAddress = _allClaimsByIndexInfo[index].policyBookAddress;
+        if (claimStatus(index) == ClaimStatus.ACCEPTED) {
+            IPolicyBook(policyBookAddress).commitWithdrawnClaim(claimer);
+            _withdrawClaimRequestIndexList.remove(index);
+            delete claimWithdrawalInfo[index];
+        }
+
+        claimVoting.transferLockedBMI(index, claimer);
+    }
+
+    /// @dev return maj and min with 10**5 precision, to get % divide by 10**3
+    function getRepartition(uint256 index) external view returns (uint256 maj, uint256 min) {
+        uint256 voteCount = claimVoting.countVoteOnClaim(index);
+
+        if (voteCount != 0) {
+            for (uint256 i = 0; i < voteCount; i++) {
+                uint256 voteIndex = claimVoting.voteIndexByClaimIndexAt(index, i);
+                if (claimVoting.voteStatus(voteIndex) == IClaimVoting.VoteStatus.MAJORITY) {
+                    maj = maj.add(1);
+                } else if (claimVoting.voteStatus(voteIndex) == IClaimVoting.VoteStatus.MINORITY) {
+                    min = min.add(1);
+                }
+            }
+            maj = maj.mul(10**5).div(voteCount);
+            min = min.mul(10**5).div(voteCount);
+        }
     }
 }

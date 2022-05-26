@@ -1,11 +1,13 @@
 const PolicyBookFabric = artifacts.require("PolicyBookFabric");
 const PolicyBookRegistry = artifacts.require("PolicyBookRegistry");
 const STBLMock = artifacts.require("STBLMock");
+const BSCSTBLMock = artifacts.require("BSCSTBLMock");
+const MATICSTBLMock = artifacts.require("MATICSTBLMock");
+
 const ContractsRegistry = artifacts.require("ContractsRegistry");
 const PolicyBookAdmin = artifacts.require("PolicyBookAdmin");
 const LiquidityRegistry = artifacts.require("LiquidityRegistry");
 const BMICoverStaking = artifacts.require("BMICoverStaking");
-const LiquidityMiningMock = artifacts.require("LiquidityMiningMock");
 const RewardsGenerator = artifacts.require("RewardsGenerator");
 const NFTStaking = artifacts.require("NFTStaking");
 const LeveragePortfolioView = artifacts.require("LeveragePortfolioView");
@@ -18,6 +20,7 @@ const ReinsurancePool = artifacts.require("ReinsurancePool");
 const BMICoverStakingView = artifacts.require("BMICoverStakingView");
 const ShieldMining = artifacts.require("ShieldMining");
 const UserLeveragePool = artifacts.require("UserLeveragePool");
+const YieldGenerator = artifacts.require("YieldGenerator");
 
 const PolicyBook = artifacts.require("PolicyBook");
 const PolicyBookFacade = artifacts.require("PolicyBookFacade");
@@ -28,6 +31,7 @@ const truffleAssert = require("truffle-assertions");
 const BigNumber = require("bignumber.js");
 const { assert } = require("chai");
 const { init } = require("events");
+const { getStableAmount, getNetwork, Networks } = require("./helpers/utils");
 
 const ContractType = {
   CONTRACT: 0,
@@ -49,8 +53,9 @@ contract("PolicyBookFabric", async (accounts) => {
   let policyBookRegistry;
   let policyBookFabric;
   let stbl;
-  let liquidityMiningMock;
   let capitalPool;
+
+  let network;
 
   const CONTRACT1 = accounts[0];
   const CONTRACT2 = accounts[1];
@@ -63,15 +68,22 @@ contract("PolicyBookFabric", async (accounts) => {
   const LIQUIDITY_MINING_DURATION = toBN(60 * 60 * 24 * 7 * 2); // 2 weeks
 
   before("setup", async () => {
+    network = await getNetwork();
     const contractsRegistry = await ContractsRegistry.new();
-    stbl = await STBLMock.new("stbl", "stbl", 6);
+    if (network == Networks.ETH) {
+      stbl = await STBLMock.new("stbl", "stbl", 6);
+    } else if (network == Networks.BSC) {
+      stbl = await BSCSTBLMock.new();
+    } else if (network == Networks.POL) {
+      stbl = await MATICSTBLMock.new();
+      await stbl.initialize("stbl", "stbl", 6, accounts[0]);
+    }
 
     const _policyBookRegistry = await PolicyBookRegistry.new();
     const _policyBookFabric = await PolicyBookFabric.new();
     const _policyBookAdmin = await PolicyBookAdmin.new();
     const _liquidityRegistry = await LiquidityRegistry.new();
     const _bmiCoverStaking = await BMICoverStaking.new();
-    const _liquidityMiningMock = await LiquidityMiningMock.new();
     const _rewardsGenerator = await RewardsGenerator.new();
     const _nftStaking = await NFTStaking.new();
 
@@ -83,6 +95,7 @@ contract("PolicyBookFabric", async (accounts) => {
     const _bmiCoverStakingView = await BMICoverStakingView.new();
     const _shieldMining = await ShieldMining.new();
     const _leveragePortfolioView = await LeveragePortfolioView.new();
+    const _yieldGenerator = await YieldGenerator.new();
 
     const _policyBookImpl = await PolicyBook.new();
     const _policyBookFacadeImpl = await PolicyBookFacade.new();
@@ -99,14 +112,14 @@ contract("PolicyBookFabric", async (accounts) => {
     await contractsRegistry.addContract(await contractsRegistry.BMI_STAKING_NAME(), NOTHING);
     await contractsRegistry.addContract(await contractsRegistry.BMI_UTILITY_NFT_NAME(), NOTHING);
     await contractsRegistry.addContract(await contractsRegistry.BMI_NAME(), NOTHING);
-    await contractsRegistry.addContract(await contractsRegistry.LEGACY_REWARDS_GENERATOR_NAME(), NOTHING);
+    await contractsRegistry.addContract(await contractsRegistry.BMI_TREASURY_NAME(), NOTHING);
 
-    await contractsRegistry.addContract(await contractsRegistry.YIELD_GENERATOR_NAME(), NOTHING);
-    await contractsRegistry.addContract(await contractsRegistry.AAVE_PROTOCOL_NAME(), NOTHING);
-    await contractsRegistry.addContract(await contractsRegistry.COMPOUND_PROTOCOL_NAME(), NOTHING);
-    await contractsRegistry.addContract(await contractsRegistry.YEARN_PROTOCOL_NAME(), NOTHING);
+    await contractsRegistry.addContract(await contractsRegistry.DEFI_PROTOCOL_1_NAME(), NOTHING);
+    await contractsRegistry.addContract(await contractsRegistry.DEFI_PROTOCOL_2_NAME(), NOTHING);
+    await contractsRegistry.addContract(await contractsRegistry.DEFI_PROTOCOL_3_NAME(), NOTHING);
     await contractsRegistry.addContract(await contractsRegistry.LIQUIDITY_MINING_STAKING_ETH_NAME(), NOTHING);
     await contractsRegistry.addContract(await contractsRegistry.LIQUIDITY_MINING_STAKING_USDT_NAME(), NOTHING);
+    await contractsRegistry.addContract(await contractsRegistry.LIQUIDITY_BRIDGE_NAME(), NOTHING);
 
     await contractsRegistry.addContract(await contractsRegistry.USDT_NAME(), stbl.address);
 
@@ -130,10 +143,7 @@ contract("PolicyBookFabric", async (accounts) => {
       await contractsRegistry.BMI_COVER_STAKING_NAME(),
       _bmiCoverStaking.address
     );
-    await contractsRegistry.addProxyContract(
-      await contractsRegistry.LIQUIDITY_MINING_NAME(),
-      _liquidityMiningMock.address
-    );
+
     await contractsRegistry.addProxyContract(
       await contractsRegistry.REWARDS_GENERATOR_NAME(),
       _rewardsGenerator.address
@@ -157,10 +167,10 @@ contract("PolicyBookFabric", async (accounts) => {
       await contractsRegistry.LEVERAGE_PORTFOLIO_VIEW_NAME(),
       _leveragePortfolioView.address
     );
+    await contractsRegistry.addProxyContract(await contractsRegistry.YIELD_GENERATOR_NAME(), _yieldGenerator.address);
 
     policyBookFabric = await PolicyBookFabric.at(await contractsRegistry.getPolicyBookFabricContract());
     policyBookRegistry = await PolicyBookRegistry.at(await contractsRegistry.getPolicyBookRegistryContract());
-    liquidityMiningMock = await LiquidityMiningMock.at(await contractsRegistry.getLiquidityMiningContract());
     const policyBookAdmin = await PolicyBookAdmin.at(await contractsRegistry.getPolicyBookAdminContract());
     const bmiCoverStaking = await BMICoverStaking.at(await contractsRegistry.getBMICoverStakingContract());
     const rewardsGenerator = await RewardsGenerator.at(await contractsRegistry.getRewardsGeneratorContract());
@@ -174,8 +184,8 @@ contract("PolicyBookFabric", async (accounts) => {
     const bmiCoverStakingView = await BMICoverStakingView.at(await contractsRegistry.getBMICoverStakingViewContract());
     const nftStaking = await NFTStaking.at(await contractsRegistry.getNFTStakingContract());
     const shieldMining = await ShieldMining.at(await contractsRegistry.getShieldMiningContract());
+    const yieldGenerator = await YieldGenerator.at(await contractsRegistry.getYieldGeneratorContract());
 
-    await liquidityMiningMock.__LiquidityMining_init();
     await rewardsGenerator.__RewardsGenerator_init();
 
     await policyBookAdmin.__PolicyBookAdmin_init(
@@ -189,12 +199,12 @@ contract("PolicyBookFabric", async (accounts) => {
     await reinsurancePool.__ReinsurancePool_init();
     await bmiCoverStaking.__BMICoverStaking_init();
     await nftStaking.__NFTStaking_init();
+    await yieldGenerator.__YieldGenerator_init(network);
 
     await contractsRegistry.injectDependencies(await contractsRegistry.POLICY_BOOK_REGISTRY_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.POLICY_BOOK_FABRIC_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.LIQUIDITY_REGISTRY_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.BMI_COVER_STAKING_NAME());
-    await contractsRegistry.injectDependencies(await contractsRegistry.LIQUIDITY_MINING_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.REWARDS_GENERATOR_NAME());
 
     await contractsRegistry.injectDependencies(await contractsRegistry.POLICY_BOOK_ADMIN_NAME());
@@ -213,16 +223,16 @@ contract("PolicyBookFabric", async (accounts) => {
   afterEach("revert", reverter.revert);
 
   describe("create", async () => {
-    const initialDeposit = wei("1000");
-
+    let initialDeposit;
+    let stblInitialDeposit;
     beforeEach("setup", async () => {
+      initialDeposit = wei("1000");
+      stblInitialDeposit = getStableAmount("1000");
       await setCurrentTime(1);
-
-      await liquidityMiningMock.startLiquidityMining();
 
       await setCurrentTime(LIQUIDITY_MINING_DURATION.plus(100));
 
-      await stbl.approve(policyBookFabric.address, toBN(initialDeposit).times(2));
+      await stbl.approve(policyBookFabric.address, stblInitialDeposit.times(2));
     });
 
     it("should instantiate contract at saved address", async () => {
@@ -305,7 +315,7 @@ contract("PolicyBookFabric", async (accounts) => {
       assert.equal(await policyBookRegistry.count(), 1);
     });
 
-    it("should not allow to create with initial liquidity < 1000 STBL", async () => {
+    it("should not allow to create with initial liquidity < 100 STBL", async () => {
       await truffleAssert.reverts(
         policyBookFabric.create(CONTRACT1, ContractType.STABLECOIN, "placeholder", "placeholder", wei("10"), TOKEN),
         "PBF: Too small deposit"
@@ -314,7 +324,7 @@ contract("PolicyBookFabric", async (accounts) => {
 
     it("should create with initial liquidity = 9999 STBL", async () => {
       await stbl.approve(policyBookFabric.address, 0);
-      await stbl.approve(policyBookFabric.address, wei("9999"));
+      await stbl.approve(policyBookFabric.address, getStableAmount("9999"));
 
       const result = await policyBookFabric.create(
         CONTRACT1,
@@ -350,7 +360,7 @@ contract("PolicyBookFabric", async (accounts) => {
         reason
       );
       await stbl.approve(policyBookFabric.address, 0);
-      await stbl.approve(policyBookFabric.address, initialDeposit);
+      await stbl.approve(policyBookFabric.address, stblInitialDeposit);
       await truffleAssert.passes(
         policyBookFabric.create(CONTRACT2, 1, maxLenghtDesc, "placeholder", initialDeposit, TOKEN),
         reason
@@ -379,15 +389,20 @@ contract("PolicyBookFabric", async (accounts) => {
 
     it("should transfer token to capitalPool", async () => {
       await policyBookFabric.create(CONTRACT1, 1, "placeholder", "symbol", initialDeposit, TOKEN);
-      assert.equal((await stbl.balanceOf(capitalPool.address)).toString(), 1 * 10 ** 9);
+      assert.equal(
+        (await stbl.balanceOf(capitalPool.address)).toString(),
+        getStableAmount("1000").toFixed().toString()
+      );
     });
   });
 
   describe("create with LME", async () => {
-    const initialDeposit = wei("1000");
-
+    let initialDeposit;
+    let stblInitialDeposit;
     beforeEach("setup", async () => {
-      await stbl.approve(policyBookFabric.address, toBN(initialDeposit));
+      initialDeposit = wei("1000");
+      stblInitialDeposit = getStableAmount("1000");
+      await stbl.approve(policyBookFabric.address, stblInitialDeposit);
     });
     it("should create PolicyBook before LME for free", async () => {
       await truffleAssert.passes(
@@ -396,29 +411,13 @@ contract("PolicyBookFabric", async (accounts) => {
       );
     });
 
-    it("should fail to create during LME", async () => {
-      await setCurrentTime(1);
-
-      await liquidityMiningMock.startLiquidityMining();
-
-      await stbl.approve(policyBookFabric.address, 0);
-      await stbl.approve(policyBookFabric.address, wei("1000"));
-
-      await truffleAssert.reverts(
-        policyBookFabric.create(CONTRACT1, ContractType.STABLECOIN, "", "placeholder", wei("1000"), TOKEN),
-        "PBF: Creation is blocked during LME"
-      );
-    });
-
     it("should create after LME", async () => {
       await setCurrentTime(1);
-
-      await liquidityMiningMock.startLiquidityMining();
 
       await setCurrentTime(LIQUIDITY_MINING_DURATION.plus(100));
 
       await stbl.approve(policyBookFabric.address, 0);
-      await stbl.approve(policyBookFabric.address, wei("1000"));
+      await stbl.approve(policyBookFabric.address, getStableAmount("1000"));
 
       await policyBookFabric.create(CONTRACT1, ContractType.STABLECOIN, "", "placeholder", wei("1000"), TOKEN);
     });
@@ -426,15 +425,16 @@ contract("PolicyBookFabric", async (accounts) => {
 
   describe("getBooks", async () => {
     let bookAddrArr;
+    let initialDeposit;
+    let stblInitialDeposit;
 
     beforeEach("setup", async () => {
-      const initialDeposit = wei("1000");
+      initialDeposit = wei("1000");
+      stblInitialDeposit = getStableAmount("1000");
 
-      await stbl.approve(policyBookFabric.address, toBN(initialDeposit).times(3));
+      await stbl.approve(policyBookFabric.address, stblInitialDeposit.times(3));
 
       await setCurrentTime(1);
-
-      await liquidityMiningMock.startLiquidityMining();
 
       await setCurrentTime(LIQUIDITY_MINING_DURATION.plus(100));
 

@@ -1,3 +1,4 @@
+const { bsc, mainnet, polygon } = require("./helpers/AddressCatalog.js");
 const { logTransaction } = require("./helpers/logger.js");
 
 const Proxy = artifacts.require("TransparentUpgradeableProxy");
@@ -7,10 +8,9 @@ const BMICoverStaking = artifacts.require("BMICoverStaking");
 const BMICoverStakingView = artifacts.require("BMICoverStakingView");
 const RewardsGenerator = artifacts.require("RewardsGenerator");
 
-// TODO validate finality of data below
-const legacyRewardsGeneratorAddress = "0xf491ec77eba69e0eae9cb23db3557f8706c0f40d";
+let bmiTreasury;
 
-module.exports = async (deployer) => {
+module.exports = async (deployer, network, accounts) => {
   const contractsRegistry = await ContractsRegistry.at((await Proxy.deployed()).address);
 
   await deployer.deploy(BMICoverStaking);
@@ -22,12 +22,17 @@ module.exports = async (deployer) => {
   await deployer.deploy(RewardsGenerator);
   const rewardsGenerator = await RewardsGenerator.deployed();
 
+  if (["mainnet"].includes(network)) {
+    bmiTreasury = mainnet.bmiTreasury;
+  } else if (["bsc_mainnet"].includes(network)) {
+    bmiTreasury = bsc.bmiTreasury;
+  } else if (["polygon_mainnet"].includes(network)) {
+    bmiTreasury = polygon.bmiTreasury;
+  } else bmiTreasury = accounts[0];
+
   logTransaction(
-    await contractsRegistry.addContract(
-      await contractsRegistry.LEGACY_REWARDS_GENERATOR_NAME(),
-      legacyRewardsGeneratorAddress
-    ),
-    "Add LegacyRewardsGenerator"
+    await contractsRegistry.addContract(await contractsRegistry.BMI_TREASURY_NAME(), bmiTreasury),
+    "Add bmiTreasury"
   );
 
   logTransaction(

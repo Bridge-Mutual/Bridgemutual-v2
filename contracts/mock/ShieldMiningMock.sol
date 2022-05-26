@@ -30,7 +30,9 @@ contract ShieldMiningMock is ShieldMining {
             DecimalsConverter.convertFrom18(_amount, _tokenDecimals)
         );
 
-        shieldMiningInfo[_policyBook].rewardTokensLocked += _amount;
+        shieldMiningInfo[_policyBook].rewardTokensLocked = shieldMiningInfo[_policyBook]
+            .rewardTokensLocked
+            .add(_amount);
 
         uint256 _lastBlockWithReward =
             _setRewards(_policyBook, _rewardPerBlock, block.number, _blocksAmount);

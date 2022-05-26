@@ -60,16 +60,9 @@ contract RewardsGenerator is IRewardsGenerator, OwnableUpgradeable, AbstractDepe
 
     modifier onlyPolicyBooks() {
         require(
-            policyBookRegistry.isPolicyBook(_msgSender()),
+            policyBookRegistry.isPolicyBook(_msgSender()) ||
+                policyBookRegistry.isPolicyBookFacade(_msgSender()),
             "RewardsGenerator: The caller does not have access"
-        );
-        _;
-    }
-
-    modifier onlyLegacyRewardsGenerator() {
-        require(
-            _msgSender() == legacyRewardsGeneratorAddress,
-            "RewardsGenerator: The caller is not an LRG"
         );
         _;
     }
@@ -84,14 +77,13 @@ contract RewardsGenerator is IRewardsGenerator, OwnableUpgradeable, AbstractDepe
         onlyInjectorOrZero
     {
         bmiToken = IERC20(_contractsRegistry.getBMIContract());
-        bmiStakingAddress = _contractsRegistry.getBMIStakingContract();
+        //bmiStakingAddress = _contractsRegistry.getBMIStakingContract();
         bmiCoverStakingAddress = _contractsRegistry.getBMICoverStakingContract();
         bmiCoverStakingViewAddress = _contractsRegistry.getBMICoverStakingViewContract();
         policyBookRegistry = IPolicyBookRegistry(
             _contractsRegistry.getPolicyBookRegistryContract()
         );
         priceFeed = IPriceFeed(_contractsRegistry.getPriceFeedContract());
-        legacyRewardsGeneratorAddress = _contractsRegistry.getLegacyRewardsGeneratorContract();
 
         stblDecimals = ERC20(_contractsRegistry.getUSDTContract()).decimals();
     }
@@ -105,11 +97,12 @@ contract RewardsGenerator is IRewardsGenerator, OwnableUpgradeable, AbstractDepe
         emit TokensRecovered(_msgSender(), balance);
     }
 
-    function sendFundsToBMIStaking(uint256 amount) external onlyOwner {
-        bmiToken.transfer(bmiStakingAddress, amount);
+    //disbaled becuase of multichain integration
+    // function sendFundsToBMIStaking(uint256 amount) external onlyOwner {
+    //     bmiToken.transfer(bmiStakingAddress, amount);
 
-        emit TokensSent(bmiStakingAddress, amount);
-    }
+    //     emit TokensSent(bmiStakingAddress, amount);
+    // }
 
     function sendFundsToBMICoverStaking(uint256 amount) external onlyOwner {
         bmiToken.transfer(bmiCoverStakingAddress, amount);
@@ -181,8 +174,12 @@ contract RewardsGenerator is IRewardsGenerator, OwnableUpgradeable, AbstractDepe
     }
 
     /// @notice updates the share of the PB based on the new rewards multiplier (also changes the share of others)
-    function updatePolicyBookShare(uint256 newRewardMultiplier) external override onlyPolicyBooks {
-        PolicyBookRewardInfo storage info = _policyBooksRewards[_msgSender()];
+    function updatePolicyBookShare(uint256 newRewardMultiplier, address policyBook)
+        external
+        override
+        onlyPolicyBooks
+    {
+        PolicyBookRewardInfo storage info = _policyBooksRewards[policyBook];
 
         uint256 totalPBStaked = info.totalStaked;
         uint256 totalStaked = totalPoolStaked;
@@ -252,16 +249,6 @@ contract RewardsGenerator is IRewardsGenerator, OwnableUpgradeable, AbstractDepe
         info.totalStaked = info.totalStaked.add(amount);
 
         _stakes[nftIndex] = StakeRewardInfo(info.cumulativeReward, currentReward, amount);
-    }
-
-    /// @notice rewards multipliers must be set before anyone migrates
-    function migrationStake(
-        address policyBookAddress,
-        uint256 nftIndex,
-        uint256 amount,
-        uint256 currentReward
-    ) external override onlyLegacyRewardsGenerator {
-        _stake(policyBookAddress, nftIndex, amount, currentReward);
     }
 
     /// @notice attaches underlying STBL tokens to an NFT and initiates rewards gain

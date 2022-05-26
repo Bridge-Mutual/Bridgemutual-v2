@@ -39,6 +39,15 @@ interface IPolicyRegistry {
     /// @notice Returns information about current policy, access: ANY
     /// @param _userAddr Policy holder address
     /// @param _policyBookAddr Address of policy book
+    /// @return true if user has valid policy in specific policy book
+    function isPolicyValid(address _userAddr, address _policyBookAddr)
+        external
+        view
+        returns (bool);
+
+    /// @notice Returns information about current policy, access: ANY
+    /// @param _userAddr Policy holder address
+    /// @param _policyBookAddr Address of policy book
     /// @return true if user has active policy in specific policy book
     function isPolicyActive(address _userAddr, address _policyBookAddr)
         external

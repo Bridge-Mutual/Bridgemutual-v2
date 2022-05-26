@@ -28,7 +28,9 @@ interface ILeveragePortfolioView {
         address _policyBookFacade
     ) external view returns (uint256 _netMPLn);
 
-    function calcMaxVirtualFunds(address policyBookAddress)
+    function calcMaxVirtualFunds(address policyBookAddress, uint256 vStableWeight)
         external
         returns (uint256 _amountToDeploy, uint256 _maxAmount);
+
+    function calcvStableFormulaforAllPools() external view returns (uint256);
 }

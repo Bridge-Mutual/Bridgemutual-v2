@@ -16,6 +16,7 @@ import "../../interfaces/IReinsurancePool.sol";
 import "../../interfaces/IDefiProtocol.sol";
 
 import "../../abstract/AbstractDependant.sol";
+import "../../Globals.sol";
 
 contract CompoundProtocol is IDefiProtocol, OwnableUpgradeable, AbstractDependant {
     using SafeERC20 for ERC20;
@@ -114,9 +115,11 @@ contract CompoundProtocol is IDefiProtocol, OwnableUpgradeable, AbstractDependan
                 // get comp reward on top of farming and send it to reinsurance pool
                 comptroller.claimComp(address(this));
 
-                ///TODO decide for comp token, where should transfer it
-                // ERC20 comp = ERC20(comptroller.getCompAddress());
-                // comp.safeTransfer(address(reinsurancePool), comp.balanceOf(address(this)));
+                ERC20 comp = ERC20(comptroller.getCompAddress());
+                uint256 compBalance = comp.balanceOf(address(this));
+                if (compBalance > 0) {
+                    comp.safeTransfer(address(reinsurancePool), compBalance);
+                }
 
                 totalRewards = totalRewards.add(_accumaltedAmount);
             }
@@ -142,11 +145,17 @@ contract CompoundProtocol is IDefiProtocol, OwnableUpgradeable, AbstractDependan
         return _totalStableValue;
     }
 
+    function getOneDayGain() external view override returns (uint256) {
+        uint256 rate = cToken.supplyRatePerBlock().mul(BLOCKS_PER_DAY).mul(PRECISION);
+
+        return rate.div(10**18);
+    }
+
     function updateTotalValue() external override onlyYieldGenerator returns (uint256) {
         return _totalValue();
     }
 
     function updateTotalDeposit(uint256 _lostAmount) external override onlyYieldGenerator {
-        totalDeposit -= _lostAmount;
+        totalDeposit = totalDeposit.sub(_lostAmount);
     }
 }

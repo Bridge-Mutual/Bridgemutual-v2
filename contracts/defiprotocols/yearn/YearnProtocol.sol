@@ -14,6 +14,7 @@ import "../../interfaces/IReinsurancePool.sol";
 import "../../interfaces/IDefiProtocol.sol";
 
 import "../../abstract/AbstractDependant.sol";
+import "../../Globals.sol";
 
 contract YearnProtocol is IDefiProtocol, OwnableUpgradeable, AbstractDependant {
     using SafeERC20 for ERC20;
@@ -26,12 +27,15 @@ contract YearnProtocol is IDefiProtocol, OwnableUpgradeable, AbstractDependant {
     ERC20 public override stablecoin;
     IVault public vault;
 
-    uint256 public constant PRECESSION = 10**6;
+    uint256 public constant YEARN_PRECESSION = 10**6;
 
     IReinsurancePool public reinsurancePool;
 
     address public yieldGeneratorAddress;
     address public capitalPoolAddress;
+
+    uint256 public lastPricePerShare;
+    uint256 public lastUpdateBlock;
 
     modifier onlyYieldGenerator() {
         require(_msgSender() == yieldGeneratorAddress, "YP: Not a yield generator contract");
@@ -70,6 +74,7 @@ contract YearnProtocol is IDefiProtocol, OwnableUpgradeable, AbstractDependant {
         // deposit amount of stablecoin to Vault, returns the amount of shares issued
         vault.deposit(amount);
         totalDeposit = totalDeposit.add(amount);
+        _updatePriceAndBlock();
     }
 
     /**
@@ -94,13 +99,14 @@ contract YearnProtocol is IDefiProtocol, OwnableUpgradeable, AbstractDependant {
             // get the price for a single share
             uint256 sharePrice = vault.pricePerShare();
             // convert amountInUnderlying to withdraw in shares
-            uint256 amountInShares = amountInUnderlying.mul(PRECESSION).div(sharePrice);
+            uint256 amountInShares = amountInUnderlying.mul(YEARN_PRECESSION).div(sharePrice);
             // withdraw the underlying stablecoin and send it to the capitalPool
             if (amountInShares > 0) {
                 actualAmountWithdrawn = vault.withdraw(amountInShares, capitalPoolAddress);
                 totalDeposit = totalDeposit.sub(actualAmountWithdrawn);
             }
         }
+        _updatePriceAndBlock();
     }
 
     /** 
@@ -120,7 +126,7 @@ contract YearnProtocol is IDefiProtocol, OwnableUpgradeable, AbstractDependant {
             // get the price for a single share
             uint256 sharePrice = vault.pricePerShare();
             // convert rewards in share value
-            uint256 rewardsInShares = _accumaltedAmount.mul(PRECESSION).div(sharePrice);
+            uint256 rewardsInShares = _accumaltedAmount.mul(YEARN_PRECESSION).div(sharePrice);
             // withdraw the reward and send it to the reinsurancePool
             if (rewardsInShares > 0) {
                 uint256 _amountInUnderlying = vault.withdraw(rewardsInShares, capitalPoolAddress);
@@ -128,6 +134,7 @@ contract YearnProtocol is IDefiProtocol, OwnableUpgradeable, AbstractDependant {
                 totalRewards = totalRewards.add(_amountInUnderlying);
             }
         }
+        _updatePriceAndBlock();
     }
 
     /** 
@@ -149,14 +156,35 @@ contract YearnProtocol is IDefiProtocol, OwnableUpgradeable, AbstractDependant {
         // get the price for a single share
         uint256 sharePrice = vault.pricePerShare();
         // total value is the balance of shares multiplied by the price
-        return balanceShares.mul(sharePrice).div(PRECESSION);
+        return balanceShares.mul(sharePrice).div(YEARN_PRECESSION);
     }
 
     function setRewards(address newValue) external override onlyYieldGenerator {}
 
+    function _updatePriceAndBlock() internal {
+        lastPricePerShare = vault.pricePerShare();
+        lastUpdateBlock = block.number;
+    }
+
+    function getOneDayGain() external view override returns (uint256 oneDayGain) {
+        uint256 newPricePerShare = vault.pricePerShare();
+        if (newPricePerShare > lastPricePerShare) {
+            uint256 priceChange = (newPricePerShare.sub(lastPricePerShare)).mul(PRECISION);
+            uint256 nbDay = (block.number.sub(lastUpdateBlock)).div(BLOCKS_PER_DAY);
+
+            if (nbDay > 0) {
+                oneDayGain = priceChange.div(YEARN_PRECESSION).div(nbDay);
+            } else {
+                oneDayGain = priceChange.div(YEARN_PRECESSION);
+            }
+        } else {
+            oneDayGain = 0;
+        }
+    }
+
     function updateTotalValue() external override onlyYieldGenerator returns (uint256) {}
 
     function updateTotalDeposit(uint256 _lostAmount) external override onlyYieldGenerator {
-        totalDeposit -= _lostAmount;
+        totalDeposit = totalDeposit.sub(_lostAmount);
     }
 }

@@ -57,6 +57,10 @@ contract BMICoverStaking is
     // new state post v2
     IShieldMining public shieldMining;
 
+    bool public allowStakeProfit;
+
+    address public bmiTreasury;
+
     event StakingNFTMinted(uint256 id, address policyBookAddress, address to);
     event StakingNFTBurned(uint256 id, address policyBookAddress);
     event StakingBMIProfitWithdrawn(
@@ -78,6 +82,7 @@ contract BMICoverStaking is
         __ERC1155_init("");
 
         _nftMintId = 1;
+        allowStakeProfit = true;
     }
 
     function setDependencies(IContractsRegistry _contractsRegistry)
@@ -90,10 +95,12 @@ contract BMICoverStaking is
         policyBookRegistry = IPolicyBookRegistry(
             _contractsRegistry.getPolicyBookRegistryContract()
         );
-        liquidityMining = ILiquidityMining(_contractsRegistry.getLiquidityMiningContract());
-        bmiStaking = IBMIStaking(_contractsRegistry.getBMIStakingContract());
+        if (allowStakeProfit) {
+            bmiStaking = IBMIStaking(_contractsRegistry.getBMIStakingContract());
+        }
         liquidityRegistry = ILiquidityRegistry(_contractsRegistry.getLiquidityRegistryContract());
         shieldMining = IShieldMining(_contractsRegistry.getShieldMiningContract());
+        bmiTreasury = _contractsRegistry.getBMITreasury();
     }
 
     /// @dev the output URI will be: "https://token-cdn-domain/<tokenId>"
@@ -109,6 +116,10 @@ contract BMICoverStaking is
     /// @dev this is a correct URI: "https://token-cdn-domain/"
     function setBaseURI(string calldata newURI) external onlyOwner {
         _setURI(newURI);
+    }
+
+    function setAllowStakeProfit(bool _allowStakeProfit) external onlyOwner {
+        allowStakeProfit = _allowStakeProfit;
     }
 
     function recoverTokens() external onlyOwner {
@@ -305,13 +316,11 @@ contract BMICoverStaking is
             totalProfit = rewardsGenerator.withdrawFunds(policyBookAddress, tokenId);
         }
 
-        uint256 bmiStakingProfit =
-            _getSlashed(totalProfit, liquidityMining.startLiquidityMiningTime());
+        uint256 bmiStakingProfit = _getSlashed(totalProfit);
         uint256 profit = totalProfit.sub(bmiStakingProfit);
 
-        // transfer slashed bmi to the bmiStaking and add them to the pool
-        bmiToken.transfer(address(bmiStaking), bmiStakingProfit);
-        bmiStaking.addToPool(bmiStakingProfit);
+        // transfer slashed bmi to the bmi treasury
+        bmiToken.transfer(bmiTreasury, bmiStakingProfit);
 
         // transfer bmi profit to the user
         bmiToken.transfer(_msgSender(), profit);
@@ -364,6 +373,7 @@ contract BMICoverStaking is
     function restakeBMIProfit(uint256 tokenId) public override {
         require(_stakersPool[tokenId].policyBookAddress != address(0), "BDS: Token doesn't exist");
         require(ownerOf(tokenId) == _msgSender(), "BDS: Not a token owner");
+        require(allowStakeProfit, "BDS: restake not avaiable");
 
         uint256 totalProfit =
             rewardsGenerator.withdrawReward(_stakersPool[tokenId].policyBookAddress, tokenId);
@@ -419,13 +429,8 @@ contract BMICoverStaking is
         _transferForEach(policyBookAddress, withdrawFundsWithProfit);
     }
 
-    /// @dev returns percentage multiplied by 10**25
-    function getSlashingPercentage() external view override returns (uint256) {
-        return getSlashingPercentage(liquidityMining.startLiquidityMiningTime());
-    }
-
     function getSlashedBMIProfit(uint256 tokenId) public view override returns (uint256) {
-        return _applySlashing(getBMIProfit(tokenId), liquidityMining.startLiquidityMiningTime());
+        return _applySlashing(getBMIProfit(tokenId));
     }
 
     /// @notice retrieves the BMI profit of a tokenId
@@ -443,7 +448,7 @@ contract BMICoverStaking is
     ) external view override returns (uint256 totalProfit) {
         uint256 stakerBMIProfit = getStakerBMIProfit(staker, policyBookAddress, offset, limit);
 
-        return _applySlashing(stakerBMIProfit, liquidityMining.startLiquidityMiningTime());
+        return _applySlashing(stakerBMIProfit);
     }
 
     function getStakerBMIProfit(

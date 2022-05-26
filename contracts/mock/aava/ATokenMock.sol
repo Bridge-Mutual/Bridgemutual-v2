@@ -31,7 +31,7 @@ contract ATokenMock is ERC20 {
         uint256 amountScaled = _amount.mul(PRECISION).div(index);
         require(amountScaled != 0, "LPM: Invalid mint amount");
         _mint(_user, amountScaled);
-        liquidityIndex += 10**25;
+        liquidityIndex = liquidityIndex.add(10**26);
     }
 
     function burn(
@@ -45,18 +45,6 @@ contract ATokenMock is ERC20 {
 
         _burn(_user, amountScaled);
         usdt.safeTransfer(receiverOfUnderlying, _amount);
-    }
-
-    function mintInterest(address user) external {
-        uint256 userBalance = super.balanceOf(user);
-        uint256 accumlatedUserBalance =
-            userBalance.mul(lendingPool.getReserveNormalizedIncome(address(usdt))).div(PRECISION);
-        uint256 rewards = accumlatedUserBalance.sub(userBalance);
-        usdt.safeTransferFrom(msg.sender, address(this), rewards);
-    }
-
-    function setLiquidityIndex(uint256 _liquidityIndex) external {
-        liquidityIndex = _liquidityIndex;
     }
 
     function setPool(address _pool) external {

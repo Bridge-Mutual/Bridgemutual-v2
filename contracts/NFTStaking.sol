@@ -45,6 +45,8 @@ contract NFTStaking is
 
     mapping(address => EnumerableSet.UintSet) internal _nftStakerTokens; // staker -> nfts
 
+    bool isETHMainnet;
+
     event Locked(address _userAddr, uint256 _nftId);
 
     event Unlocked(address _userAddr, uint256 _nftId);
@@ -56,7 +58,7 @@ contract NFTStaking is
 
     function __NFTStaking_init() external initializer {
         __Ownable_init();
-
+        isETHMainnet = true;
         enabledlockingNFTs = true;
     }
 
@@ -68,12 +70,14 @@ contract NFTStaking is
         policyBookRegistry = IPolicyBookRegistry(
             _contractsRegistry.getPolicyBookRegistryContract()
         );
-        liquidityMiningStakingETH = ILiquidityMiningStaking(
-            _contractsRegistry.getLiquidityMiningStakingETHContract()
-        );
-        liquidityMiningStakingUSDT = ILiquidityMiningStaking(
-            _contractsRegistry.getLiquidityMiningStakingUSDTContract()
-        );
+        if (isETHMainnet) {
+            liquidityMiningStakingETH = ILiquidityMiningStaking(
+                _contractsRegistry.getLiquidityMiningStakingETHContract()
+            );
+            liquidityMiningStakingUSDT = ILiquidityMiningStaking(
+                _contractsRegistry.getLiquidityMiningStakingUSDTContract()
+            );
+        }
         bmiUtilityNFT = IERC1155(_contractsRegistry.getBMIUtilityNFTContract());
     }
 
@@ -84,8 +88,10 @@ contract NFTStaking is
 
         _nftStakerTokens[_msgSender()].add(_nftId);
 
-        if (_nftId == SILVER_NFT_ID || _nftId == BRONZE_NFT_ID) {
-            _setLMStakingRewardMultiplier();
+        if (isETHMainnet) {
+            if (_nftId == SILVER_NFT_ID || _nftId == BRONZE_NFT_ID) {
+                _setLMStakingRewardMultiplier();
+            }
         }
 
         emit Locked(_msgSender(), _nftId);
@@ -100,8 +106,10 @@ contract NFTStaking is
 
         _nftStakerTokens[_msgSender()].remove(_nftId);
 
-        if (_nftId == SILVER_NFT_ID || _nftId == BRONZE_NFT_ID) {
-            _setLMStakingRewardMultiplier();
+        if (isETHMainnet) {
+            if (_nftId == SILVER_NFT_ID || _nftId == BRONZE_NFT_ID) {
+                _setLMStakingRewardMultiplier();
+            }
         }
 
         emit Unlocked(_msgSender(), _nftId);
@@ -127,6 +135,10 @@ contract NFTStaking is
     // @TODO: we should let DAO to enable/disable locking of the NFTs
     function enableLockingNFTs(bool _enabledlockingNFTs) external override onlyOwner {
         enabledlockingNFTs = _enabledlockingNFTs;
+    }
+
+    function configureNetwork(bool _isETHMainnet) external onlyOwner {
+        isETHMainnet = _isETHMainnet;
     }
 
     /// @notice set reward multiplier for users who staked in LM staking contract based on NFT locked by users

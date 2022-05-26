@@ -2,18 +2,21 @@
 pragma solidity ^0.7.4;
 pragma experimental ABIEncoderV2;
 
+import "./IPolicyBookFacade.sol";
+
 interface ICapitalPool {
     struct PremiumFactors {
-        uint256 stblAmount;
-        uint256 premiumDurationInDays;
+        uint256 epochsNumber;
         uint256 premiumPrice;
-        uint256 lStblDeployedByLP;
         uint256 vStblDeployedByRP;
         uint256 vStblOfCP;
+        uint256 poolUtilizationRation;
         uint256 premiumPerDeployment;
-        uint256 participatedlStblDeployedByLP;
-        address userLeveragePoolAddress;
+        uint256 userLeveragePoolsCount;
+        IPolicyBookFacade policyBookFacade;
     }
+
+    enum PoolType {COVERAGE, LEVERAGE, REINSURANCE}
 
     function virtualUsdtAccumulatedBalance() external view returns (uint256);
 
@@ -51,8 +54,18 @@ interface ICapitalPool {
 
     /// @notice Fullfils policybook claims by transfering the balance to claimer
     /// @param _claimer, address of the claimer recieving the withdraw
-    /// @param _stblAmount uint256 amount to be withdrawn
-    function fundClaim(address _claimer, uint256 _stblAmount) external;
+    /// @param _claimAmount uint256 amount to be withdrawn
+    /// @param _policyBookAddress address of the policybook
+    function fundClaim(
+        address _claimer,
+        uint256 _claimAmount,
+        address _policyBookAddress
+    ) external returns (uint256);
+
+    /// @notice Fullfils policybook claims by transfering the balance to claimer
+    /// @param _voter, address of the voter recieving the withdraw
+    /// @param _rewardAmount uint256 amount to of the reward
+    function fundReward(address _voter, uint256 _rewardAmount) external returns (uint256);
 
     /// @notice Withdraws liquidity from a specific policbybook to the user
     /// @param _sender, address of the user beneficiary of the withdraw
@@ -62,5 +75,9 @@ interface ICapitalPool {
         address _sender,
         uint256 _stblAmount,
         bool _isLeveragePool
-    ) external;
+    ) external returns (uint256);
+
+    function rebalanceDuration() external view returns (uint256);
+
+    function getWithdrawPeriod() external view returns (uint256);
 }

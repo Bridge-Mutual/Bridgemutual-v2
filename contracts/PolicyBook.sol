@@ -37,21 +37,13 @@ contract PolicyBook is IPolicyBook, ERC20PermitUpgradeable, AbstractDependant {
     uint256 public constant MINUMUM_COVERAGE = 100 * DECIMALS18; // 100 STBL
     uint256 public constant ANNUAL_COVERAGE_TOKENS = MINUMUM_COVERAGE * 10; // 1000 STBL
 
-    uint256 public constant RISKY_UTILIZATION_RATIO = 80 * PRECISION;
-    uint256 public constant MODERATE_UTILIZATION_RATIO = 50 * PRECISION;
-
     uint256 public constant PREMIUM_DISTRIBUTION_EPOCH = 1 days;
     uint256 public constant MAX_PREMIUM_DISTRIBUTION_EPOCHS = 90;
 
-    uint256 public constant MINIMUM_REWARD = 15 * PRECISION; // 0.15
-    uint256 public constant MAXIMUM_REWARD = 2 * PERCENTAGE_100; // 2.0
-    uint256 public constant BASE_REWARD = PERCENTAGE_100; // 1.0
-
     uint256 public constant override EPOCH_DURATION = 1 weeks;
     uint256 public constant MAXIMUM_EPOCHS = SECONDS_IN_THE_YEAR / EPOCH_DURATION;
-    uint256 public constant VIRTUAL_EPOCHS = 2;
+    uint256 public constant VIRTUAL_EPOCHS = 1;
 
-    uint256 public constant WITHDRAWAL_PERIOD = 8 days;
     uint256 public constant override READY_TO_WITHDRAW_PERIOD = 2 days;
 
     bool public override whitelisted;
@@ -120,6 +112,11 @@ contract PolicyBook is IPolicyBook, ERC20PermitUpgradeable, AbstractDependant {
     );
     event CoverageChanged(uint256 _newTotalCoverTokens);
 
+    modifier onlyClaimingRegistry() {
+        require(_msgSender() == address(claimingRegistry), "PB: Not a CM");
+        _;
+    }
+
     modifier onlyClaimVoting() {
         require(_msgSender() == address(claimVoting), "PB: Not a CV");
         _;
@@ -142,7 +139,6 @@ contract PolicyBook is IPolicyBook, ERC20PermitUpgradeable, AbstractDependant {
 
     modifier onlyLiquidityAdders() {
         require(
-            // _msgSender() == address(liquidityMining) ||
             _msgSender() == policyBookFabricAddress || _msgSender() == address(policyBookFacade),
             "PB: Not allowed"
         );
@@ -156,7 +152,7 @@ contract PolicyBook is IPolicyBook, ERC20PermitUpgradeable, AbstractDependant {
 
     modifier updateBMICoverStakingReward() {
         _;
-        forceUpdateBMICoverStakingRewardMultiplier();
+        policyBookFacade.forceUpdateBMICoverStakingRewardMultiplier();
     }
 
     modifier withPremiumsDistribution() {
@@ -215,7 +211,6 @@ contract PolicyBook is IPolicyBook, ERC20PermitUpgradeable, AbstractDependant {
             _contractsRegistry.getBMICoverStakingViewContract()
         );
         rewardsGenerator = IRewardsGenerator(_contractsRegistry.getRewardsGeneratorContract());
-        //liquidityMining = ILiquidityMining(_contractsRegistry.getLiquidityMiningContract());
         claimVoting = IClaimVoting(_contractsRegistry.getClaimVotingContract());
         policyRegistry = IPolicyRegistry(_contractsRegistry.getPolicyRegistryContract());
         reinsurancePoolAddress = _contractsRegistry.getReinsurancePoolContract();
@@ -302,57 +297,58 @@ contract PolicyBook is IPolicyBook, ERC20PermitUpgradeable, AbstractDependant {
 
     function commitClaim(
         address claimer,
-        uint256 claimAmount,
         uint256 claimEndTime,
         IClaimingRegistry.ClaimStatus status
-    ) external override onlyClaimVoting withPremiumsDistribution updateBMICoverStakingReward {
+    ) external override onlyClaimingRegistry withPremiumsDistribution updateBMICoverStakingReward {
         updateEpochsInfo();
+        uint256 cover = policyHolders[claimer].coverTokens;
 
-        if (status == IClaimingRegistry.ClaimStatus.ACCEPTED) {
-            uint256 newTotalCover = totalCoverTokens.sub(claimAmount);
-
-            totalCoverTokens = newTotalCover;
-            uint256 liquidity = totalLiquidity.sub(claimAmount);
-            totalLiquidity = liquidity;
-
-            capitalPool.fundClaim(
-                claimer,
-                DecimalsConverter.convertFrom18(claimAmount, stblDecimals)
-            );
-            // TODO: verify
-            // check additional state changes other than transfer
-
-            emit LiquidityWithdrawn(claimer, claimAmount, liquidity);
-
-            delete policyHolders[claimer];
-            policyRegistry.removePolicy(claimer);
-
-            policyBookFacade.reevaluateProvidedLeverageStable();
-        } else if (status == IClaimingRegistry.ClaimStatus.REJECTED_CAN_APPEAL) {
+        if (
+            status == IClaimingRegistry.ClaimStatus.REJECTED_CAN_APPEAL ||
+            status == IClaimingRegistry.ClaimStatus.EXPIRED
+        ) {
             uint256 endUnlockEpoch =
                 Math.max(
                     getEpoch(claimEndTime) + 1,
                     policyHolders[claimer].endEpochNumber + VIRTUAL_EPOCHS
                 );
 
-            epochAmounts[endUnlockEpoch] = epochAmounts[endUnlockEpoch].add(
-                policyHolders[claimer].coverTokens
-            );
+            epochAmounts[endUnlockEpoch] = epochAmounts[endUnlockEpoch].add(cover);
         } else {
-            uint256 virtualEndEpochNumber =
-                policyHolders[claimer].endEpochNumber.add(VIRTUAL_EPOCHS);
+            if (status != IClaimingRegistry.ClaimStatus.ACCEPTED) {
+                uint256 virtualEndEpochNumber =
+                    policyHolders[claimer].endEpochNumber.add(VIRTUAL_EPOCHS);
 
-            if (lastDistributionEpoch <= virtualEndEpochNumber) {
-                epochAmounts[virtualEndEpochNumber] = epochAmounts[virtualEndEpochNumber].add(
-                    policyHolders[claimer].coverTokens
-                );
-            } else {
-                uint256 newTotalCover = totalCoverTokens.sub(claimAmount);
-                totalCoverTokens = newTotalCover;
-                policyBookFacade.reevaluateProvidedLeverageStable();
-                emit CoverageChanged(newTotalCover);
+                if (lastDistributionEpoch <= virtualEndEpochNumber) {
+                    epochAmounts[virtualEndEpochNumber] = epochAmounts[virtualEndEpochNumber].add(
+                        cover
+                    );
+                } else {
+                    uint256 newTotalCover = totalCoverTokens.sub(cover);
+                    totalCoverTokens = newTotalCover;
+                    policyBookFacade.reevaluateProvidedLeverageStable();
+                    emit CoverageChanged(newTotalCover);
+                }
             }
         }
+    }
+
+    function commitWithdrawnClaim(address claimer)
+        external
+        override
+        onlyClaimingRegistry
+        withPremiumsDistribution
+        updateBMICoverStakingReward
+    {
+        updateEpochsInfo();
+
+        uint256 cover = policyHolders[claimer].coverTokens;
+
+        uint256 newTotalCover = totalCoverTokens.sub(cover);
+        totalCoverTokens = newTotalCover;
+
+        delete policyHolders[claimer];
+        policyRegistry.removePolicy(claimer);
     }
 
     function _getPremiumsDistribution(uint256 lastEpoch, uint256 currentEpoch)
@@ -377,39 +373,6 @@ contract PolicyBook is IPolicyBook, ERC20PermitUpgradeable, AbstractDependant {
         }
     }
 
-    function forceUpdateBMICoverStakingRewardMultiplier() public override {
-        uint256 rewardMultiplier;
-
-        if (whitelisted) {
-            rewardMultiplier = MINIMUM_REWARD;
-            uint256 liquidity = totalLiquidity;
-            uint256 coverTokens = totalCoverTokens;
-
-            if (coverTokens > 0 && liquidity > 0) {
-                rewardMultiplier = BASE_REWARD;
-
-                uint256 utilizationRatio = coverTokens.mul(PERCENTAGE_100).div(liquidity);
-
-                if (utilizationRatio < MODERATE_UTILIZATION_RATIO) {
-                    rewardMultiplier = Math
-                        .max(utilizationRatio, PRECISION)
-                        .sub(PRECISION)
-                        .mul(BASE_REWARD.sub(MINIMUM_REWARD))
-                        .div(MODERATE_UTILIZATION_RATIO)
-                        .add(MINIMUM_REWARD);
-                } else if (utilizationRatio > RISKY_UTILIZATION_RATIO) {
-                    rewardMultiplier = MAXIMUM_REWARD
-                        .sub(BASE_REWARD)
-                        .mul(utilizationRatio.sub(RISKY_UTILIZATION_RATIO))
-                        .div(PERCENTAGE_100.sub(RISKY_UTILIZATION_RATIO))
-                        .add(BASE_REWARD);
-                }
-            }
-        }
-
-        rewardsGenerator.updatePolicyBookShare(rewardMultiplier.div(10**22)); // 5 decimal places or zero
-    }
-
     function getNewCoverAndLiquidity()
         public
         view
@@ -431,44 +394,6 @@ contract PolicyBook is IPolicyBook, ERC20PermitUpgradeable, AbstractDependant {
         for (uint256 i = lastDistributionEpoch; i < newDistributionEpoch; i++) {
             newTotalCoverTokens = newTotalCoverTokens.sub(epochAmounts[i]);
         }
-    }
-
-    function getPolicyPrice(
-        uint256 _epochsNumber,
-        uint256 _coverTokens,
-        address _holder
-    )
-        public
-        view
-        override
-        returns (
-            uint256 totalSeconds,
-            uint256 totalPrice,
-            uint256 pricePercentage
-        )
-    {
-        require(_coverTokens >= MINUMUM_COVERAGE, "PB: Wrong cover");
-        require(_epochsNumber > 0 && _epochsNumber <= MAXIMUM_EPOCHS, "PB: Wrong epoch duration");
-
-        (uint256 newTotalCoverTokens, uint256 newTotalLiquidity) = getNewCoverAndLiquidity();
-
-        totalSeconds = secondsToEndCurrentEpoch().add(_epochsNumber.sub(1).mul(EPOCH_DURATION));
-        (totalPrice, pricePercentage) = policyQuote.getQuotePredefined(
-            totalSeconds,
-            _coverTokens,
-            newTotalCoverTokens,
-            newTotalLiquidity,
-            policyBookFacade.totalLeveragedLiquidity(),
-            policyBookFacade.safePricingModel()
-        );
-
-        ///@notice commented this because of PB size when adding a new feature
-        /// and it is not used anymore ATM
-        // reduce premium by reward NFT locked by user
-        // uint256 _reductionMultiplier = nftStaking.getUserReductionMultiplier(_holder);
-        // if (_reductionMultiplier > 0) {
-        //     totalPrice = totalPrice.sub(totalPrice.mul(_reductionMultiplier).div(PERCENTAGE_100));
-        // }
     }
 
     function buyPolicy(
@@ -499,23 +424,30 @@ contract PolicyBook is IPolicyBook, ERC20PermitUpgradeable, AbstractDependant {
         updateBMICoverStakingReward
         returns (uint256, uint256)
     {
+        // check if there is a previous policy not expired
         require(
-            !policyRegistry.isPolicyActive(parameters.holder, address(this)),
+            !policyRegistry.isPolicyValid(parameters.holder, address(this)),
             "PB: The holder already exists"
         );
-        require(
-            claimingRegistry.canBuyNewPolicy(parameters.holder, address(this)),
-            "PB: Claim is pending"
-        );
 
+        claimingRegistry.canBuyNewPolicy(parameters.holder, address(this));
         updateEpochsInfo();
 
         uint256 _totalCoverTokens = totalCoverTokens.add(parameters.coverTokens);
-
-        require(totalLiquidity >= _totalCoverTokens, "PB: Not enough liquidity");
+        require(
+            totalLiquidity >=
+                _totalCoverTokens.add(
+                    liquidityRegistry.getPendingWithdrawalAmountByPolicyBook(address(this))
+                ),
+            "PB: Not enough liquidity"
+        );
 
         (uint256 _totalSeconds, uint256 _totalPrice, uint256 pricePercentage) =
-            getPolicyPrice(parameters.epochsNumber, parameters.coverTokens, parameters.holder);
+            policyBookFacade.getPolicyPrice(
+                parameters.epochsNumber,
+                parameters.coverTokens,
+                parameters.holder
+            );
 
         // Partners are rewarded with X% of the Premium, coming from the Protocol’s fee part.
         // It's a part of 20% initially send to the Reinsurance pool
@@ -593,6 +525,21 @@ contract PolicyBook is IPolicyBook, ERC20PermitUpgradeable, AbstractDependant {
         );
     }
 
+    function endActivePolicy(address _holder) external override onlyClaimingRegistry {
+        uint256 _cover = policyHolders[_holder].coverTokens;
+        // remove cover from epoch management
+        uint256 _virtualEndEpochNumberPrevious =
+            policyHolders[_holder].endEpochNumber + VIRTUAL_EPOCHS;
+        epochAmounts[_virtualEndEpochNumberPrevious] = epochAmounts[_virtualEndEpochNumberPrevious]
+            .sub(_cover);
+        // remove cover form totalCoverToken
+        uint256 newTotalCover = totalCoverTokens.sub(_cover);
+        totalCoverTokens = newTotalCover;
+
+        delete policyHolders[_holder];
+        policyRegistry.removePolicy(_holder);
+    }
+
     /// @dev no need to cap epochs because the maximum policy duration is 1 year
     function _addPolicyPremiumToDistributions(uint256 _totalSeconds, uint256 _distributedAmount)
         internal
@@ -624,12 +571,6 @@ contract PolicyBook is IPolicyBook, ERC20PermitUpgradeable, AbstractDependant {
             policyBookFacade.reevaluateProvidedLeverageStable();
             emit CoverageChanged(_newTotalCoverTokens);
         }
-    }
-
-    function secondsToEndCurrentEpoch() public view override returns (uint256) {
-        uint256 epochNumber = block.timestamp.sub(epochStartTime).div(EPOCH_DURATION) + 1;
-
-        return epochNumber.mul(EPOCH_DURATION).sub(block.timestamp.sub(epochStartTime));
     }
 
     function addLiquidityFor(address _liquidityHolderAddr, uint256 _liquidityAmount)
@@ -673,12 +614,6 @@ contract PolicyBook is IPolicyBook, ERC20PermitUpgradeable, AbstractDependant {
         }
         capitalPool.addCoverageProvidersHardSTBL(stblLiquidity);
 
-        // if (_msgSender() == address(liquidityMining)) {
-        //     liquidityFromLM[_liquidityHolderAddr] = liquidityFromLM[_liquidityHolderAddr].add(
-        //         _liquidityAmount
-        //     );
-        // }
-
         uint256 _liquidityAmountBMIX = convertSTBLToBMIX(_liquidityAmount);
 
         _mint(_liquidityHolderAddr, _liquidityAmountBMIX);
@@ -709,7 +644,9 @@ contract PolicyBook is IPolicyBook, ERC20PermitUpgradeable, AbstractDependant {
         return
             convertSTBLToBMIX(
                 Math.min(
-                    newTotalLiquidity.sub(newTotalCoverTokens),
+                    newTotalLiquidity.sub(newTotalCoverTokens).sub(
+                        liquidityRegistry.getPendingWithdrawalAmountByPolicyBook(address(this))
+                    ),
                     _getUserAvailableSTBL(_userAddr)
                 )
             );
@@ -720,12 +657,6 @@ contract PolicyBook is IPolicyBook, ERC20PermitUpgradeable, AbstractDependant {
             convertBMIXToSTBL(
                 balanceOf(_userAddr).add(withdrawalsInfo[_userAddr].withdrawalAmount)
             );
-
-        // if (block.timestamp < liquidityMining.getEndLMTime()) {
-        //     uint256 lmLiquidity = liquidityFromLM[_userAddr];
-
-        //     availableSTBL = availableSTBL <= lmLiquidity ? 0 : availableSTBL - lmLiquidity;
-        // }
 
         return availableSTBL;
     }
@@ -746,10 +677,7 @@ contract PolicyBook is IPolicyBook, ERC20PermitUpgradeable, AbstractDependant {
             return WithdrawalStatus.PENDING;
         }
 
-        if (
-            block.timestamp >= readyToWithdrawDate.add(READY_TO_WITHDRAW_PERIOD) &&
-            !withdrawalsInfo[_userAddr].withdrawalAllowed
-        ) {
+        if (block.timestamp >= readyToWithdrawDate.add(READY_TO_WITHDRAW_PERIOD)) {
             return WithdrawalStatus.EXPIRED;
         }
 
@@ -762,23 +690,27 @@ contract PolicyBook is IPolicyBook, ERC20PermitUpgradeable, AbstractDependant {
         onlyPolicyBookFacade
         withPremiumsDistribution
     {
-        require(_tokensToWithdraw > 0, "PB: Amount is zero");
-
         uint256 _stblTokensToWithdraw = convertBMIXToSTBL(_tokensToWithdraw);
         uint256 _availableSTBLBalance = _getUserAvailableSTBL(_user);
 
         require(_availableSTBLBalance >= _stblTokensToWithdraw, "PB: Wrong announced amount");
 
         updateEpochsInfo();
-
         require(
-            totalLiquidity >= totalCoverTokens.add(_stblTokensToWithdraw),
+            totalLiquidity >=
+                totalCoverTokens.add(_stblTokensToWithdraw).add(
+                    liquidityRegistry.getPendingWithdrawalAmountByPolicyBook(address(this))
+                ),
             "PB: Not enough free liquidity"
         );
 
         _lockTokens(_user, _tokensToWithdraw);
 
-        uint256 _readyToWithdrawDate = block.timestamp.add(WITHDRAWAL_PERIOD);
+        _requestWithdrawal(_tokensToWithdraw, _user);
+    }
+
+    function _requestWithdrawal(uint256 _tokensToWithdraw, address _user) internal {
+        uint256 _readyToWithdrawDate = block.timestamp.add(capitalPool.getWithdrawPeriod());
 
         withdrawalsInfo[_user] = WithdrawalInfo(_tokensToWithdraw, _readyToWithdrawDate, false);
 
@@ -806,6 +738,7 @@ contract PolicyBook is IPolicyBook, ERC20PermitUpgradeable, AbstractDependant {
 
         this.transfer(_msgSender(), _lockedAmount);
         delete withdrawalsInfo[_msgSender()];
+        liquidityRegistry.removeExpiredWithdrawalRequest(_msgSender(), address(this));
     }
 
     function withdrawLiquidity(address sender)
@@ -829,11 +762,21 @@ contract PolicyBook is IPolicyBook, ERC20PermitUpgradeable, AbstractDependant {
             Math.min(_currentWithdrawalAmount, convertSTBLToBMIX(liquidity.sub(totalCoverTokens)));
 
         uint256 _stblTokensToWithdraw = convertBMIXToSTBL(_tokensToWithdraw);
-        capitalPool.withdrawLiquidity(
-            sender,
-            DecimalsConverter.convertFrom18(_stblTokensToWithdraw, stblDecimals),
-            false
-        );
+
+        uint256 _stblTokensToWithdrawConverted =
+            DecimalsConverter.convertFrom18(_stblTokensToWithdraw, stblDecimals);
+
+        uint256 _actualStblTokensToWithdraw =
+            capitalPool.withdrawLiquidity(sender, _stblTokensToWithdrawConverted, false);
+
+        if (_stblTokensToWithdrawConverted != _actualStblTokensToWithdraw) {
+            _actualStblTokensToWithdraw = DecimalsConverter.convertTo18(
+                _actualStblTokensToWithdraw,
+                stblDecimals
+            );
+            _tokensToWithdraw = convertSTBLToBMIX(_actualStblTokensToWithdraw);
+            _stblTokensToWithdraw = _actualStblTokensToWithdraw;
+        }
 
         _burn(address(this), _tokensToWithdraw);
         liquidity = liquidity.sub(_stblTokensToWithdraw);
@@ -844,8 +787,7 @@ contract PolicyBook is IPolicyBook, ERC20PermitUpgradeable, AbstractDependant {
             delete withdrawalsInfo[sender];
             liquidityRegistry.tryToRemovePolicyBook(sender, address(this));
         } else {
-            withdrawalsInfo[sender].withdrawalAllowed = true;
-            withdrawalsInfo[sender].withdrawalAmount = _currentWithdrawalAmount;
+            _requestWithdrawal(_currentWithdrawalAmount, sender);
         }
 
         totalLiquidity = liquidity;
@@ -855,11 +797,10 @@ contract PolicyBook is IPolicyBook, ERC20PermitUpgradeable, AbstractDependant {
         return _tokensToWithdraw;
     }
 
-    function updateLiquidity(uint256 _newLiquidity) external override onlyCapitalPool {
+    function updateLiquidity(uint256 _lostLiquidity) external override onlyCapitalPool {
         updateEpochsInfo();
 
-        uint256 _lostLiquidity = totalLiquidity.sub(_newLiquidity);
-
+        uint256 _newLiquidity = totalLiquidity.sub(_lostLiquidity);
         totalLiquidity = _newLiquidity;
 
         emit LiquidityWithdrawn(_msgSender(), _lostLiquidity, _newLiquidity);
@@ -895,12 +836,14 @@ contract PolicyBook is IPolicyBook, ERC20PermitUpgradeable, AbstractDependant {
     /// @notice _annualInsuranceCost is calculated for 1000 STBL cover (or _maxCapacities if it is less)
     /// @notice _bmiXRatio is multiplied by 10**18. To get STBL representation,
     ///     multiply BMIX tokens by this value and then divide by 10**18
+    /// @notice _buyPolicyCapacity the capacity for buying a new policy include the requested withdraw amount
     function numberStats()
         external
         view
         override
         returns (
             uint256 _maxCapacities,
+            uint256 _buyPolicyCapacity,
             uint256 _totalSTBLLiquidity,
             uint256 _totalLeveragedLiquidity,
             uint256 _stakedSTBL,
@@ -913,6 +856,10 @@ contract PolicyBook is IPolicyBook, ERC20PermitUpgradeable, AbstractDependant {
 
         (newTotalCoverTokens, _totalSTBLLiquidity) = getNewCoverAndLiquidity();
         _maxCapacities = _totalSTBLLiquidity - newTotalCoverTokens;
+
+        _buyPolicyCapacity = _maxCapacities.sub(
+            liquidityRegistry.getPendingWithdrawalAmountByPolicyBook(address(this))
+        );
 
         _stakedSTBL = rewardsGenerator.getStakedPolicyBookSTBL(address(this));
         _annualProfitYields = getAPY().add(bmiCoverStakingView.getPolicyBookAPY(address(this)));
@@ -937,19 +884,5 @@ contract PolicyBook is IPolicyBook, ERC20PermitUpgradeable, AbstractDependant {
         }
 
         _bmiXRatio = convertBMIXToSTBL(10**18);
-    }
-
-    function info()
-        external
-        view
-        override
-        returns (
-            string memory _symbol,
-            address _insuredContract,
-            IPolicyBookFabric.ContractType _contractType,
-            bool _whitelisted
-        )
-    {
-        return (symbol(), insuranceContractAddress, contractType, whitelisted);
     }
 }

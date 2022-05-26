@@ -59,7 +59,6 @@ contract PolicyBookFabric is IPolicyBookFabric, OwnableUpgradeable, AbstractDepe
             _contractsRegistry.getPolicyBookRegistryContract()
         );
         policyBookAdmin = IPolicyBookAdmin(_contractsRegistry.getPolicyBookAdminContract());
-        liquidityMining = ILiquidityMining(_contractsRegistry.getLiquidityMiningContract());
         stblToken = ERC20(_contractsRegistry.getUSDTContract());
         capitalPoolAddress = IContractsRegistry(_contractsRegistry).getCapitalPoolContract();
         stblDecimals = stblToken.decimals();
@@ -80,11 +79,7 @@ contract PolicyBookFabric is IPolicyBookFabric, OwnableUpgradeable, AbstractDepe
             bytes(_projectSymbol).length != 0 && bytes(_projectSymbol).length <= 30,
             "PBF: Project symbol is too long/short"
         );
-        require(!liquidityMining.isLMLasting(), "PBF: Creation is blocked during LME");
-        require(
-            !liquidityMining.isLMEnded() || _initialDeposit >= MINIMAL_INITIAL_DEPOSIT,
-            "PBF: Too small deposit"
-        );
+        require(_initialDeposit >= MINIMAL_INITIAL_DEPOSIT, "PBF: Too small deposit");
 
         TransparentUpgradeableProxy _policyBookProxy =
             new TransparentUpgradeableProxy(
@@ -155,6 +150,7 @@ contract PolicyBookFabric is IPolicyBookFabric, OwnableUpgradeable, AbstractDepe
     }
 
     function createLeveragePools(
+        address _insuranceContract,
         ContractType _contractType,
         string calldata _description,
         string calldata _projectSymbol
@@ -180,7 +176,12 @@ contract PolicyBookFabric is IPolicyBookFabric, OwnableUpgradeable, AbstractDepe
 
         AbstractDependant(address(_userLeverageProxy)).setDependencies(contractsRegistry);
         AbstractDependant(address(_userLeverageProxy)).setInjector(address(policyBookAdmin));
-        policyBookRegistry.add(address(0), _contractType, address(_userLeverageProxy), address(0));
+        policyBookRegistry.add(
+            _insuranceContract,
+            _contractType,
+            address(_userLeverageProxy),
+            address(0)
+        );
 
         emit Created(address(0), _contractType, address(_userLeverageProxy), address(0));
 

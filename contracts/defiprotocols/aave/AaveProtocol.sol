@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.7.4;
+pragma experimental ABIEncoderV2;
 
 import "@openzeppelin/contracts/math/Math.sol";
 import "@openzeppelin/contracts/math/SafeMath.sol";
@@ -9,17 +10,21 @@ import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 
 import "./imports/ILendingPool.sol";
 import "./imports/ILendingPoolAddressesProvider.sol";
+import "./imports/DataTypes.sol";
 
 import "../../interfaces/IContractsRegistry.sol";
 import "../../interfaces/IReinsurancePool.sol";
 import "../../interfaces/IDefiProtocol.sol";
 
 import "../../abstract/AbstractDependant.sol";
+import "../../Globals.sol";
 
 contract AaveProtocol is IDefiProtocol, OwnableUpgradeable, AbstractDependant {
     using SafeERC20 for ERC20;
     using SafeMath for uint256;
     using Math for uint256;
+    using SafeMath for uint128;
+    using Math for uint128;
 
     uint256 public totalDeposit;
     uint256 public totalRewards;
@@ -148,9 +153,16 @@ contract AaveProtocol is IDefiProtocol, OwnableUpgradeable, AbstractDependant {
         lendingPool.setUserUseReserveAsCollateral(address(stablecoin), false);
     }
 
+    function getOneDayGain() external view override returns (uint256) {
+        DataTypes.ReserveData memory reserveData =
+            ILendingPool(provider.getLendingPool()).getReserveData(address(stablecoin));
+
+        return reserveData.currentLiquidityRate.div(365).div(100);
+    }
+
     function updateTotalValue() external override onlyYieldGenerator returns (uint256) {}
 
     function updateTotalDeposit(uint256 _lostAmount) external override onlyYieldGenerator {
-        totalDeposit -= _lostAmount;
+        totalDeposit = totalDeposit.sub(_lostAmount);
     }
 }

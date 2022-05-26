@@ -5,11 +5,13 @@ pragma experimental ABIEncoderV2;
 import "../PolicyRegistry.sol";
 
 contract PolicyRegistryMock is PolicyRegistry {
-    function setPolicyEndTime(
+    function setPolicyTime(
         address userAddr,
         address policyBookAddr,
+        uint256 startTime,
         uint256 endTime
     ) external {
+        policyInfos[userAddr][policyBookAddr].startTime = startTime;
         policyInfos[userAddr][policyBookAddr].endTime = endTime;
     }
 }

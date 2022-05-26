@@ -3,6 +3,8 @@ pragma solidity ^0.7.4;
 pragma experimental ABIEncoderV2;
 
 interface IPolicyBookAdmin {
+    enum PoolTypes {POLICY_BOOK, POLICY_FACADE, LEVERAGE_POOL}
+
     function getUpgrader() external view returns (address);
 
     function getImplementationOfPolicyBook(address policyBookAddress) external returns (address);
@@ -106,16 +108,20 @@ interface IPolicyBookAdmin {
     ) external;
 
     /// @notice setup all pricing model varlues
-    ///@param _riskyAssetThresholdPercentage URRp Utilization ration for pricing model when the assets is considered risky, %
-    ///@param _minimumCostPercentage MC minimum cost of cover (Premium), %;
+    ///@param _highRiskRiskyAssetThresholdPercentage URRp Utilization ration for pricing model when the assets is considered risky, %
+    ///@param _lowRiskRiskyAssetThresholdPercentage URRp Utilization ration for pricing model when the assets is not considered risky, %
+    ///@param _highRiskMinimumCostPercentage MC minimum cost of cover (Premium) when the assets is considered risky, %;
+    ///@param _lowRiskMinimumCostPercentage MC minimum cost of cover (Premium), when the assets is not considered risky, %
     ///@param _minimumInsuranceCost minimum cost of insurance (Premium) , (10**18)
     ///@param _lowRiskMaxPercentPremiumCost TMCI target maximum cost of cover when the asset is not considered risky (Premium)
     ///@param _lowRiskMaxPercentPremiumCost100Utilization MCI not risky
     ///@param _highRiskMaxPercentPremiumCost TMCI target maximum cost of cover when the asset is considered risky (Premium)
     ///@param _highRiskMaxPercentPremiumCost100Utilization MCI risky
     function setupPricingModel(
-        uint256 _riskyAssetThresholdPercentage,
-        uint256 _minimumCostPercentage,
+        uint256 _highRiskRiskyAssetThresholdPercentage,
+        uint256 _lowRiskRiskyAssetThresholdPercentage,
+        uint256 _highRiskMinimumCostPercentage,
+        uint256 _lowRiskMinimumCostPercentage,
         uint256 _minimumInsuranceCost,
         uint256 _lowRiskMaxPercentPremiumCost,
         uint256 _lowRiskMaxPercentPremiumCost100Utilization,

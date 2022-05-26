@@ -58,9 +58,6 @@ interface IUserLeveragePool {
     /// @notice get BMIX equivalent
     function convertSTBLToBMIX(uint256 _amount) external view returns (uint256);
 
-    /// @notice forces an update of RewardsGenerator multiplier
-    function forceUpdateBMICoverStakingRewardMultiplier() external;
-
     /// @notice function to get precise current cover and liquidity
     function getNewCoverAndLiquidity()
         external
@@ -100,9 +97,6 @@ interface IUserLeveragePool {
     /// @notice Let user to withdraw deposited liqiudity, access: ANY
     function withdrawLiquidity() external;
 
-    ///@notice for doing defi hard rebalancing, access: CapitalPool
-    function updateLiquidity(uint256 _newLiquidity) external;
-
     function getAPY() external view returns (uint256);
 
     function whitelisted() external view returns (bool);
@@ -117,6 +111,7 @@ interface IUserLeveragePool {
 
     /// @notice Getting number stats, access: ANY
     /// @return _maxCapacities is a max liquidity of the pool
+    /// @return _buyPolicyCapacity is becuase to follow the same function in policy book
     /// @return _totalSTBLLiquidity is PolicyBook's liquidity
     /// @return _totalLeveragedLiquidity is becuase to follow the same function in policy book
     /// @return _stakedSTBL is how much stable coin are staked on this PolicyBook
@@ -128,6 +123,7 @@ interface IUserLeveragePool {
         view
         returns (
             uint256 _maxCapacities,
+            uint256 _buyPolicyCapacity,
             uint256 _totalSTBLLiquidity,
             uint256 _totalLeveragedLiquidity,
             uint256 _stakedSTBL,

@@ -2,7 +2,6 @@ const ContractsRegistry = artifacts.require("ContractsRegistry");
 const NFTStaking = artifacts.require("NFTStaking");
 const BMIMock = artifacts.require("BMIMock");
 const BMIStaking = artifacts.require("BMIStaking");
-const LiquidityMiningMock = artifacts.require("LiquidityMiningMock");
 const PolicyBookRegistry = artifacts.require("PolicyBookRegistry");
 const BMIUtilityNFT = artifacts.require("BMIUtilityNFT");
 const LiquidityMiningStakingETH = artifacts.require("LiquidityMiningStakingETH");
@@ -54,7 +53,6 @@ contract("NFTStaking", async (accounts) => {
 
     const _bmi = await BMIMock.new(USER1);
     const _policyBookRegistry = await PolicyBookRegistry.new();
-    const _liquidityMining = await LiquidityMiningMock.new();
     const _nftStaking = await NFTStaking.new();
     const _bmiUtilityNFT = await BMIUtilityNFT.new();
     const _liquidityMiningStakingETH = await LiquidityMiningStakingETH.new();
@@ -66,13 +64,9 @@ contract("NFTStaking", async (accounts) => {
     await contractsRegistry.__ContractsRegistry_init();
 
     await contractsRegistry.addContract(await contractsRegistry.BMI_NAME(), _bmi.address);
-    await contractsRegistry.addContract(await contractsRegistry.SUSHISWAP_BMI_TO_ETH_PAIR_NAME(), stakingToken.address);
-    await contractsRegistry.addContract(
-      await contractsRegistry.SUSHISWAP_BMI_TO_USDT_PAIR_NAME(),
-      stakingTokenUSDT.address
-    );
+    await contractsRegistry.addContract(await contractsRegistry.AMM_BMI_TO_ETH_PAIR_NAME(), stakingToken.address);
+    await contractsRegistry.addContract(await contractsRegistry.AMM_BMI_TO_USDT_PAIR_NAME(), stakingTokenUSDT.address);
 
-    await contractsRegistry.addProxyContract(await contractsRegistry.LIQUIDITY_MINING_NAME(), _liquidityMining.address);
     await contractsRegistry.addProxyContract(
       await contractsRegistry.POLICY_BOOK_REGISTRY_NAME(),
       _policyBookRegistry.address

@@ -18,22 +18,13 @@ interface IRewardsGenerator {
     }
 
     /// @notice this function is called every time policybook's STBL to bmiX rate changes
-    function updatePolicyBookShare(uint256 newRewardMultiplier) external;
+    function updatePolicyBookShare(uint256 newRewardMultiplier, address policyBook) external;
 
     /// @notice aggregates specified nfts into a single one
     function aggregate(
         address policyBookAddress,
         uint256[] calldata nftIndexes,
         uint256 nftIndexTo
-    ) external;
-
-    /// @notice migrates stake from the LegacyRewardsGenerator (will be called once for each user)
-    /// the rewards multipliers must be set in advance
-    function migrationStake(
-        address policyBookAddress,
-        uint256 nftIndex,
-        uint256 amount,
-        uint256 currentReward
     ) external;
 
     /// @notice informs generator of stake (rewards)

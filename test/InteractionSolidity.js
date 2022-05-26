@@ -2,6 +2,8 @@ const InteractionSolidity = artifacts.require("InteractionSolidity");
 
 const ContractsRegistry = artifacts.require("ContractsRegistry");
 const STBLMock = artifacts.require("STBLMock");
+const BSCSTBLMock = artifacts.require("BSCSTBLMock");
+const MATICSTBLMock = artifacts.require("MATICSTBLMock");
 
 const PolicyBookAdmin = artifacts.require("PolicyBookAdmin");
 const PolicyBookFabric = artifacts.require("PolicyBookFabric");
@@ -10,7 +12,6 @@ const PolicyBookRegistry = artifacts.require("PolicyBookRegistry");
 const PolicyQuote = artifacts.require("PolicyQuote");
 const ClaimingRegistry = artifacts.require("ClaimingRegistry");
 const LiquidityRegistry = artifacts.require("LiquidityRegistry");
-const LiquidityMining = artifacts.require("LiquidityMining");
 const RewardsGenerator = artifacts.require("RewardsGenerator");
 const CapitalPool = artifacts.require("CapitalPool");
 const ReinsurancePool = artifacts.require("ReinsurancePool");
@@ -19,6 +20,7 @@ const BMICoverStakingView = artifacts.require("BMICoverStakingView");
 const NFTStaking = artifacts.require("NFTStaking");
 const ShieldMining = artifacts.require("ShieldMining");
 const LeveragePortfolioView = artifacts.require("LeveragePortfolioView");
+const YieldGenerator = artifacts.require("YieldGenerator");
 
 const PolicyBook = artifacts.require("PolicyBook");
 const PolicyBookFacade = artifacts.require("PolicyBookFacade");
@@ -27,6 +29,7 @@ const UserLeveragePool = artifacts.require("UserLeveragePool");
 const Reverter = require("./helpers/reverter");
 const truffleAssert = require("truffle-assertions");
 const BigNumber = require("bignumber.js");
+const { getStableAmount, getNetwork, Networks } = require("./helpers/utils");
 
 const { assert } = require("chai");
 
@@ -68,11 +71,13 @@ contract("InteractionSolidity", async (accounts) => {
   let policyRegistry, policyBookRegistry, policyBookAdmin;
 
   let interactionSolidity;
+  let network;
 
   const insuranceContract1 = accounts[1];
   const insuranceContract2 = accounts[2];
   const insuranceContract3 = accounts[3];
   const insuranceContract4 = accounts[4];
+  const insuranceContract5 = accounts[6];
   const DISTRIBUTOR = accounts[5];
   const user1 = accounts[7];
   const user2 = accounts[8];
@@ -80,23 +85,31 @@ contract("InteractionSolidity", async (accounts) => {
 
   const TOKEN = "0x0000000000000000000000000000000000000000";
 
-  const PRECISION = 10 ** 25;
+  const PRECISION = toBN(10).pow(25);
+
+  let epochsNumber, initialDeposit, stblInitialDeposit, highAmount, coverTokensAmount, liquidityAmount, stblAmount;
 
   const convert = (amount) => {
-    const amountStbl = toBN(amount).div(toBN(10).pow(12));
-    return amountStbl;
+    if (network == Networks.ETH) {
+      const amountStbl = toBN(amount).div(toBN(10).pow(12));
+      return amountStbl;
+    } else if (network == Networks.BSC) {
+      const amountStbl = toBN(amount);
+      return amountStbl;
+    }
   };
 
-  const epochsNumber = 5;
-  const initialDeposit = toWei("1000");
-  const highAmount = toWei("100000", "mwei");
-  const coverTokensAmount = toWei("100");
-  const liquidityAmount = toWei("5000");
-  const stblAmount = convert(liquidityAmount);
-
   before("setup", async () => {
+    network = await getNetwork();
     contractsRegistry = await ContractsRegistry.new();
-    stbl = await STBLMock.new("stbl", "stbl", 6);
+    if (network == Networks.ETH) {
+      stbl = await STBLMock.new("stbl", "stbl", 6);
+    } else if (network == Networks.BSC) {
+      stbl = await BSCSTBLMock.new();
+    } else if (network == Networks.POL) {
+      stbl = await MATICSTBLMock.new();
+      await stbl.initialize("stbl", "stbl", 6, accounts[0]);
+    }
 
     const _policyBookAdmin = await PolicyBookAdmin.new();
     const _policyBookFabric = await PolicyBookFabric.new();
@@ -105,7 +118,6 @@ contract("InteractionSolidity", async (accounts) => {
     const _policyQuote = await PolicyQuote.new();
     const _claimingRegistry = await ClaimingRegistry.new();
     const _liquidityRegistry = await LiquidityRegistry.new();
-    const _liquidityMining = await LiquidityMining.new();
     const _rewardsGenerator = await RewardsGenerator.new();
     const _capitalPool = await CapitalPool.new();
     const _reinsurancePool = await ReinsurancePool.new();
@@ -114,6 +126,7 @@ contract("InteractionSolidity", async (accounts) => {
     const _nftStaking = await NFTStaking.new();
     const _shieldMining = await ShieldMining.new();
     const _leveragePortfolioView = await LeveragePortfolioView.new();
+    const _yieldGenerator = await YieldGenerator.new();
 
     const _policyBookImpl = await PolicyBook.new();
     const _policyBookFacadeImpl = await PolicyBookFacade.new();
@@ -128,15 +141,14 @@ contract("InteractionSolidity", async (accounts) => {
     await contractsRegistry.addContract(await contractsRegistry.BMI_NAME(), fake);
     await contractsRegistry.addContract(await contractsRegistry.BMI_UTILITY_NFT_NAME(), fake);
     await contractsRegistry.addContract(await contractsRegistry.BMI_STAKING_NAME(), fake);
-    await contractsRegistry.addContract(await contractsRegistry.LEGACY_REWARDS_GENERATOR_NAME(), fake);
-    await contractsRegistry.addContract(await contractsRegistry.YIELD_GENERATOR_NAME(), fake);
-    await contractsRegistry.addContract(await contractsRegistry.AAVE_PROTOCOL_NAME(), fake);
-    await contractsRegistry.addContract(await contractsRegistry.COMPOUND_PROTOCOL_NAME(), fake);
-    await contractsRegistry.addContract(await contractsRegistry.YEARN_PROTOCOL_NAME(), fake);
-    await contractsRegistry.addContract(await contractsRegistry.YIELD_GENERATOR_NAME(), fake);
+    await contractsRegistry.addContract(await contractsRegistry.BMI_TREASURY_NAME(), fake);
+    await contractsRegistry.addContract(await contractsRegistry.DEFI_PROTOCOL_1_NAME(), fake);
+    await contractsRegistry.addContract(await contractsRegistry.DEFI_PROTOCOL_2_NAME(), fake);
+    await contractsRegistry.addContract(await contractsRegistry.DEFI_PROTOCOL_3_NAME(), fake);
     await contractsRegistry.addContract(await contractsRegistry.LIQUIDITY_MINING_STAKING_ETH_NAME(), fake);
     await contractsRegistry.addContract(await contractsRegistry.LIQUIDITY_MINING_STAKING_USDT_NAME(), fake);
     await contractsRegistry.addContract(await contractsRegistry.BMI_UTILITY_NFT_NAME(), fake);
+    await contractsRegistry.addContract(await contractsRegistry.LIQUIDITY_BRIDGE_NAME(), fake);
 
     await contractsRegistry.addProxyContract(
       await contractsRegistry.POLICY_BOOK_ADMIN_NAME(),
@@ -160,7 +172,6 @@ contract("InteractionSolidity", async (accounts) => {
       await contractsRegistry.LIQUIDITY_REGISTRY_NAME(),
       _liquidityRegistry.address
     );
-    await contractsRegistry.addProxyContract(await contractsRegistry.LIQUIDITY_MINING_NAME(), _liquidityMining.address);
     await contractsRegistry.addProxyContract(
       await contractsRegistry.REWARDS_GENERATOR_NAME(),
       _rewardsGenerator.address
@@ -181,6 +192,7 @@ contract("InteractionSolidity", async (accounts) => {
       await contractsRegistry.LEVERAGE_PORTFOLIO_VIEW_NAME(),
       _leveragePortfolioView.address
     );
+    await contractsRegistry.addProxyContract(await contractsRegistry.YIELD_GENERATOR_NAME(), _yieldGenerator.address);
 
     policyRegistry = await PolicyRegistry.at(await contractsRegistry.getPolicyRegistryContract());
     policyBookRegistry = await PolicyBookRegistry.at(await contractsRegistry.getPolicyBookRegistryContract());
@@ -189,7 +201,6 @@ contract("InteractionSolidity", async (accounts) => {
     const policyQuote = await PolicyQuote.at(await contractsRegistry.getPolicyQuoteContract());
     const claimingRegistry = await ClaimingRegistry.at(await contractsRegistry.getClaimingRegistryContract());
     const liquidityRegistry = await LiquidityRegistry.at(await contractsRegistry.getLiquidityRegistryContract());
-    const liquidityMining = await LiquidityMining.at(await contractsRegistry.getLiquidityMiningContract());
     const rewardsGenerator = await RewardsGenerator.at(await contractsRegistry.getRewardsGeneratorContract());
     capitalPool = await CapitalPool.at(await contractsRegistry.getCapitalPoolContract());
     const reinsurancePool = await ReinsurancePool.at(await contractsRegistry.getReinsurancePoolContract());
@@ -197,6 +208,7 @@ contract("InteractionSolidity", async (accounts) => {
     const bmiCoverStakingView = await BMICoverStakingView.at(await contractsRegistry.getBMICoverStakingViewContract());
     const nftStaking = await NFTStaking.at(await contractsRegistry.getNFTStakingContract());
     const shieldMining = await ShieldMining.at(await contractsRegistry.getShieldMiningContract());
+    const yieldGenerator = await YieldGenerator.at(await contractsRegistry.getYieldGeneratorContract());
 
     await policyBookAdmin.__PolicyBookAdmin_init(
       _policyBookImpl.address,
@@ -205,12 +217,12 @@ contract("InteractionSolidity", async (accounts) => {
     );
     await policyBookFabric.__PolicyBookFabric_init();
     await claimingRegistry.__ClaimingRegistry_init();
-    await liquidityMining.__LiquidityMining_init();
     await rewardsGenerator.__RewardsGenerator_init();
     await capitalPool.__CapitalPool_init();
     await reinsurancePool.__ReinsurancePool_init();
     await bmiCoverStaking.__BMICoverStaking_init();
     await nftStaking.__NFTStaking_init();
+    await yieldGenerator.__YieldGenerator_init(network);
 
     await contractsRegistry.injectDependencies(await contractsRegistry.POLICY_BOOK_ADMIN_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.POLICY_BOOK_FABRIC_NAME());
@@ -218,7 +230,6 @@ contract("InteractionSolidity", async (accounts) => {
     await contractsRegistry.injectDependencies(await contractsRegistry.POLICY_BOOK_REGISTRY_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.CLAIMING_REGISTRY_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.LIQUIDITY_REGISTRY_NAME());
-    await contractsRegistry.injectDependencies(await contractsRegistry.LIQUIDITY_MINING_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.REWARDS_GENERATOR_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.CAPITAL_POOL_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.REINSURANCE_POOL_NAME());
@@ -227,8 +238,29 @@ contract("InteractionSolidity", async (accounts) => {
     await contractsRegistry.injectDependencies(await contractsRegistry.NFT_STAKING_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.SHIELD_MINING_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.LEVERAGE_PORTFOLIO_VIEW_NAME());
+    await contractsRegistry.injectDependencies(await contractsRegistry.POLICY_QUOTE_NAME());
 
-    await stbl.approve(policyBookFabric.address, toBN(initialDeposit).times(6));
+    epochsNumber = 5;
+    initialDeposit = toWei("1000");
+    stblInitialDeposit = getStableAmount("1000");
+    highAmount = getStableAmount("100000");
+    coverTokensAmount = toWei("100");
+    liquidityAmount = toWei("5000");
+    stblAmount = getStableAmount("5000");
+
+    await policyBookAdmin.setupPricingModel(
+      PRECISION.times(80),
+      PRECISION.times(80),
+      PRECISION.times(2),
+      PRECISION.times(2),
+      wei("10"),
+      PRECISION.times(10),
+      PRECISION.times(50),
+      PRECISION.times(25),
+      PRECISION.times(100)
+    );
+
+    await stbl.approve(policyBookFabric.address, stblInitialDeposit.times(6));
 
     // CREATION PB1
     let tx1 = await policyBookFabric.create(
@@ -292,7 +324,12 @@ contract("InteractionSolidity", async (accounts) => {
     const policyBookFacadeAddress4 = await policyBook4.policyBookFacade();
     policyBookFacade4 = await PolicyBookFacade.at(policyBookFacadeAddress4);
 
-    const tx = await policyBookFabric.createLeveragePools(ContractType.VARIOUS, "User Leverage Pool", "USDT");
+    const tx = await policyBookFabric.createLeveragePools(
+      insuranceContract5,
+      ContractType.VARIOUS,
+      "User Leverage Pool",
+      "USDT"
+    );
     const userLeveragePoolAddress = tx.logs[0].args.at;
     userLeveragePool = await UserLeveragePool.at(userLeveragePoolAddress);
     await policyBookAdmin.whitelist(userLeveragePoolAddress, true);
@@ -310,11 +347,11 @@ contract("InteractionSolidity", async (accounts) => {
     });
 
     it("should have expected token symbol", async () => {
-      assert.equal(await policyBook1.symbol(), "bmiTEST1Cover");
-      assert.equal(await policyBook2.symbol(), "bmiTEST2Cover");
-      assert.equal(await policyBook3.symbol(), "bmiTEST3Cover");
-      assert.equal(await policyBook4.symbol(), "bmiTEST4Cover");
-      assert.equal(await userLeveragePool.symbol(), "bmiUSDTCover");
+      assert.equal(await policyBook1.symbol(), "bmiV2TEST1Cover");
+      assert.equal(await policyBook2.symbol(), "bmiV2TEST2Cover");
+      assert.equal(await policyBook3.symbol(), "bmiV2TEST3Cover");
+      assert.equal(await policyBook4.symbol(), "bmiV2TEST4Cover");
+      assert.equal(await userLeveragePool.symbol(), "bmiV2USDTCover");
     });
   });
 
@@ -333,9 +370,9 @@ contract("InteractionSolidity", async (accounts) => {
       expect(result[0][1]).to.equal(policyBook2.address);
       expect(result[0][2]).to.equal(policyBook3.address);
       expect(result[1].length).to.equal(4);
-      expect(result[1][0][0]).to.equal("bmiTEST1Cover");
-      expect(result[1][1][0]).to.equal("bmiTEST2Cover");
-      expect(result[1][2][0]).to.equal("bmiTEST3Cover");
+      expect(result[1][0][0]).to.equal("bmiV2TEST1Cover");
+      expect(result[1][1][0]).to.equal("bmiV2TEST2Cover");
+      expect(result[1][2][0]).to.equal("bmiV2TEST3Cover");
     });
   });
   describe("getPurchasedPolicies", async function () {
@@ -349,14 +386,14 @@ contract("InteractionSolidity", async (accounts) => {
 
       await stbl.transfer(user1, highAmount);
 
-      const price1 = (await policyBook1.getPolicyPrice(epochsNumber, coverTokensAmount, user1))[1];
+      const price1 = (await policyBookFacade1.getPolicyPrice(epochsNumber, coverTokensAmount, user1))[1];
       await stbl.approve(policyBook1.address, 0, { from: user1 });
       await stbl.approve(policyBook1.address, price1, { from: user1 });
       await policyBookFacade1.buyPolicy(epochsNumber, coverTokensAmount, {
         from: user1,
       });
 
-      const price2 = (await policyBook2.getPolicyPrice(epochsNumber, coverTokensAmount, user1))[1];
+      const price2 = (await policyBookFacade2.getPolicyPrice(epochsNumber, coverTokensAmount, user1))[1];
       await stbl.approve(policyBook2.address, 0, { from: user1 });
       await stbl.approve(policyBook2.address, price2, { from: user1 });
       await policyBookFacade2.buyPolicy(epochsNumber, coverTokensAmount, {
@@ -382,7 +419,7 @@ contract("InteractionSolidity", async (accounts) => {
       await stbl.approve(policyBook2.address, stblAmount);
       await policyBookFacade2.addLiquidity(liquidityAmount);
 
-      const price = (await policyBook2.getPolicyPrice(epochsNumber, coverTokensAmount, user2))[1];
+      const price = (await policyBookFacade2.getPolicyPrice(epochsNumber, coverTokensAmount, user2))[1];
       const priceStbl = convert(price);
       await stbl.approve(interactionSolidity.address, 0, { from: user2 });
       await stbl.approve(interactionSolidity.address, priceStbl, { from: user2 });

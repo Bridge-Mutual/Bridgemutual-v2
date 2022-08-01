@@ -12,10 +12,13 @@ interface IClaimVoting {
         AWAITING_EXPOSURE,
         EXPIRED,
         EXPOSED_PENDING,
+        AWAITING_RECEPTION,
         MINORITY,
         MAJORITY,
-        RECEIVED
+        REJECTED
     }
+
+    enum ListOption {ALL, MINE}
 
     struct VotingResult {
         uint256 withdrawalAmount;
@@ -39,17 +42,6 @@ interface IClaimVoting {
         uint256 stakedStkBMIAmount;
         bool accept;
         VoteStatus status;
-    }
-
-    struct MyClaimInfo {
-        uint256 index;
-        address policyBookAddress;
-        string evidenceURI;
-        bool appeal;
-        uint256 claimAmount;
-        IClaimingRegistry.ClaimStatus finalVerdict;
-        uint256 finalClaimAmount;
-        uint256 bmiCalculationReward;
     }
 
     struct PublicClaimInfo {
@@ -102,25 +94,27 @@ interface IClaimVoting {
         bool appeal
     ) external;
 
+    function isToReceive(uint256 claimIndex, address user) external view returns (bool);
+
     /// @notice returns true if the user has no PENDING votes
     function canUnstake(address user) external view returns (bool);
 
     /// @notice returns true if the user has no awaiting reception votes
     function canVote(address user) external view returns (bool);
 
-    /// @notice returns number of vote on a claim
-    function countVoteOnClaim(uint256 claimIndex) external view returns (uint256);
-
-    /// @notice returns amount of bmi locked for FE
-    function lockedBMIAmount(uint256 claimIndex) external view returns (uint256);
+    function votingInfo(uint256 claimIndex)
+        external
+        view
+        returns (
+            uint256 countVoteOnClaim,
+            uint256 lockedBMIAmount,
+            uint256 votedYesPercentage
+        );
 
     /// @notice returns how many votes the user has
     function countVotes(address user) external view returns (uint256);
 
-    function voteIndexByClaimIndexAt(uint256 claimIndex, uint256 orderIndex)
-        external
-        view
-        returns (uint256);
+    function countNotReceivedVotes(address user) external view returns (uint256);
 
     /// @notice returns status of the vote
     function voteStatus(uint256 index) external view returns (VoteStatus);
@@ -130,17 +124,13 @@ interface IClaimVoting {
         external
         returns (uint256 _claimsCount, PublicClaimInfo[] memory _votablesInfo);
 
-    /// @notice returns info list of ALL claims
-    function allClaims(uint256 offset, uint256 limit)
-        external
-        view
-        returns (AllClaimInfo[] memory _allClaimsInfo);
-
-    /// @notice returns info list of claims of msg.sender
-    function myClaims(uint256 offset, uint256 limit)
-        external
-        view
-        returns (MyClaimInfo[] memory _myClaimsInfo);
+    /// @notice returns info list of ALL claims if listOption == ALL
+    /// @notice returns info list of MY claims if listOption == MINE
+    function listClaims(
+        uint256 offset,
+        uint256 limit,
+        ListOption listOption
+    ) external view returns (AllClaimInfo[] memory _allClaimsInfo);
 
     /// @notice returns info list of claims that are voted by msg.sender
     function myVotes(uint256 offset, uint256 limit)
@@ -148,10 +138,10 @@ interface IClaimVoting {
         view
         returns (MyVoteInfo[] memory _myVotesInfo);
 
-    function myNotReceivesVotes(address user)
+    function myVoteUpdate(uint256 claimIndex)
         external
         view
-        returns (uint256[] memory claimIndexes, VotesUpdatesInfo[] memory voteRewardInfo);
+        returns (VotesUpdatesInfo memory _myVotesUpdatesInfo);
 
     /// @notice anonymously votes (result used later in exposeVote())
     /// @notice the claims have to be PENDING, the voter can vote only once for a specific claim
@@ -172,17 +162,19 @@ interface IClaimVoting {
     /// @param suggestedClaimAmounts are the actual vote values.
     ///     They must match the decrypted values in anonymouslyVoteBatch function
     /// @param hashedSignaturesOfClaims are the validation data needed to construct proper finalHashes
+    /// @param isConfirmed is true, vote is taken into account, if false, vote is rejected from calculation
     function exposeVoteBatch(
         uint256[] calldata claimIndexes,
         uint256[] calldata suggestedClaimAmounts,
-        bytes32[] calldata hashedSignaturesOfClaims
+        bytes32[] calldata hashedSignaturesOfClaims,
+        bool[] calldata isConfirmed
     ) external;
 
     /// @notice calculates results of votes on a claim
     function calculateResult(uint256 claimIndex) external;
 
     /// @notice distribute rewards and slash penalties
-    function receiveResult() external;
+    function receiveVoteResultBatch(uint256[] calldata claimIndexes) external;
 
     function transferLockedBMI(uint256 claimIndex, address claimer) external;
 }

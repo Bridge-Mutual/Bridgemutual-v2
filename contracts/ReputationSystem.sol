@@ -85,7 +85,7 @@ contract ReputationSystem is IReputationSystem, Initializable, AbstractDependant
         uint256 voterReputation = _reputation[voter];
 
         if (voterReputation == 0) {
-            _votedOnceCount++;
+            _votedOnceCount = _votedOnceCount.add(1);
             voterReputation = PRECISION;
         }
 

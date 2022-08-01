@@ -243,7 +243,7 @@ contract("YieldGenerator", async (accounts) => {
     );
     await policyBookFabric.__PolicyBookFabric_init();
     await claimingRegistry.__ClaimingRegistry_init();
-    await rewardsGenerator.__RewardsGenerator_init();
+    await rewardsGenerator.__RewardsGenerator_init(0);
     await bmiCoverStaking.__BMICoverStaking_init();
     await nftStaking.__NFTStaking_init();
 

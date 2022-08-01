@@ -244,7 +244,5 @@ contract("ReinsurancePool", async (accounts) => {
         virtualLiquidityAmount.plus(premiumAmount).toString()
       );
     });
-
-    it("increase vStable Balance by defi yield interest", async () => {});
   });
 });

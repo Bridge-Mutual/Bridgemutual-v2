@@ -32,7 +32,6 @@ const wei = web3.utils.toWei;
 let stblAmount;
 let depositAmount;
 let withdrawAmount;
-
 contract("YieldGenerator", async (accounts) => {
   const reverter = new Reverter(web3);
 

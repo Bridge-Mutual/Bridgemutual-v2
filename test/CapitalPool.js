@@ -308,7 +308,7 @@ contract("CapitalPool", async (accounts) => {
     await claimingRegistry.__ClaimingRegistry_init();
     await policyBookFabric.__PolicyBookFabric_init();
     await nftStaking.__NFTStaking_init();
-    await rewardsGenerator.__RewardsGenerator_init();
+    await rewardsGenerator.__RewardsGenerator_init(network);
     await capitalPool.__CapitalPool_init();
     await bmiUtilityNFT.__BMIUtilityNFT_init();
     await bmiCoverStaking.__BMICoverStaking_init();

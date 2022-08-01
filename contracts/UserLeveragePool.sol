@@ -246,7 +246,11 @@ contract UserLeveragePool is AbstractLeveragePortfolio, IUserLeveragePool, ERC20
             );
         }
 
-        rewardsGenerator.updatePolicyBookShare(_totalBmiMultiplier.div(10**22), address(this)); // 5 decimal places or zero
+        rewardsGenerator.updatePolicyBookShare(
+            _totalBmiMultiplier.div(10**22),
+            address(this),
+            false
+        ); // 5 decimal places or zero
     }
 
     function getNewCoverAndLiquidity()
@@ -646,7 +650,7 @@ contract UserLeveragePool is AbstractLeveragePortfolio, IUserLeveragePool, ERC20
         (, _totalSTBLLiquidity) = getNewCoverAndLiquidity();
         _maxCapacities = maxCapacities;
         _stakedSTBL = rewardsGenerator.getStakedPolicyBookSTBL(address(this));
-        _annualProfitYields = getAPY().add(bmiCoverStakingView.getPolicyBookAPY(address(this)));
+        _annualProfitYields = getAPY();
         _bmiXRatio = convertBMIXToSTBL(10**18);
     }
 

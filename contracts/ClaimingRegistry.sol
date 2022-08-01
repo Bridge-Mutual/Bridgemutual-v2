@@ -5,6 +5,7 @@ pragma experimental ABIEncoderV2;
 import "@openzeppelin/contracts-upgradeable/proxy/Initializable.sol";
 import "@openzeppelin/contracts/utils/EnumerableSet.sol";
 import "@openzeppelin/contracts/math/SafeMath.sol";
+import "@openzeppelin/contracts/math/Math.sol";
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
 import "./libraries/DecimalsConverter.sol";
@@ -23,6 +24,7 @@ import "./Globals.sol";
 
 contract ClaimingRegistry is IClaimingRegistry, Initializable, AbstractDependant {
     using SafeMath for uint256;
+    using Math for uint256;
     using EnumerableSet for EnumerableSet.UintSet;
     using EnumerableSet for EnumerableSet.AddressSet;
 
@@ -185,7 +187,21 @@ contract ClaimingRegistry is IClaimingRegistry, Initializable, AbstractDependant
         return votingDuration(index).add(PRIVATE_CLAIM_DURATION);
     }
 
+    function canCalculateClaim(uint256 index, address calculator)
+        external
+        view
+        override
+        returns (bool)
+    {
+        // TODO invert order condition to prevent duplicate storage hits
+        return
+            canClaimBeCalculatedByAnyone(index) ||
+            _allClaimsByIndexInfo[index].claimer == calculator;
+    }
+
     function canBuyNewPolicy(address buyer, address policyBookAddress) external override {
+        require(msg.sender == policyBookAddress, "ClaimingRegistry: Not allowed");
+
         bool previousEnded = !policyRegistry.isPolicyActive(buyer, policyBookAddress);
         uint256 index = _allClaimsToIndex[policyBookAddress][buyer];
 
@@ -273,24 +289,33 @@ contract ClaimingRegistry is IClaimingRegistry, Initializable, AbstractDependant
                 );
 
             for (uint256 i = 0; i < _coveragePools.length; i++) {
-                if (_hasProcedureOngoing(_coveragePools[i])) {
+                if (
+                    _hasProcedureOngoing(
+                        _coveragePools[i],
+                        getPolicyBookClaimsCount(_coveragePools[i])
+                    )
+                ) {
                     return true;
                 }
             }
         } else {
-            if (_hasProcedureOngoing(poolAddress)) {
+            if (_hasProcedureOngoing(poolAddress, getPolicyBookClaimsCount(poolAddress))) {
                 return true;
             }
         }
         return false;
     }
 
-    function _hasProcedureOngoing(address policyBookAddress)
+    function getPolicyBookClaimsCount(address policyBookAddress) internal view returns (uint256) {
+        return _policyBookClaims[policyBookAddress].length();
+    }
+
+    function _hasProcedureOngoing(address policyBookAddress, uint256 limit)
         internal
         view
         returns (bool hasProcedure)
     {
-        for (uint256 i = 0; i < _policyBookClaims[policyBookAddress].length(); i++) {
+        for (uint256 i = 0; i < limit; i++) {
             uint256 index = _policyBookClaims[policyBookAddress].at(i);
             ClaimStatus status = claimStatus(index);
             address claimer = _allClaimsByIndexInfo[index].claimer;
@@ -380,11 +405,11 @@ contract ClaimingRegistry is IClaimingRegistry, Initializable, AbstractDependant
         return _allClaimsIndexes.contains(index);
     }
 
-    function claimSubmittedTime(uint256 index) external view override returns (uint256) {
+    function claimSubmittedTime(uint256 index) public view override returns (uint256) {
         return _allClaimsByIndexInfo[index].dateSubmitted;
     }
 
-    function claimEndTime(uint256 index) external view override returns (uint256) {
+    function claimEndTime(uint256 index) public view override returns (uint256) {
         return _allClaimsByIndexInfo[index].dateEnded;
     }
 
@@ -412,7 +437,7 @@ contract ClaimingRegistry is IClaimingRegistry, Initializable, AbstractDependant
             block.timestamp);
     }
 
-    function canClaimBeCalculatedByAnyone(uint256 index) external view override returns (bool) {
+    function canClaimBeCalculatedByAnyone(uint256 index) public view override returns (bool) {
         return
             _allClaimsByIndexInfo[index].status == ClaimStatus.PENDING &&
             _allClaimsByIndexInfo[index].dateSubmitted.add(
@@ -552,8 +577,9 @@ contract ClaimingRegistry is IClaimingRegistry, Initializable, AbstractDependant
     }
 
     /// @notice fetches the pending claims amounts which is before awaiting for calculation by 24 hrs
+    /// @dev use it with getWithdrawClaimRequestIndexListCount
     /// @return _totalClaimsAmount uint256 collect claim amounts from pending claims
-    function getAllPendingClaimsAmount()
+    function getAllPendingClaimsAmount(uint256 _limit)
         external
         view
         override
@@ -562,7 +588,7 @@ contract ClaimingRegistry is IClaimingRegistry, Initializable, AbstractDependant
         WithdrawalStatus _currentStatus;
         uint256 index;
 
-        for (uint256 i = 0; i < _withdrawClaimRequestIndexList.length(); i++) {
+        for (uint256 i = 0; i < _limit; i++) {
             index = _withdrawClaimRequestIndexList.at(i);
             _currentStatus = getClaimWithdrawalStatus(index);
 
@@ -588,7 +614,8 @@ contract ClaimingRegistry is IClaimingRegistry, Initializable, AbstractDependant
         }
     }
 
-    function getAllPendingRewardsAmount()
+    /// @dev use it with getWithdrawRewardRequestVoterListCount
+    function getAllPendingRewardsAmount(uint256 _limit)
         external
         view
         override
@@ -597,7 +624,7 @@ contract ClaimingRegistry is IClaimingRegistry, Initializable, AbstractDependant
         WithdrawalStatus _currentStatus;
         address voter;
 
-        for (uint256 i = 0; i < _withdrawRewardRequestVoterList.length(); i++) {
+        for (uint256 i = 0; i < _limit; i++) {
             voter = _withdrawRewardRequestVoterList.at(i);
             _currentStatus = getRewardWithdrawalStatus(voter);
 
@@ -623,6 +650,14 @@ contract ClaimingRegistry is IClaimingRegistry, Initializable, AbstractDependant
         }
     }
 
+    function getWithdrawClaimRequestIndexListCount() external view override returns (uint256) {
+        return _withdrawClaimRequestIndexList.length();
+    }
+
+    function getWithdrawRewardRequestVoterListCount() external view override returns (uint256) {
+        return _withdrawRewardRequestVoterList.length();
+    }
+
     /// @notice gets the claiming balance from a list of claim indexes
     /// @param _claimIndexes uint256[], list of claimIndexes
     /// @return uint256
@@ -639,6 +674,26 @@ contract ClaimingRegistry is IClaimingRegistry, Initializable, AbstractDependant
             );
         }
         return _acumulatedClaimAmount;
+    }
+
+    function getBMIRewardForCalculation(uint256 index) external view override returns (uint256) {
+        (, uint256 lockedBMIs, ) = claimVoting.votingInfo(index);
+        uint256 timeElapsed =
+            claimSubmittedTime(index).add(anyoneCanCalculateClaimResultAfter(index));
+
+        if (canClaimBeCalculatedByAnyone(index)) {
+            timeElapsed = block.timestamp.sub(timeElapsed);
+        } else {
+            timeElapsed = timeElapsed.sub(block.timestamp);
+        }
+
+        return
+            Math.min(
+                lockedBMIs,
+                lockedBMIs.mul(timeElapsed.mul(CALCULATION_REWARD_PER_DAY.div(1 days))).div(
+                    PERCENTAGE_100
+                )
+            );
     }
 
     function _modifyClaim(uint256 index, ClaimStatus status) internal {
@@ -865,21 +920,13 @@ contract ClaimingRegistry is IClaimingRegistry, Initializable, AbstractDependant
         claimVoting.transferLockedBMI(index, claimer);
     }
 
-    /// @dev return maj and min with 10**5 precision, to get % divide by 10**3
-    function getRepartition(uint256 index) external view returns (uint256 maj, uint256 min) {
-        uint256 voteCount = claimVoting.countVoteOnClaim(index);
-
-        if (voteCount != 0) {
-            for (uint256 i = 0; i < voteCount; i++) {
-                uint256 voteIndex = claimVoting.voteIndexByClaimIndexAt(index, i);
-                if (claimVoting.voteStatus(voteIndex) == IClaimVoting.VoteStatus.MAJORITY) {
-                    maj = maj.add(1);
-                } else if (claimVoting.voteStatus(voteIndex) == IClaimVoting.VoteStatus.MINORITY) {
-                    min = min.add(1);
-                }
-            }
-            maj = maj.mul(10**5).div(voteCount);
-            min = min.mul(10**5).div(voteCount);
-        }
+    /// @dev return yes and no percentage with 10**25 precision
+    function getRepartition(uint256 index)
+        external
+        view
+        returns (uint256 yesPercentage, uint256 noPercentage)
+    {
+        (, , yesPercentage) = claimVoting.votingInfo(index);
+        noPercentage = (PERCENTAGE_100.sub(yesPercentage));
     }
 }

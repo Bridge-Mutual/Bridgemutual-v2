@@ -302,7 +302,7 @@ contract("PolicyBook", async (accounts) => {
     await policyBookFabric.__PolicyBookFabric_init();
     await claimingRegistry.__ClaimingRegistry_init();
     await claimVoting.__ClaimVoting_init();
-    await rewardsGenerator.__RewardsGenerator_init();
+    await rewardsGenerator.__RewardsGenerator_init(network);
     await capitalPool.__CapitalPool_init();
     await reinsurancePool.__ReinsurancePool_init();
     await bmiCoverStaking.__BMICoverStaking_init();
@@ -1610,15 +1610,17 @@ contract("PolicyBook", async (accounts) => {
       const claimsCount = await claimingRegistry.countPolicyClaimerClaims(USER1);
       assert.equal(claimsCount, 1);
 
-      const claims = await claimVoting.myClaims(0, claimsCount, { from: USER1 });
+      const claims = await claimVoting.listClaims(0, claimsCount, 1, { from: USER1 });
 
-      assert.equal(claims[0][0], 1);
-      assert.equal(claims[0][1], policyBook1.address);
-      assert.equal(claims[0][2], "");
-      assert.equal(claims[0][3], false);
-      assert.equal(toBN(claims[0][4]).toString(), coverTokensAmount.toString());
-      assert.equal(claims[0][5], ClaimStatus.PENDING);
-      assert.equal(claims[0][6], 0);
+      assert.equal(claims[0][0][0], 1);
+      assert.equal(claims[0][0][1], USER1);
+      assert.equal(claims[0][0][2], policyBook1.address);
+      assert.equal(claims[0][0][3], "");
+      assert.equal(claims[0][0][4], false);
+      assert.equal(toBN(claims[0][0][5]).toString(), coverTokensAmount.toString());
+      assert.equal(claims[0][2].toString(), "0");
+      assert.equal(claims[0][1], ClaimStatus.PENDING);
+      assert.equal(claims[0][3], 0);
     });
 
     it("does not allow two identical claims", async () => {
@@ -1646,15 +1648,17 @@ contract("PolicyBook", async (accounts) => {
       const claimsCount = await claimingRegistry.countPolicyClaimerClaims(USER1);
       assert.equal(claimsCount.toNumber(), 1);
 
-      const claims = await claimVoting.myClaims(0, claimsCount, { from: USER1 });
+      const claims = await claimVoting.listClaims(0, claimsCount, 1, { from: USER1 });
 
-      assert.equal(claims[0][0], 1);
-      assert.equal(claims[0][1], policyBook1.address);
-      assert.equal(claims[0][2], "");
-      assert.equal(claims[0][3], false);
-      assert.equal(toBN(claims[0][4]).toString(), coverTokensAmount.toString());
-      assert.equal(claims[0][5], ClaimStatus.PENDING);
-      assert.equal(claims[0][6], 0);
+      assert.equal(claims[0][0][0], 1);
+      assert.equal(claims[0][0][1], USER1);
+      assert.equal(claims[0][0][2], policyBook1.address);
+      assert.equal(claims[0][0][3], "");
+      assert.equal(claims[0][0][4], false);
+      assert.equal(toBN(claims[0][0][5]).toString(), coverTokensAmount.toString());
+      assert.equal(claims[0][2].toString(), "0");
+      assert.equal(claims[0][1], ClaimStatus.PENDING);
+      assert.equal(claims[0][3], 0);
     });
   });
   describe("APY", async () => {

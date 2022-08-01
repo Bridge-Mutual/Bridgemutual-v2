@@ -37,10 +37,16 @@ contract BMICoverStakingView is IBMICoverStakingView, AbstractDependant {
     /// @dev returns 0 for non whitelisted policybooks
     /// @param policyBookAddress address of the policybook
     /// @return uint256 apy amount
-    function getPolicyBookAPY(address policyBookAddress) public view override returns (uint256) {
+    function getPolicyBookAPY(address policyBookAddress, uint256 bmiPriceInUSDT)
+        public
+        view
+        override
+        returns (uint256)
+    {
+        require(bmiPriceInUSDT > 0, "Invalid BMI price");
         return
             IPolicyBook(policyBookAddress).whitelisted()
-                ? rewardsGenerator.getPolicyBookAPY(policyBookAddress)
+                ? rewardsGenerator.getPolicyBookAPY(policyBookAddress, bmiPriceInUSDT)
                 : 0;
     }
 
@@ -65,6 +71,7 @@ contract BMICoverStakingView is IBMICoverStakingView, AbstractDependant {
     function stakingInfoByStaker(
         address staker,
         address[] calldata policyBooksAddresses,
+        uint256 bmiPriceInUSDT,
         uint256 offset,
         uint256 limit
     )
@@ -91,7 +98,7 @@ contract BMICoverStakingView is IBMICoverStakingView, AbstractDependant {
             policyBooksInfo[i] = IBMICoverStaking.PolicyBookInfo(
                 rewardsGenerator.getStakedPolicyBookSTBL(policyBooksAddresses[i]),
                 rewardsGenerator.getPolicyBookRewardPerBlock(policyBooksAddresses[i]),
-                getPolicyBookAPY(policyBooksAddresses[i]),
+                getPolicyBookAPY(policyBooksAddresses[i], bmiPriceInUSDT),
                 IPolicyBook(policyBooksAddresses[i]).getAPY()
             );
 

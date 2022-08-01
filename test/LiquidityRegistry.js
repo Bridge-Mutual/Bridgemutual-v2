@@ -231,7 +231,7 @@ contract("LiquidityRegistry", async (accounts) => {
     await claimVoting.__ClaimVoting_init();
     await reinsurancePool.__ReinsurancePool_init();
     await bmiCoverStaking.__BMICoverStaking_init();
-    await rewardsGenerator.__RewardsGenerator_init();
+    await rewardsGenerator.__RewardsGenerator_init(network);
     await nftStaking.__NFTStaking_init();
 
     await policyBookAdmin.__PolicyBookAdmin_init(
@@ -746,8 +746,8 @@ contract("LiquidityRegistry", async (accounts) => {
       await setCurrentTime(timestamp + withdrawalPeriod.toNumber() - rebalanceDuration + 10);
 
       assert.equal(await liquidityRegistry.getPolicyBooksArrLength(USER1), 3);
-
-      const result = await liquidityRegistry.getAllPendingWithdrawalRequestsAmount();
+      const _limit = await liquidityRegistry.getWithdrawlRequestUsersListCount();
+      const result = await liquidityRegistry.getAllPendingWithdrawalRequestsAmount(_limit);
 
       assert.equal(toBN(result).toString(), requestAmount.times(4).toString());
     });
@@ -759,13 +759,16 @@ contract("LiquidityRegistry", async (accounts) => {
 
       const timestamp = await getBlockTimestamp();
       await setCurrentTime(toBN(timestamp).plus(withdrawalPeriod).plus(10));
-
-      const result = await liquidityRegistry.getAllPendingWithdrawalRequestsAmount();
+      const _limit = await liquidityRegistry.getWithdrawlRequestUsersListCount();
+      const result = await liquidityRegistry.getAllPendingWithdrawalRequestsAmount(_limit);
 
       assert.equal(toBN(result).toString(), requestAmount.times(4).toString());
 
-      const result1 = await liquidityRegistry.getPendingWithdrawalAmountByPolicyBook(policyBooksAddresses[0]);
-      const result2 = await liquidityRegistry.getPendingWithdrawalAmountByPolicyBook(policyBooksAddresses[2]);
+      const limit1 = await liquidityRegistry.getPoolWithdrawlRequestsUsersListCount(policyBooksAddresses[0]);
+      const limit2 = await liquidityRegistry.getPoolWithdrawlRequestsUsersListCount(policyBooksAddresses[2]);
+
+      const result1 = await liquidityRegistry.getPendingWithdrawalAmountByPolicyBook(policyBooksAddresses[0], limit1);
+      const result2 = await liquidityRegistry.getPendingWithdrawalAmountByPolicyBook(policyBooksAddresses[2], limit2);
 
       assert.equal(toBN(result1).toString(), requestAmount.times(2).toString());
       assert.equal(toBN(result2).toString(), requestAmount.times(2).toString());
@@ -779,8 +782,11 @@ contract("LiquidityRegistry", async (accounts) => {
       const timestamp = await getBlockTimestamp();
       await setCurrentTime(timestamp + withdrawalPeriod.toNumber() + readyToWithdrawPeriod + 10);
 
-      const result1 = await liquidityRegistry.getPendingWithdrawalAmountByPolicyBook(policyBooksAddresses[0]);
-      const result2 = await liquidityRegistry.getPendingWithdrawalAmountByPolicyBook(policyBooksAddresses[2]);
+      const limit1 = await liquidityRegistry.getPoolWithdrawlRequestsUsersListCount(policyBooksAddresses[0]);
+      const limit2 = await liquidityRegistry.getPoolWithdrawlRequestsUsersListCount(policyBooksAddresses[2]);
+
+      const result1 = await liquidityRegistry.getPendingWithdrawalAmountByPolicyBook(policyBooksAddresses[0], limit1);
+      const result2 = await liquidityRegistry.getPendingWithdrawalAmountByPolicyBook(policyBooksAddresses[2], limit2);
 
       assert.equal(result1.toString(), 0);
       assert.equal(result2.toString(), 0);

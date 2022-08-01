@@ -4,7 +4,6 @@ pragma experimental ABIEncoderV2;
 
 interface IYieldGenerator {
     enum DefiProtocols {DefiProtocol1, DefiProtocol2, DefiProtocol3}
-    enum Networks {ETH, BSC, POL}
 
     struct DefiProtocol {
         uint256 targetAllocation;

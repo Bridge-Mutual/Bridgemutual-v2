@@ -61,6 +61,11 @@ contract BMICoverStaking is
 
     address public bmiTreasury;
 
+    // ReentrancyGuard
+    uint256 private constant _NOT_ENTERED = 1;
+    uint256 private constant _ENTERED = 2;
+    uint256 private _status;
+
     event StakingNFTMinted(uint256 id, address policyBookAddress, address to);
     event StakingNFTBurned(uint256 id, address policyBookAddress);
     event StakingBMIProfitWithdrawn(
@@ -77,12 +82,27 @@ contract BMICoverStaking is
         _;
     }
 
+    modifier nonReentrant() {
+        // On the first call to nonReentrant, _notEntered will be true
+        require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+
+        // Any calls to nonReentrant after this point will fail
+        _status = _ENTERED;
+
+        _;
+
+        // By storing the original value once again, a refund is triggered (see
+        // https://eips.ethereum.org/EIPS/eip-2200)
+        _status = _NOT_ENTERED;
+    }
+
     function __BMICoverStaking_init() external initializer {
         __Ownable_init();
         __ERC1155_init("");
 
         _nftMintId = 1;
         allowStakeProfit = true;
+        _status = _NOT_ENTERED;
     }
 
     function setDependencies(IContractsRegistry _contractsRegistry)
@@ -233,6 +253,7 @@ contract BMICoverStaking is
     function aggregateNFTs(address policyBookAddress, uint256[] calldata tokenIds)
         external
         override
+        nonReentrant
     {
         require(tokenIds.length > 1, "BDS: Can't aggregate");
 
@@ -240,7 +261,11 @@ contract BMICoverStaking is
         rewardsGenerator.aggregate(policyBookAddress, tokenIds, _nftMintId - 1); // nftMintId is changed, so -1
     }
 
-    function stakeBMIX(uint256 bmiXAmount, address policyBookAddress) external override {
+    function stakeBMIX(uint256 bmiXAmount, address policyBookAddress)
+        external
+        override
+        nonReentrant
+    {
         _stakeBMIX(_msgSender(), bmiXAmount, policyBookAddress);
     }
 
@@ -250,7 +275,7 @@ contract BMICoverStaking is
         uint8 v,
         bytes32 r,
         bytes32 s
-    ) external override {
+    ) external override nonReentrant {
         _stakeBMIXWithPermit(_msgSender(), bmiXAmount, policyBookAddress, v, r, s);
     }
 
@@ -316,16 +341,17 @@ contract BMICoverStaking is
             totalProfit = rewardsGenerator.withdrawFunds(policyBookAddress, tokenId);
         }
 
-        uint256 bmiStakingProfit = _getSlashed(totalProfit);
-        uint256 profit = totalProfit.sub(bmiStakingProfit);
-
-        // transfer slashed bmi to the bmi treasury
-        bmiToken.transfer(bmiTreasury, bmiStakingProfit);
+        if (allowStakeProfit) {
+            uint256 bmiStakingProfit = _getSlashed(totalProfit);
+            totalProfit = totalProfit.sub(bmiStakingProfit);
+            // transfer slashed bmi to the bmi treasury
+            bmiToken.transfer(bmiTreasury, bmiStakingProfit);
+        }
 
         // transfer bmi profit to the user
-        bmiToken.transfer(_msgSender(), profit);
+        bmiToken.transfer(_msgSender(), totalProfit);
 
-        emit StakingBMIProfitWithdrawn(tokenId, policyBookAddress, _msgSender(), profit);
+        emit StakingBMIProfitWithdrawn(tokenId, policyBookAddress, _msgSender(), totalProfit);
     }
 
     /// @param staker address of the staker account

@@ -23,11 +23,11 @@ module.exports = async (deployer, network, accounts) => {
   const rewardsGenerator = await RewardsGenerator.deployed();
 
   if (["mainnet"].includes(network)) {
-    bmiTreasury = mainnet.bmiTreasury;
+    bmiTreasury = mainnet.bmi_treasury;
   } else if (["bsc_mainnet"].includes(network)) {
-    bmiTreasury = bsc.bmiTreasury;
+    bmiTreasury = bsc.bmi_treasury;
   } else if (["polygon_mainnet"].includes(network)) {
-    bmiTreasury = polygon.bmiTreasury;
+    bmiTreasury = polygon.bmi_treasury;
   } else bmiTreasury = accounts[0];
 
   logTransaction(

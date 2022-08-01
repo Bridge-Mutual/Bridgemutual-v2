@@ -5,13 +5,17 @@ pragma experimental ABIEncoderV2;
 import "./IBMICoverStaking.sol";
 
 interface IBMICoverStakingView {
-    function getPolicyBookAPY(address policyBookAddress) external view returns (uint256);
+    function getPolicyBookAPY(address policyBookAddress, uint256 bmiPriceInUSDT)
+        external
+        view
+        returns (uint256);
 
     function policyBookByNFT(uint256 tokenId) external view returns (address);
 
     function stakingInfoByStaker(
         address staker,
         address[] calldata policyBooksAddresses,
+        uint256 bmiPriceInUSDT,
         uint256 offset,
         uint256 limit
     )

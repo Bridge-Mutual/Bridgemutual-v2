@@ -206,7 +206,7 @@ contract("PolicyQuote", async (accounts) => {
     );
     await policyBookFabric.__PolicyBookFabric_init();
     await claimingRegistry.__ClaimingRegistry_init();
-    await rewardsGenerator.__RewardsGenerator_init();
+    await rewardsGenerator.__RewardsGenerator_init(network);
     await capitalPool.__CapitalPool_init();
     await reinsurancePool.__ReinsurancePool_init();
     await bmiCoverStaking.__BMICoverStaking_init();

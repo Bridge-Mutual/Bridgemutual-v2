@@ -27,6 +27,7 @@ import "./Globals.sol";
 contract PolicyBookFacade is IPolicyBookFacade, AbstractDependant, Initializable {
     using EnumerableSet for EnumerableSet.AddressSet;
     using Math for uint256;
+    using SafeMath for uint256;
 
     uint256 public constant MINUMUM_COVERAGE = 100 * DECIMALS18; // 100 STBL
 
@@ -40,13 +41,13 @@ contract PolicyBookFacade is IPolicyBookFacade, AbstractDependant, Initializable
     uint256 public constant MAXIMUM_REWARD = 2 * PERCENTAGE_100; // 2.0
     uint256 public constant BASE_REWARD = PERCENTAGE_100; // 1.0
 
+    uint256 private constant MAX_LEVERAGE_POOLS = 3;
+
     IPolicyBookAdmin public policyBookAdmin;
     ILeveragePortfolio public reinsurancePool;
     IPolicyBook public override policyBook;
     IShieldMining public shieldMining;
     IPolicyBookRegistry public policyBookRegistry;
-
-    using SafeMath for uint256;
 
     ILiquidityRegistry public liquidityRegistry;
 
@@ -288,9 +289,9 @@ contract PolicyBookFacade is IPolicyBookFacade, AbstractDependant, Initializable
     ) external override onlyLeveragePortfolio {
         if (leveragePool == ILeveragePortfolio.LeveragePortfolio.USERLEVERAGEPOOL) {
             LUuserLeveragePool[msg.sender] = deployedAmount;
-            LUuserLeveragePool[msg.sender] > 0
-                ? userLeveragePools.add(msg.sender)
-                : userLeveragePools.remove(msg.sender);
+            if (LUuserLeveragePool[msg.sender] == 0) {
+                userLeveragePools.remove(msg.sender);
+            }
         } else {
             LUreinsurnacePool = deployedAmount;
         }
@@ -346,23 +347,41 @@ contract PolicyBookFacade is IPolicyBookFacade, AbstractDependant, Initializable
                 policyBookRegistry.countByType(IPolicyBookFabric.ContractType.VARIOUS)
             );
         for (uint256 i = 0; i < _userLeverageArr.length; i++) {
+            if (isExceedMaxLeveragePools(_userLeverageArr[i])) {
+                continue;
+            }
             _deployedAmount = ILeveragePortfolio(_userLeverageArr[i])
                 .deployLeverageStableToCoveragePools(
                 ILeveragePortfolio.LeveragePortfolio.USERLEVERAGEPOOL
             );
             // update user leverage pool apy after rebalancing
             ILeveragePortfolio(_userLeverageArr[i]).forceUpdateBMICoverStakingRewardMultiplier();
-            LUuserLeveragePool[_userLeverageArr[i]] = _deployedAmount;
-            _deployedAmount > 0
-                ? userLeveragePools.add(_userLeverageArr[i])
-                : userLeveragePools.remove(_userLeverageArr[i]);
 
+            if (_deployedAmount > 0) {
+                userLeveragePools.add(_userLeverageArr[i]);
+            } else {
+                userLeveragePools.remove(_userLeverageArr[i]);
+            }
+            LUuserLeveragePool[_userLeverageArr[i]] = _deployedAmount;
             _LUuserLeveragePool = _LUuserLeveragePool.add(_deployedAmount);
         }
 
         totalLeveragedLiquidity = VUreinsurnacePool.add(LUreinsurnacePool).add(
             _LUuserLeveragePool
         );
+    }
+
+    function isExceedMaxLeveragePools(address _userLeverageAdd)
+        internal
+        view
+        returns (bool _isExceed)
+    {
+        if (
+            !userLeveragePools.contains(_userLeverageAdd) &&
+            userLeveragePools.length() >= MAX_LEVERAGE_POOLS
+        ) {
+            _isExceed = true;
+        }
     }
 
     function _updateShieldMining(
@@ -388,9 +407,10 @@ contract PolicyBookFacade is IPolicyBookFacade, AbstractDependant, Initializable
 
     /// @notice Let user to withdraw deposited liqiudity, access: ANY
     function withdrawLiquidity() external override {
-        uint256 _withdrawAmount = policyBook.withdrawLiquidity(msg.sender);
-        _reevaluateProvidedLeverageStable(_withdrawAmount);
-        _updateShieldMining(msg.sender, _withdrawAmount, true);
+        (uint256 _tokensToWithdraw, uint256 _stblTokensToWithdraw) =
+            policyBook.withdrawLiquidity(msg.sender);
+        _reevaluateProvidedLeverageStable(_stblTokensToWithdraw);
+        _updateShieldMining(msg.sender, _tokensToWithdraw, true);
     }
 
     /// @notice set the MPL for the user leverage and the reinsurance leverage
@@ -517,7 +537,14 @@ contract PolicyBookFacade is IPolicyBookFacade, AbstractDependant, Initializable
             }
         }
 
-        rewardsGenerator.updatePolicyBookShare(rewardMultiplier.div(10**22), address(policyBook)); // 5 decimal places or zero
+        bool isStablecoin =
+            policyBook.contractType() == IPolicyBookFabric.ContractType.STABLECOIN ? true : false;
+
+        rewardsGenerator.updatePolicyBookShare(
+            rewardMultiplier.div(10**22),
+            address(policyBook),
+            isStablecoin
+        ); // 5 decimal places or zero
     }
 
     function getPolicyPrice(

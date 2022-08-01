@@ -46,9 +46,14 @@ contract RewardsGenerator is IRewardsGenerator, OwnableUpgradeable, AbstractDepe
 
     address public bmiCoverStakingViewAddress;
 
+    uint256 public policyBookStableRatio; // % with precision 10^25
+
+    Networks private _currentNetwork;
+
     event TokensSent(address stakingAddress, uint256 amount);
     event TokensRecovered(address to, uint256 amount);
     event RewardPerBlockSet(uint256 rewardPerBlock);
+    event PercentageStblSet(uint256 policyBookStableRatio);
 
     modifier onlyBMICoverStaking() {
         require(
@@ -67,8 +72,13 @@ contract RewardsGenerator is IRewardsGenerator, OwnableUpgradeable, AbstractDepe
         _;
     }
 
-    function __RewardsGenerator_init() external initializer {
+    function __RewardsGenerator_init(Networks _network) external initializer {
         __Ownable_init();
+        _currentNetwork = _network;
+    }
+
+    function configureNetwork(Networks _network) public onlyOwner {
+        _currentNetwork = _network;
     }
 
     function setDependencies(IContractsRegistry _contractsRegistry)
@@ -116,6 +126,14 @@ contract RewardsGenerator is IRewardsGenerator, OwnableUpgradeable, AbstractDepe
         _updateCumulativeSum(address(0));
 
         emit RewardPerBlockSet(_rewardPerBlock);
+    }
+
+    function setPolicyBookStableRatio(uint256 _policyBookStableRatio) external onlyOwner {
+        policyBookStableRatio = _policyBookStableRatio;
+
+        _updateCumulativeSum(address(0));
+
+        emit PercentageStblSet(_policyBookStableRatio);
     }
 
     /// @notice updates cumulative sum for a particular PB or for all of them if policyBookAddress is zero
@@ -174,12 +192,18 @@ contract RewardsGenerator is IRewardsGenerator, OwnableUpgradeable, AbstractDepe
     }
 
     /// @notice updates the share of the PB based on the new rewards multiplier (also changes the share of others)
-    function updatePolicyBookShare(uint256 newRewardMultiplier, address policyBook)
-        external
-        override
-        onlyPolicyBooks
-    {
+    function updatePolicyBookShare(
+        uint256 newRewardMultiplier,
+        address policyBook,
+        bool isStablecoin
+    ) external override onlyPolicyBooks {
         PolicyBookRewardInfo storage info = _policyBooksRewards[policyBook];
+
+        if (isStablecoin) {
+            newRewardMultiplier = newRewardMultiplier.mul(policyBookStableRatio).div(
+                PERCENTAGE_100
+            );
+        }
 
         uint256 totalPBStaked = info.totalStaked;
         uint256 totalStaked = totalPoolStaked;
@@ -262,7 +286,7 @@ contract RewardsGenerator is IRewardsGenerator, OwnableUpgradeable, AbstractDepe
 
     /// @notice calculates APY of the specific PB
     /// @dev returns APY% in STBL multiplied by 10**5
-    function getPolicyBookAPY(address policyBookAddress)
+    function getPolicyBookAPY(address policyBookAddress, uint256 bmiPriceInUSDT)
         external
         view
         override
@@ -289,15 +313,28 @@ contract RewardsGenerator is IRewardsGenerator, OwnableUpgradeable, AbstractDepe
             return 0;
         }
 
+        //@dev always use the eth usdt decimals for bmi price, it is only on Ethereum
         uint256 rewardPerBlockPolicyBookSTBL =
             DecimalsConverter
-                .convertTo18(priceFeed.howManyUSDTsInBMI(rewardPerBlockPolicyBook), stblDecimals)
+                .convertTo18(bmiPriceInUSDT, 6)
+                .mul(rewardPerBlockPolicyBook)
+                .div(APY_TOKENS)
                 .mul(10**5); // 5 decimals of precision
 
         return
-            rewardPerBlockPolicyBookSTBL.mul(BLOCKS_PER_DAY * 365).mul(100).div(
+            rewardPerBlockPolicyBookSTBL.mul(_getBlocksPerDay() * 365).mul(100).div(
                 totalStakedPolicyBook
             );
+    }
+
+    function _getBlocksPerDay() internal view returns (uint256 _blockPerDays) {
+        if (_currentNetwork == Networks.ETH) {
+            _blockPerDays = BLOCKS_PER_DAY;
+        } else if (_currentNetwork == Networks.BSC) {
+            _blockPerDays = BLOCKS_PER_DAY_BSC;
+        } else if (_currentNetwork == Networks.POL) {
+            _blockPerDays = BLOCKS_PER_DAY_POLYGON;
+        }
     }
 
     /// @notice returns policybook's RewardMultiplier multiplied by 10**5

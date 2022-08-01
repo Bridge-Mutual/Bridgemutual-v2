@@ -31,7 +31,7 @@ const STKBMITokenMock = artifacts.require("STKBMITokenMock");
 const StkBMIStaking = artifacts.require("StkBMIStaking");
 const YieldGenerator = artifacts.require("YieldGenerator");
 
-const PolicyBook = artifacts.require("PolicyBook");
+const PolicyBook = artifacts.require("PolicyBookMock");
 const PolicyBookMock = artifacts.require("PolicyBookMock");
 const PolicyBookFacade = artifacts.require("PolicyBookFacadeMock");
 
@@ -71,10 +71,13 @@ const VoteStatus = {
   AWAITING_EXPOSURE: 1,
   EXPIRED: 2,
   EXPOSED_PENDING: 3,
-  MINORITY: 4,
-  MAJORITY: 5,
-  RECEIVED: 6,
+  AWAITING_RECEPTION: 4,
+  MINORITY: 5,
+  MAJORITY: 6,
+  REJECTED: 7,
 };
+
+const ListOption = { ALL: 0, MINE: 1 };
 
 function toBN(number) {
   return new BigNumber(number);
@@ -125,6 +128,11 @@ contract("ClaimVoting", async (accounts) => {
   const PROTOCOL_PERCENTAGE = 20 * PRECISION;
   const PERCENTAGE_100 = toBN(10).pow(27);
 
+  const APPROVAL_PERCENTAGE = 66 * PRECISION;
+  const PENALTY_THRESHOLD = 11 * PRECISION;
+  const QUORUM = 10 * PRECISION;
+  const CALCULATION_REWARD_PER_DAY = PRECISION;
+
   const WITHDRAWAL_PERIOD = 4 * 24 * 60 * 60; // 4days
   const READY_TO_WITHDRAW_PERIOD = 8 * 24 * 60 * 60; // 8days
 
@@ -168,9 +176,12 @@ contract("ClaimVoting", async (accounts) => {
   const USER4 = accounts[4];
   const USER5 = accounts[5];
   const USER6 = accounts[6];
+  const USER7 = accounts[7];
+  const USER8 = accounts[8];
   const insuranceContract1 = accounts[7];
   const insuranceContract2 = accounts[8];
   const insuranceContract3 = accounts[5];
+  const bmiTreasury = accounts[9];
 
   const USER2_PRIVATE_KEY = "c4ce20adf2b728fe3005be128fb850397ec352d1ea876e3035e46d547343404f";
   const USER3_PRIVATE_KEY = "cddc8640db3142faef4ff7f91390237bc6615bb8a3908d891b927af6da3e3cf8";
@@ -236,7 +247,7 @@ contract("ClaimVoting", async (accounts) => {
 
     await contractsRegistry.__ContractsRegistry_init();
 
-    await contractsRegistry.addContract(await contractsRegistry.BMI_UTILITY_NFT_NAME(), NOTHING);
+    await contractsRegistry.addContract(await contractsRegistry.BMI_UTILITY_NFT_NAME(), bmiTreasury);
     await contractsRegistry.addContract(await contractsRegistry.BMI_STAKING_NAME(), NOTHING);
     await contractsRegistry.addContract(await contractsRegistry.BMI_TREASURY_NAME(), NOTHING);
     await contractsRegistry.addContract(await contractsRegistry.DEFI_PROTOCOL_1_NAME(), NOTHING);
@@ -340,7 +351,7 @@ contract("ClaimVoting", async (accounts) => {
     await policyBookFabric.__PolicyBookFabric_init();
     await claimingRegistry.__ClaimingRegistry_init();
     await claimVoting.__ClaimVoting_init();
-    await rewardsGenerator.__RewardsGenerator_init();
+    await rewardsGenerator.__RewardsGenerator_init(network);
     await capitalPool.__CapitalPool_init();
     await reinsurancePool.__ReinsurancePool_init();
     await bmiCoverStaking.__BMICoverStaking_init();
@@ -584,7 +595,7 @@ contract("ClaimVoting", async (accounts) => {
 
     await setCurrentTime(toBN(await claimingRegistry.anonymousVotingDuration(claimIndex)).plus(10));
 
-    const votesCount = await claimVoting.countVotes(user);
+    const votesCount = await claimVoting.countNotReceivedVotes(user);
     const myVotes = await claimVoting.myVotes(0, votesCount, { from: user });
 
     const encrypted = myVotes[0][1];
@@ -595,7 +606,37 @@ contract("ClaimVoting", async (accounts) => {
       userPrivateKey
     );
 
-    const res = await claimVoting.exposeVoteBatch([claimIndex], [suggestedAmount], [hashedSigantureOfClaim], {
+    const res = await claimVoting.exposeVoteBatch([claimIndex], [suggestedAmount], [hashedSigantureOfClaim], [true], {
+      from: user,
+    });
+
+    console.log("ExposeVote gas used: " + res.receipt.gasUsed);
+  }
+
+  async function voteAndReject(suggestedClaimAmount, userPrivateKey, user) {
+    const claimIndex = 1;
+    const [finalHash, encryptedSuggestedAmount] = await getAnonymousEncrypted(
+      claimIndex,
+      suggestedClaimAmount,
+      userPrivateKey
+    );
+
+    await claimVoting.anonymouslyVoteBatch([claimIndex], [finalHash], [encryptedSuggestedAmount], { from: user });
+
+    await setCurrentTime(toBN(await claimingRegistry.anonymousVotingDuration(claimIndex)).plus(10));
+
+    const votesCount = await claimVoting.countNotReceivedVotes(user);
+    const myVotes = await claimVoting.myVotes(0, votesCount, { from: user });
+
+    const encrypted = myVotes[0][1];
+
+    const [hashedSigantureOfClaim, suggestedAmount] = await getAnonymousDecrypted(
+      claimIndex,
+      encrypted,
+      userPrivateKey
+    );
+
+    const res = await claimVoting.exposeVoteBatch([claimIndex], [suggestedAmount], [hashedSigantureOfClaim], [false], {
       from: user,
     });
 
@@ -609,7 +650,7 @@ contract("ClaimVoting", async (accounts) => {
       await mintAndStake(VOTER, wei(toBN(10).pow(18).toString()), staked[i]);
 
       await reputationSystem.setNewReputationNoCheck(VOTER, reputations[i]);
-      await claimVoting.voteBatch([1], [suggestedAmounts[i]], { from: VOTER });
+      await claimVoting.voteBatch([1], [suggestedAmounts[i]], [true], { from: VOTER });
     }
 
     let averageWithdrawal = toBN(0);
@@ -628,14 +669,25 @@ contract("ClaimVoting", async (accounts) => {
     return [allStake, averageWithdrawal];
   }
 
-  async function fastVote(claimIndex, voter, stake, suggestedAmount, reputation, yes) {
+  async function fastVoteConfirmed(claimIndex, voter, stake, suggestedAmount, reputation, yes) {
     await mintAndStake(voter, wei("1000000"), stake);
     await reputationSystem.setNewReputationNoCheck(voter, reputation);
 
     if (yes) {
-      await claimVoting.voteBatch([claimIndex], [suggestedAmount], { from: voter });
+      await claimVoting.voteBatch([claimIndex], [suggestedAmount], [true], { from: voter });
     } else {
-      await claimVoting.voteBatch([claimIndex], [0], { from: voter });
+      await claimVoting.voteBatch([claimIndex], [0], [true], { from: voter });
+    }
+  }
+
+  async function fastVoteRejected(claimIndex, voter, stake, suggestedAmount, reputation, yes) {
+    await mintAndStake(voter, wei("1000000"), stake);
+    await reputationSystem.setNewReputationNoCheck(voter, reputation);
+
+    if (yes) {
+      await claimVoting.voteBatch([claimIndex], [suggestedAmount], [false], { from: voter });
+    } else {
+      await claimVoting.voteBatch([claimIndex], [0], [false], { from: voter });
     }
   }
 
@@ -700,7 +752,7 @@ contract("ClaimVoting", async (accounts) => {
 
       const claimsCount = await claimingRegistry.countClaims();
       assert.equal(claimsCount, 1);
-      const claims = await claimVoting.allClaims(0, claimsCount);
+      const claims = await claimVoting.listClaims(0, claimsCount, ListOption.ALL);
 
       assert.equal(claims[0][0][0], 1);
       assert.equal(claims[0][0][1], USER1);
@@ -744,7 +796,7 @@ contract("ClaimVoting", async (accounts) => {
 
       const claimsCount = await claimingRegistry.countClaims();
       assert.equal(claimsCount, 2);
-      const claims = await claimVoting.allClaims(0, claimsCount);
+      const claims = await claimVoting.listClaims(0, claimsCount, ListOption.ALL);
 
       assert.equal(claims[1][0][0], 2);
       assert.equal(claims[1][0][1], USER1);
@@ -807,7 +859,7 @@ contract("ClaimVoting", async (accounts) => {
 
       const claimsCount = await claimingRegistry.countClaims();
       assert.equal(claimsCount, 2);
-      const claims = await claimVoting.allClaims(0, claimsCount);
+      const claims = await claimVoting.listClaims(0, claimsCount, ListOption.ALL);
 
       assert.equal(claims[0][0][0], 1);
       assert.equal(claims[0][0][1], USER1);
@@ -885,7 +937,7 @@ contract("ClaimVoting", async (accounts) => {
       assert.equal(whatVoteFor[0], 0);
 
       // allClaims
-      let allClaims = await claimVoting.allClaims(0, claimsCount);
+      let allClaims = await claimVoting.listClaims(0, claimsCount, ListOption.ALL);
       assert.equal(allClaims[0][0][0], 1);
       assert.equal(allClaims[0][0][1], USER1);
       assert.equal(allClaims[0][1], ClaimStatus.PENDING);
@@ -895,15 +947,15 @@ contract("ClaimVoting", async (accounts) => {
       // myClaims
       let myClaimsCount = await claimingRegistry.countPolicyClaimerClaims(USER1);
       assert.equal(myClaimsCount, 1);
-      let myClaims = await claimVoting.myClaims(0, myClaimsCount, { from: USER1 });
-      assert.equal(myClaims[0][0], 1);
-      assert.equal(myClaims[0][1], policyBook1.address);
-      assert.equal(myClaims[0][2], "");
-      assert.equal(myClaims[0][3], false);
-      assert.equal(toBN(myClaims[0][4]).toString(), coverage.toString());
-      assert.equal(myClaims[0][5], ClaimStatus.PENDING);
-      assert.equal(myClaims[0][6], 0);
-      assert.equal(myClaims[0][7], 0);
+      let myClaims = await claimVoting.listClaims(0, myClaimsCount, ListOption.MINE, { from: USER1 });
+      assert.equal(myClaims[0][0][0], 1);
+      assert.equal(myClaims[0][0][1], USER1);
+      assert.equal(myClaims[0][0][2], policyBook1.address);
+      assert.equal(myClaims[0][0][3], "");
+      assert.equal(myClaims[0][0][4], false);
+      assert.equal(myClaims[0][1], ClaimStatus.PENDING);
+      assert.equal(toBN(myClaims[0][2]).toString(), "0");
+      assert.equal(myClaims[0][3], 0);
 
       myClaimsCount = await claimingRegistry.countPolicyClaimerClaims(USER2);
       assert.equal(myClaimsCount, 0);
@@ -922,28 +974,28 @@ contract("ClaimVoting", async (accounts) => {
     const coverTokensAmount2 = wei("999");
     const liquidityAmount2 = wei("4765");
 
-    it("should successfully expose vote (1)", async () => {
+    it("should successfully confirm vote (1)", async () => {
       await initVoting(liquidityAmount, coverTokensAmount, 0);
       await policyBook1.submitClaimAndInitializeVoting("", { from: USER1 });
 
       await mintAndStake(USER2, liquidityAmount, liquidityAmount);
       await voteAndExpose(coverTokensAmount, USER2_PRIVATE_KEY, USER2);
     });
-    it("should successfully expose vote (2)", async () => {
+    it("should successfully confirm vote (2)", async () => {
       await initVoting(liquidityAmount2, coverTokensAmount2, 0);
       await policyBook1.submitClaimAndInitializeVoting("", { from: USER1 });
 
       await mintAndStake(USER2, liquidityAmount, liquidityAmount);
       await voteAndExpose(coverTokensAmount2, USER2_PRIVATE_KEY, USER2);
     });
-    it("should successfully expose vote (3)", async () => {
+    it("should successfully confirm vote (3)", async () => {
       await initVoting(liquidityAmount2, coverTokensAmount2, 0);
       await policyBook1.submitClaimAndInitializeVoting("", { from: USER1 });
 
       await mintAndStake(USER2, liquidityAmount, liquidityAmount);
       await voteAndExpose(0, USER2_PRIVATE_KEY, USER2);
     });
-    it("should successfully expose vote && set correct status after calculation", async () => {
+    it("should successfully confirm vote && set correct status after calculation", async () => {
       await initVoting(liquidityAmount, coverTokensAmount, 0);
       await policyBook1.submitClaimAndInitializeVoting("", { from: USER1 });
 
@@ -955,8 +1007,45 @@ contract("ClaimVoting", async (accounts) => {
       await setCurrentTime(toBN(await claimingRegistry.votingDuration(claimIndex)).plus(10));
 
       await claimVoting.calculateResult(1, { from: USER1 });
+      await claimVoting.receiveVoteResultBatch([1], { from: USER2 });
 
       assert.equal(await claimVoting.voteStatus(1), VoteStatus.MAJORITY);
+    });
+    it("should successfully reject vote (1)", async () => {
+      await initVoting(liquidityAmount, coverTokensAmount, 0);
+      await policyBook1.submitClaimAndInitializeVoting("", { from: USER1 });
+
+      await mintAndStake(USER2, liquidityAmount, liquidityAmount);
+      await voteAndReject(coverTokensAmount, USER2_PRIVATE_KEY, USER2);
+    });
+    it("should successfully reject vote (2)", async () => {
+      await initVoting(liquidityAmount2, coverTokensAmount2, 0);
+      await policyBook1.submitClaimAndInitializeVoting("", { from: USER1 });
+
+      await mintAndStake(USER2, liquidityAmount, liquidityAmount);
+      await voteAndReject(coverTokensAmount2, USER2_PRIVATE_KEY, USER2);
+    });
+    it("should successfully reject vote (3)", async () => {
+      await initVoting(liquidityAmount2, coverTokensAmount2, 0);
+      await policyBook1.submitClaimAndInitializeVoting("", { from: USER1 });
+
+      await mintAndStake(USER2, liquidityAmount, liquidityAmount);
+      await voteAndReject(0, USER2_PRIVATE_KEY, USER2);
+    });
+    it("should successfully reject vote && set correct status after calculation", async () => {
+      await initVoting(liquidityAmount, coverTokensAmount, 0);
+      await policyBook1.submitClaimAndInitializeVoting("", { from: USER1 });
+
+      await mintAndStake(USER2, liquidityAmount, liquidityAmount);
+      await voteAndReject(0, USER2_PRIVATE_KEY, USER2);
+
+      const claimIndex = 1;
+
+      await setCurrentTime(toBN(await claimingRegistry.votingDuration(claimIndex)).plus(10));
+
+      await claimVoting.calculateResult(1, { from: USER1 });
+
+      assert.equal(await claimVoting.voteStatus(1), VoteStatus.REJECTED);
     });
     describe("anonymouslyVoteBatch()", async () => {
       let claimIndex, suggestedClaimAmount;
@@ -1040,7 +1129,7 @@ contract("ClaimVoting", async (accounts) => {
       it("should not successfully vote if voter has awaiting reception votes", async () => {
         await mintAndStake(USER3, wei("1000000"), wei("100"));
 
-        await claimVoting.voteBatch([1], [suggestedClaimAmount], {
+        await claimVoting.voteBatch([1], [suggestedClaimAmount], [true], {
           from: USER3,
         });
 
@@ -1050,9 +1139,10 @@ contract("ClaimVoting", async (accounts) => {
             .toString()
         );
         await claimVoting.calculateResult(1, { from: USER1 });
+
         await policyBook2.submitClaimAndInitializeVoting("", { from: USER2 });
 
-        const reason = "CV: There are reception awaiting votes";
+        const reason = "CV: Awaiting votes";
         await truffleAssert.reverts(
           claimVoting.anonymouslyVoteBatch([claimIndex], [finalHashUser3], [encryptedSuggestedAmountUser3], {
             from: USER3,
@@ -1198,28 +1288,52 @@ contract("ClaimVoting", async (accounts) => {
         await mintAndStake(USER3, wei("10000"), wei("100"));
 
         await truffleAssert.reverts(
-          claimVoting.exposeVoteBatch([claimIndex], [suggestedClaimAmount], ["0x"], {
+          claimVoting.exposeVoteBatch([claimIndex], [suggestedClaimAmount], ["0x"], [true], {
+            from: USER3,
+          }),
+          "CV: Vote doesn't exist"
+        );
+        await truffleAssert.reverts(
+          claimVoting.exposeVoteBatch([claimIndex], [suggestedClaimAmount], ["0x"], [false], {
             from: USER3,
           }),
           "CV: Vote doesn't exist"
         );
       });
       it("should fail due to different suggested claim amount", async () => {
-        const votesCount = await claimVoting.countVotes(USER2);
+        const votesCount = await claimVoting.countNotReceivedVotes(USER2);
         const myVotes = await claimVoting.myVotes(0, votesCount, { from: USER2 });
 
         const encrypted = myVotes[0][1];
         const [hashedSignatureOfClaim] = await getAnonymousDecrypted(claimIndex, encrypted, USER2_PRIVATE_KEY);
 
         await truffleAssert.reverts(
-          claimVoting.exposeVoteBatch([claimIndex], [toBN(coverTokensAmount).idiv(2)], [hashedSignatureOfClaim], {
-            from: USER2,
-          }),
+          claimVoting.exposeVoteBatch(
+            [claimIndex],
+            [toBN(coverTokensAmount).idiv(2)],
+            [hashedSignatureOfClaim],
+            [true],
+            {
+              from: USER2,
+            }
+          ),
+          "CV: Data mismatches"
+        );
+        await truffleAssert.reverts(
+          claimVoting.exposeVoteBatch(
+            [claimIndex],
+            [toBN(coverTokensAmount).idiv(2)],
+            [hashedSignatureOfClaim],
+            [false],
+            {
+              from: USER2,
+            }
+          ),
           "CV: Data mismatches"
         );
       });
       it("should fail due to length mismatch", async () => {
-        const votesCount = await claimVoting.countVotes(USER2);
+        const votesCount = await claimVoting.countNotReceivedVotes(USER2);
         const myVotes = await claimVoting.myVotes(0, votesCount, { from: USER2 });
 
         const encrypted = myVotes[0][1];
@@ -1229,21 +1343,28 @@ contract("ClaimVoting", async (accounts) => {
 
         // empty claim array
         await truffleAssert.reverts(
-          claimVoting.exposeVoteBatch([], [coverTokensAmount], [hashedSignatureOfClaim], {
+          claimVoting.exposeVoteBatch([], [coverTokensAmount], [hashedSignatureOfClaim], [true], {
             from: USER2,
           }),
           reason
         );
         // empty suggested amount array
         await truffleAssert.reverts(
-          claimVoting.exposeVoteBatch([claimIndex], [], [hashedSignatureOfClaim], {
+          claimVoting.exposeVoteBatch([claimIndex], [], [hashedSignatureOfClaim], [true], {
             from: USER2,
           }),
           reason
         );
         // empty signature array
         await truffleAssert.reverts(
-          claimVoting.exposeVoteBatch([claimIndex], [coverTokensAmount], [], {
+          claimVoting.exposeVoteBatch([claimIndex], [coverTokensAmount], [], [true], {
+            from: USER2,
+          }),
+          reason
+        );
+        // empty confirmation array
+        await truffleAssert.reverts(
+          claimVoting.exposeVoteBatch([claimIndex], [coverTokensAmount], [hashedSignatureOfClaim], [], {
             from: USER2,
           }),
           reason
@@ -1263,7 +1384,7 @@ contract("ClaimVoting", async (accounts) => {
 
         await claimVoting.anonymouslyVoteBatch([2], [finalHashUser3], [encryptedSuggestedAmountUser3], { from: USER3 });
 
-        const votesCount = await claimVoting.countVotes(USER3);
+        const votesCount = await claimVoting.countNotReceivedVotes(USER3);
         const myVotes = await claimVoting.myVotes(0, votesCount, { from: USER3 });
 
         const encrypted = myVotes[0][1];
@@ -1276,7 +1397,13 @@ contract("ClaimVoting", async (accounts) => {
         );
 
         await truffleAssert.reverts(
-          claimVoting.exposeVoteBatch([2], [coverTokensAmountX2], [hashedSignatureOfClaim], {
+          claimVoting.exposeVoteBatch([2], [coverTokensAmountX2], [hashedSignatureOfClaim], [true], {
+            from: USER3,
+          }),
+          "CV: Amount exceeds coverage"
+        );
+        await truffleAssert.reverts(
+          claimVoting.exposeVoteBatch([2], [coverTokensAmountX2], [hashedSignatureOfClaim], [false], {
             from: USER3,
           }),
           "CV: Amount exceeds coverage"
@@ -1287,14 +1414,18 @@ contract("ClaimVoting", async (accounts) => {
         await mintAndStake(USER3, coverTokensAmount, coverTokensAmount);
         await claimVoting.anonymouslyVoteBatch([2], [finalHashUser3], [encryptedSuggestedAmountUser3], { from: USER3 });
 
-        const votesCount = await claimVoting.countVotes(USER3);
+        const votesCount = await claimVoting.countNotReceivedVotes(USER3);
         const myVotes = await claimVoting.myVotes(0, votesCount, { from: USER3 });
 
         const encrypted = myVotes[0][1];
         const [hashedSigantureOfClaim] = await getAnonymousDecrypted(2, encrypted, USER3_PRIVATE_KEY);
 
         await truffleAssert.reverts(
-          claimVoting.exposeVoteBatch([2], [coverTokensAmount], [hashedSigantureOfClaim], { from: USER3 }),
+          claimVoting.exposeVoteBatch([2], [coverTokensAmount], [hashedSigantureOfClaim], [true], { from: USER3 }),
+          "CV: Vote is not awaiting"
+        );
+        await truffleAssert.reverts(
+          claimVoting.exposeVoteBatch([2], [coverTokensAmount], [hashedSigantureOfClaim], [false], { from: USER3 }),
           "CV: Vote is not awaiting"
         );
       });
@@ -1316,16 +1447,33 @@ contract("ClaimVoting", async (accounts) => {
 
         assert.equal((await claimVoting.voteStatus(voteIndex)).toString(), VoteStatus.EXPIRED);
       });
-      it("should expose vote succesfully", async () => {
-        const votesCount = await claimVoting.countVotes(USER2);
+      it("should expose vote succesfully (confirmed)", async () => {
+        const votesCount = await claimVoting.countNotReceivedVotes(USER2);
         const myVotes = await claimVoting.myVotes(0, votesCount, { from: USER2 });
 
         const encrypted = myVotes[0][1];
         const [hashedSignatureOfClaim] = await getAnonymousDecrypted(claimIndex, encrypted, USER2_PRIVATE_KEY);
 
-        await claimVoting.exposeVoteBatch([claimIndex], [coverTokensAmount], [hashedSignatureOfClaim], {
+        await claimVoting.exposeVoteBatch([claimIndex], [coverTokensAmount], [hashedSignatureOfClaim], [true], {
           from: USER2,
         });
+        const voteIndex = await claimVoting.voteIndex(1, USER2);
+
+        assert.equal((await claimVoting.voteStatus(voteIndex)).toString(), VoteStatus.EXPOSED_PENDING);
+      });
+      it("should expose vote succesfully (rejected)", async () => {
+        const votesCount = await claimVoting.countNotReceivedVotes(USER2);
+        const myVotes = await claimVoting.myVotes(0, votesCount, { from: USER2 });
+
+        const encrypted = myVotes[0][1];
+        const [hashedSignatureOfClaim] = await getAnonymousDecrypted(claimIndex, encrypted, USER2_PRIVATE_KEY);
+
+        await claimVoting.exposeVoteBatch([claimIndex], [coverTokensAmount], [hashedSignatureOfClaim], [false], {
+          from: USER2,
+        });
+        const voteIndex = await claimVoting.voteIndex(1, USER2);
+
+        assert.equal((await claimVoting.voteStatus(voteIndex)).toString(), VoteStatus.REJECTED);
       });
     });
   });
@@ -1351,7 +1499,7 @@ contract("ClaimVoting", async (accounts) => {
 
       await mintAndStake(USER2, wei("1000000"), wei("100"));
 
-      await claimVoting.voteBatch([claimIndex], [suggestedClaimAmount], {
+      await claimVoting.voteBatch([claimIndex], [suggestedClaimAmount], [true], {
         from: USER2,
       });
 
@@ -1374,7 +1522,7 @@ contract("ClaimVoting", async (accounts) => {
       assert.equal(whatVoteFor[0], 0);
 
       // allClaims
-      let allClaims = await claimVoting.allClaims(0, claimsCount);
+      let allClaims = await claimVoting.listClaims(0, claimsCount, ListOption.ALL);
       assert.equal(allClaims[0][0][0], 1);
       assert.equal(allClaims[0][0][1], USER1);
       assert.equal(allClaims[0][1], ClaimStatus.PENDING);
@@ -1384,29 +1532,30 @@ contract("ClaimVoting", async (accounts) => {
       // myClaims
       let myClaimsCount = await claimingRegistry.countPolicyClaimerClaims(USER1);
       assert.equal(myClaimsCount, 1);
-      let myClaims = await claimVoting.myClaims(0, myClaimsCount, { from: USER1 });
-      assert.equal(myClaims[0][0], 1);
-      assert.equal(myClaims[0][1], policyBook1.address);
-      assert.equal(myClaims[0][2], "");
-      assert.equal(myClaims[0][3], false);
-      assert.equal(toBN(myClaims[0][4]).toString(), coverage.toString());
-      assert.equal(myClaims[0][5], ClaimStatus.PENDING);
-      assert.equal(myClaims[0][6], 0);
-      assert.equal(myClaims[0][7], 0);
+      let myClaims = await claimVoting.listClaims(0, myClaimsCount, ListOption.MINE, { from: USER1 });
+      assert.equal(myClaims[0][0][0], 1);
+      assert.equal(myClaims[0][0][1], USER1);
+      assert.equal(myClaims[0][0][2], policyBook1.address);
+      assert.equal(myClaims[0][0][3], "");
+      assert.equal(myClaims[0][0][4], false);
+      assert.equal(myClaims[0][1], ClaimStatus.PENDING);
+      assert.equal(toBN(myClaims[0][2]).toString(), "0");
+      assert.equal(myClaims[0][3], 0);
 
       myClaimsCount = await claimingRegistry.countPolicyClaimerClaims(USER2);
       assert.equal(myClaimsCount, 0);
 
       // myVotes
-      let myVotesCount = await claimVoting.countVotes(USER1);
+      let myVotesCount = await claimVoting.countNotReceivedVotes(USER1);
       assert.equal(myVotesCount, 0);
-      myVotesCount = await claimVoting.countVotes(USER2);
+      myVotesCount = await claimVoting.countNotReceivedVotes(USER2);
       assert.equal(myVotesCount, 1);
       let myVotes = await claimVoting.myVotes(0, myVotesCount, { from: USER2 });
       assert.equal(myVotes[0][0][0][0], 1);
       assert.equal(myVotes[0][0][0][2], policyBook1.address);
       assert.equal(myVotes[0][0][1], ClaimStatus.PENDING);
       assert.equal(myVotes[0][3], VoteStatus.EXPOSED_PENDING);
+      assert.equal(myVotes[0][4], 0);
     });
     describe("vote for", async () => {
       beforeEach("initializeVoting", async () => {
@@ -1425,7 +1574,7 @@ contract("ClaimVoting", async (accounts) => {
           coverage.idiv(100)
         );
 
-        await claimVoting.voteBatch([1], [coverage], { from: USER2 });
+        await claimVoting.voteBatch([1], [coverage], [true], { from: USER2 });
 
         const claimResult = await claimVoting.getVotingResult(1);
 
@@ -1438,7 +1587,7 @@ contract("ClaimVoting", async (accounts) => {
         assert.equal(toBN(claimResult[6]).toString(), toBN(wei("100")).toString()); // all voted stake
         assert.equal(claimResult[7], 0); // voted yes percentage (after calculation)
 
-        const votesCount = await claimVoting.countVotes(USER2);
+        const votesCount = await claimVoting.countNotReceivedVotes(USER2);
 
         assert.equal(votesCount, 1);
 
@@ -1467,7 +1616,7 @@ contract("ClaimVoting", async (accounts) => {
 
         let myVotes = await claimVoting.myVotes(0, votesCount, { from: USER2 });
 
-        assert.equal(myVotes[0][0][0][0].toString(), 1);
+        assert.equal(myVotes[0][0][0][0][0].toString(), 1);
       });
       it("should calculate correct averages (1)", async () => {
         const staked = [wei("2000"), wei("1000")];
@@ -1559,9 +1708,9 @@ contract("ClaimVoting", async (accounts) => {
 
         await mintAndStake(USER2, wei("10000000"), wei("1000"));
 
-        await claimVoting.voteBatch([2], [wei("100")], { from: USER2 });
+        await claimVoting.voteBatch([2], [wei("100")], [true], { from: USER2 });
 
-        const votesCount = await claimVoting.countVotes(USER2);
+        const votesCount = await claimVoting.countNotReceivedVotes(USER2);
         const votes = await claimVoting.myVotes(0, votesCount, { from: USER2 });
 
         assert.equal(votes[0][0][0][0], 2);
@@ -1596,7 +1745,7 @@ contract("ClaimVoting", async (accounts) => {
           coverage.idiv(100)
         );
 
-        await claimVoting.voteBatch([1], [0], { from: USER2 });
+        await claimVoting.voteBatch([1], [0], [true], { from: USER2 });
 
         const claimResult = await claimVoting.getVotingResult(1);
 
@@ -1609,7 +1758,7 @@ contract("ClaimVoting", async (accounts) => {
         assert.equal(toBN(claimResult[6]).toString(), toBN(wei("100")).toString()); // all voted stake
         assert.equal(claimResult[7], 0); // voted yes percentage (after calculation)
 
-        const votesCount = await claimVoting.countVotes(USER2);
+        const votesCount = await claimVoting.countNotReceivedVotes(USER2);
 
         assert.equal(votesCount, 1);
 
@@ -1638,7 +1787,7 @@ contract("ClaimVoting", async (accounts) => {
 
         let myVotes = await claimVoting.myVotes(0, votesCount, { from: USER2 });
 
-        assert.equal(myVotes[0][0][0][0].toString(), 1);
+        assert.equal(myVotes[0][0][0][0][0].toString(), 1);
       });
       it("should calculate correct averages (1)", async () => {
         const staked = [wei("100"), wei("200")];
@@ -1694,614 +1843,325 @@ contract("ClaimVoting", async (accounts) => {
       timestamp = await getBlockTimestamp();
       await capitalPool.setliquidityCushionBalance(getStableAmount("1000000"));
     });
-    describe("voting results", async () => {
-      it("should revert if calculator is not autorized", async () => {
-        await fastVote(1, USER3, wei("1200"), wei("500"), toBN(PRECISION), true);
-        await fastVote(1, USER4, wei("10000"), wei("500"), toBN(PRECISION), true);
-        await fastVote(1, USER5, wei("400"), 0, toBN(PRECISION), false);
-        await fastVote(1, USER6, wei("400"), 0, toBN(PRECISION), false);
 
-        await setCurrentTime(
-          toBN(timestamp)
-            .plus(await claimingRegistry.votingDuration(1))
-            .plus(10)
-            .toString()
-        );
-        const reason = "CV: Not allowed to calculate";
-        await truffleAssert.reverts(claimVoting.calculateResult(1, { from: USER2 }), reason);
-      });
-      it("should allow calculator to be different than claimer after 3 days", async () => {
-        await fastVote(1, USER3, wei("1200"), wei("500"), toBN(PRECISION), true);
-        await fastVote(1, USER4, wei("10000"), wei("500"), toBN(PRECISION), true);
-        await fastVote(1, USER5, wei("400"), 0, toBN(PRECISION), false);
-        await fastVote(1, USER6, wei("400"), 0, toBN(PRECISION), false);
+    it("should revert if calculator is not autorized", async () => {
+      await fastVoteConfirmed(1, USER3, wei("1200"), wei("500"), toBN(PRECISION), true);
+      await fastVoteConfirmed(1, USER4, wei("10000"), wei("500"), toBN(PRECISION), true);
+      await fastVoteConfirmed(1, USER5, wei("400"), 0, toBN(PRECISION), false);
+      await fastVoteConfirmed(1, USER6, wei("400"), 0, toBN(PRECISION), false);
+      await fastVoteRejected(1, USER7, wei("10000"), wei("500"), toBN(PRECISION), true);
+      await fastVoteRejected(1, USER8, wei("10000"), wei("500"), toBN(PRECISION), true);
 
-        await setCurrentTime(
-          toBN(timestamp)
-            .plus(await claimingRegistry.votingDuration(1))
-            .plus(3 * 24 * 60 * 60) // 3 days
-            .plus(10)
-            .toString()
-        );
-
-        const res = await claimVoting.calculateResult(1, { from: USER2 });
-        console.log("CalculateResult (ACCEPT) gas used: " + res.receipt.gasUsed);
-      });
-      it("should calculate voting result (1)", async () => {
-        await fastVote(1, USER3, wei("120"), wei("500"), toBN(PRECISION).times(1.1), false);
-        await fastVote(1, USER4, wei("100"), wei("750"), toBN(PRECISION).times(2.4), false);
-        await fastVote(1, USER5, wei("1000"), wei("1000"), toBN(PRECISION).times(0.1), false);
-        await fastVote(1, USER6, wei("5000"), wei("1"), toBN(PRECISION).times(3), true);
-
-        await setCurrentTime(
-          toBN(timestamp)
-            .plus(await claimingRegistry.votingDuration(1))
-            .plus(10)
-            .toString()
-        );
-
-        const res = await claimVoting.calculateResult(1, { from: USER1 });
-        console.log("CalculateResult (ACCEPT) gas used: " + res.receipt.gasUsed);
-
-        assert.equal(await claimingRegistry.claimStatus(1), ClaimStatus.ACCEPTED);
-      });
-      it("should calculate voting result (2)", async () => {
-        await fastVote(1, USER3, wei("1000"), wei("500"), toBN(PRECISION), true);
-        await fastVote(1, USER4, wei("2883"), wei("500"), toBN(PRECISION), true);
-        await fastVote(1, USER5, wei("1000"), wei("0"), toBN(PRECISION), false);
-        await fastVote(1, USER6, wei("1000"), wei("0"), toBN(PRECISION), false);
-
-        await setCurrentTime(
-          toBN(timestamp)
-            .plus(await claimingRegistry.votingDuration(1))
-            .plus(10)
-            .toString()
-        );
-
-        await claimVoting.calculateResult(1, { from: USER1 });
-
-        assert.equal(await claimingRegistry.claimStatus(1), ClaimStatus.ACCEPTED);
-      });
-      it("should calculate voting result (3)", async () => {
-        await fastVote(1, USER3, wei("1000"), wei("500"), toBN(PRECISION), true);
-        await fastVote(1, USER4, wei("2882"), wei("500"), toBN(PRECISION), true);
-        await fastVote(1, USER5, wei("1000"), 0, toBN(PRECISION), false);
-        await fastVote(1, USER6, wei("1000"), 0, toBN(PRECISION), false);
-
-        await setCurrentTime(
-          toBN(timestamp)
-            .plus(await claimingRegistry.votingDuration(1))
-            .plus(10)
-            .toString()
-        );
-        const res = await claimVoting.calculateResult(1, { from: USER1 });
-        console.log("CalculateVotingResult (REJECT) gas used: " + res.receipt.gasUsed);
-
-        assert.equal(await claimingRegistry.claimStatus(1), ClaimStatus.REJECTED_CAN_APPEAL);
-      });
-      it("should calculate voting result, quorum (4)", async () => {
-        await fastVote(1, USER3, wei("1000"), wei("500"), toBN(PRECISION), true);
-        await fastVote(1, USER4, wei("8000"), wei("500"), toBN(PRECISION), true);
-        await fastVote(1, USER5, wei("4000"), 0, toBN(PRECISION), false);
-        await fastVote(1, USER6, wei("3000"), 0, toBN(PRECISION), false);
-
-        await setCurrentTime(
-          toBN(timestamp)
-            .plus(await claimingRegistry.votingDuration(1))
-            .plus(10)
-            .toString()
-        );
-        const res = await claimVoting.calculateResult(1, { from: USER1 });
-        console.log("CalculateVotingResult (REJECT QUORUM) gas used: " + res.receipt.gasUsed);
-
-        assert.equal((await claimingRegistry.claimStatus(1)).toString(), ClaimStatus.REJECTED_CAN_APPEAL);
-      });
-      it("should calculate voting result, quorum (5)", async () => {
-        await fastVote(1, USER3, wei("1200"), wei("500"), toBN(PRECISION), true);
-        await fastVote(1, USER4, wei("10000"), wei("500"), toBN(PRECISION), true);
-        await fastVote(1, USER5, wei("400"), 0, toBN(PRECISION), false);
-        await fastVote(1, USER6, wei("400"), 0, toBN(PRECISION), false);
-
-        await setCurrentTime(
-          toBN(timestamp)
-            .plus(await claimingRegistry.votingDuration(1))
-            .plus(10)
-            .toString()
-        );
-        await claimVoting.calculateResult(1, { from: USER1 });
-
-        assert.equal(await claimingRegistry.claimStatus(1), ClaimStatus.ACCEPTED);
-      });
-      it("should revert, public calculation (6)", async () => {
-        await fastVote(1, USER3, wei("1200"), wei("500"), toBN(PRECISION), true);
-        await fastVote(1, USER4, wei("10000"), wei("500"), toBN(PRECISION), true);
-        await fastVote(1, USER5, wei("400"), 0, toBN(PRECISION), false);
-        await fastVote(1, USER6, wei("400"), 0, toBN(PRECISION), false);
-
-        await setCurrentTime(toBN(await claimingRegistry.votingDuration(1)).plus(10));
-
-        await truffleAssert.reverts(
-          claimVoting.calculateResult(1, { from: accounts[3] }),
-          "CV: Not allowed to calculate"
-        );
-      });
-      it("should calculate reward, public calculation (7)", async () => {
-        await fastVote(1, USER3, wei("1200"), wei("500"), toBN(PRECISION), true);
-        await fastVote(1, USER4, wei("10000"), wei("500"), toBN(PRECISION), true);
-        await fastVote(1, USER5, wei("400"), 0, toBN(PRECISION), false);
-        await fastVote(1, USER6, wei("400"), 0, toBN(PRECISION), false);
-
-        const elapsedTime = toBN(48 * 60 * 60);
-        const currentTime = toBN(await claimingRegistry.anyoneCanCalculateClaimResultAfter(1))
-          .plus(elapsedTime)
-          .plus(2);
-
-        const lockedBMIs = toBN((await claimVoting.getVotingResult(1))[1]);
-        const accBalance = toBN(await bmi.balanceOf(USER4));
-
-        await setCurrentTime(currentTime);
-
-        await claimVoting.calculateResult(1, { from: USER4 });
-
-        const reward = BigNumber.min(
-          lockedBMIs,
-          elapsedTime
-            .times(
-              toBN(await claimVoting.CALCULATION_REWARD_PER_DAY())
-                .idiv(60 * 60 * 24)
-                .times(lockedBMIs)
-            )
-            .idiv(PERCENTAGE_100)
-        );
-        // huge slippage to fix time bug
-        assert.closeTo(
-          toBN(await bmi.balanceOf(USER4)).toNumber(),
-          accBalance.plus(reward).toNumber(),
-          toBN(wei("0.001")).toNumber()
-        );
-        assert.closeTo(
-          toBN((await claimVoting.getVotingResult(1))[1]).toNumber(),
-          lockedBMIs.minus(reward).toNumber(),
-          toBN(wei("0.001")).toNumber()
-        );
-      });
-      it("should expire the claim if time passed", async () => {
-        await fastVote(1, USER3, wei("1200"), wei("500"), toBN(PRECISION), true);
-        await fastVote(1, USER4, wei("10000"), wei("500"), toBN(PRECISION), true);
-        await fastVote(1, USER5, wei("400"), 0, toBN(PRECISION), false);
-        await fastVote(1, USER6, wei("400"), 0, toBN(PRECISION), false);
-
-        await setCurrentTime(
-          toBN(timestamp)
-            .plus(await claimingRegistry.validityDuration(1))
-            .plus(10)
-            .toString()
-        );
-
-        await claimVoting.calculateResult(1, { from: USER2 });
-
-        assert.equal(await claimingRegistry.claimStatus(1), ClaimStatus.EXPIRED);
-      });
-      it("shouldn't be able to claim new policybook when policy has expired and old claim is pending", async () => {
-        assert.equal(await policyRegistry.isPolicyActive(USER1, policyBook1.address), true);
-
-        await setCurrentTime(toBN(10 * 7 * 24 * 60 * 60).plus(100));
-
-        assert.equal(await policyRegistry.isPolicyActive(USER1, policyBook1.address), false);
-
-        const reason = "PB: Claim is pending";
-        await truffleAssert.reverts(policyBookFacade1.buyPolicy(5, coverTokensAmount, { from: USER1 }), reason);
-      });
-      it("should be able to claim new policybook when policy has expired", async () => {
-        assert.equal(await policyRegistry.isPolicyActive(USER1, policyBook1.address), true);
-
-        await fastVote(1, USER3, wei("10000"), wei("500"), toBN(PRECISION), true);
-
-        await setCurrentTime(
-          toBN(timestamp)
-            .plus(await claimingRegistry.votingDuration(1))
-            .plus(10)
-            .toString()
-        );
-        await claimVoting.calculateResult(1, { from: USER1 });
-
-        assert.equal(await claimingRegistry.claimStatus(1), ClaimStatus.ACCEPTED);
-
-        await setCurrentTime(toBN(10 * 7 * 24 * 60 * 60).plus(100));
-
-        assert.equal(await policyRegistry.isPolicyActive(USER1, policyBook1.address), false);
-      });
-      it("should display correct status when old policy is accepted and new one is bought", async () => {
-        assert.equal(await policyRegistry.isPolicyActive(USER1, policyBook1.address), true);
-
-        await fastVote(1, USER3, wei("10000"), wei("500"), toBN(PRECISION), true);
-
-        await setCurrentTime(
-          toBN(timestamp)
-            .plus(await claimingRegistry.votingDuration(1))
-            .plus(10)
-            .toString()
-        );
-        await claimVoting.calculateResult(1, { from: USER1 });
-
-        assert.equal(await claimingRegistry.claimStatus(1), ClaimStatus.ACCEPTED);
-
-        await setCurrentTime(toBN(10 * 7 * 24 * 60 * 60).plus(100));
-
-        assert.equal(await policyRegistry.isPolicyActive(USER1, policyBook1.address), false);
-
-        await stbl.approve(policyBook1.address, 0, { from: USER1 });
-        await stbl.approve(policyBook1.address, stblAmount, { from: USER1 });
-        await policyBookFacade1.addLiquidity(liquidityAmount, { from: USER1 });
-        await policyBookFacade1.buyPolicy(5, coverTokensAmount, { from: USER1 });
-
-        assert.equal(await policyRegistry.isPolicyActive(USER1, policyBook1.address), true);
-
-        const info = await policyRegistry.getPoliciesInfo(USER1, true, 0, 1);
-
-        assert.equal(info._policiesCount, 1);
-        assert.equal(info._policyStatuses[0], ClaimStatus.CAN_CLAIM);
-      });
-      it("should only claim same policy after appeal expires", async () => {
-        assert.equal(await policyRegistry.isPolicyActive(USER1, policyBook1.address), true);
-
-        await fastVote(1, USER3, wei("10000"), wei("0"), toBN(PRECISION), true);
-
-        await setCurrentTime(
-          toBN(timestamp)
-            .plus(await claimingRegistry.votingDuration(1))
-            .plus(10)
-            .toString()
-        );
-        await claimVoting.calculateResult(1, { from: USER1 });
-
-        assert.equal(await claimingRegistry.claimStatus(1), ClaimStatus.REJECTED_CAN_APPEAL);
-
-        await setCurrentTime(
-          toBN(await claimingRegistry.claimEndTime(1))
-            .plus(await policyRegistry.STILL_CLAIMABLE_FOR())
-            .plus(100)
-        );
-
-        assert.equal(await claimingRegistry.claimStatus(1), ClaimStatus.REJECTED);
-
-        assert.equal(await policyRegistry.isPolicyActive(USER1, policyBook1.address), true);
-
-        const toApproveOnePercent = await policyBookFacade1.getClaimApprovalAmount(USER1);
-        await bmi.approve(claimVoting.address, 0, { from: USER1 });
-        await bmi.approve(claimVoting.address, toApproveOnePercent, { from: USER1 });
-
-        const reason = "ClaimingRegistry: The claimer can't submit this claim";
-        await truffleAssert.reverts(policyBook1.submitAppealAndInitializeVoting("", { from: USER1 }), reason);
-
-        await policyBook1.submitClaimAndInitializeVoting("", { from: USER1 });
-      });
+      await setCurrentTime(
+        toBN(timestamp)
+          .plus(await claimingRegistry.votingDuration(1))
+          .plus(10)
+          .toString()
+      );
+      const reason = "CV: Not allowed to calculate";
+      await truffleAssert.reverts(claimVoting.calculateResult(1, { from: USER2 }), reason);
     });
-    describe("voter results", async () => {
-      it("should calculate voter result (yes, majority, accepted)", async () => {
-        const staked = [wei("4000"), wei("3000"), wei("1000"), wei("1000")];
-        const reputations = [toBN(PRECISION), toBN(PRECISION), toBN(PRECISION), toBN(PRECISION)];
-
-        await fastVote(1, USER3, staked[0], wei("500"), reputations[0], true);
-        await fastVote(1, USER4, staked[1], wei("500"), reputations[1], true);
-        await fastVote(1, USER5, staked[2], 0, reputations[2], false);
-        await fastVote(1, USER6, staked[3], 0, reputations[3], false);
-
-        const observer = USER3;
-        const observedStake = staked[0];
-        const observedReputation = reputations[0];
-
-        const allStake = await calculateAverageStake(staked, reputations, 0, 2);
-
-        const paidToProtocol = toBN((await policyBook1.userStats(USER1))[3])
-          .times(20)
-          .idiv(100);
-        const coverage = toBN((await policyBook1.userStats(USER1))[0]);
-        const userProtocol = BigNumber.min(paidToProtocol, coverage.idiv(100));
-
-        await setCurrentTime(
-          toBN(timestamp)
-            .plus(await claimingRegistry.votingDuration(1))
-            .plus(10)
-            .toString()
-        );
-        await claimVoting.calculateResult(1, { from: USER1 });
-
-        const reputation = await reputationSystem.reputation(observer);
-        assert.equal(toBN(reputation).toString(), PRECISION.toString());
-
-        assert.equal(await claimingRegistry.claimStatus(1), ClaimStatus.ACCEPTED);
-
-        const voteIndex = await claimVoting.voteIndex(1, observer);
-        assert.equal(await claimVoting.voteStatus(voteIndex), VoteStatus.MAJORITY);
-
-        const voterReward = toBN(observedStake)
-          .times(toBN(observedReputation))
-          .div(allStake)
-          .times(userProtocol)
-          .dp(0, BigNumber.ROUND_FLOOR);
-
-        const voterResult = await claimVoting.voteResults(voteIndex);
-
-        assert.equal(voterResult[0], 0);
-        assert.equal(voterResult[1], voterReward.toString());
-        assert.equal(toBN(voterResult[2]).gt(toBN(reputation)), true);
-        assert.equal(voterResult[3], 0);
-
-        const notReceivedVotes = await claimVoting.myNotReceivesVotes(observer);
-        assert.equal(notReceivedVotes[0][0], 1);
-        assert.equal(notReceivedVotes[1][0][0], 0);
-        assert.equal(notReceivedVotes[1][0][1], voterReward.toString());
-        assert.equal(toBN(notReceivedVotes[1][0][2]).gt(toBN(reputation)), true);
-        assert.equal(notReceivedVotes[1][0][3], 0);
-      });
-      it("should calculate voter result (yes, majority, rejected)", async () => {
-        const staked = [wei("4000"), wei("3000"), wei("4000"), wei("2000")];
-        const reputations = [toBN(PRECISION), toBN(PRECISION), toBN(PRECISION), toBN(PRECISION)];
-
-        await fastVote(1, USER3, staked[0], wei("500"), reputations[0], true);
-        await fastVote(1, USER4, staked[1], wei("500"), reputations[1], true);
-        await fastVote(1, USER5, staked[2], 0, reputations[2], false);
-        await fastVote(1, USER6, staked[3], 0, reputations[3], false);
-
-        const observer = USER3;
-        const observedStake = staked[0];
-        const observedReputation = reputations[0];
-
-        const allStake = await calculateAverageStake(staked, reputations, 0, 2);
-
-        await setCurrentTime(
-          toBN(timestamp)
-            .plus(await claimingRegistry.votingDuration(1))
-            .plus(10)
-            .toString()
-        );
-        await claimVoting.calculateResult(1, { from: USER1 });
-
-        const reputation = await reputationSystem.reputation(observer);
-        assert.equal(toBN(reputation).toString(), PRECISION.toString());
-
-        assert.equal(await claimingRegistry.claimStatus(1), ClaimStatus.REJECTED_CAN_APPEAL);
-
-        const voteIndex = await claimVoting.voteIndex(1, observer);
-        assert.equal(await claimVoting.voteStatus(voteIndex), VoteStatus.MAJORITY);
-
-        const lockedBMI = (await claimVoting.getVotingResult(1))[1];
-        const voterReward = toBN(observedStake)
-          .times(toBN(observedReputation))
-          .div(allStake)
-          .times(toBN(lockedBMI))
-          .dp(0, BigNumber.ROUND_FLOOR);
-
-        const voterResult = await claimVoting.voteResults(voteIndex);
-
-        assert.equal(voterResult[0], voterReward.toString());
-        assert.equal(voterResult[1], 0);
-        assert.equal(toBN(voterResult[2]).gt(toBN(reputation)), true);
-        assert.equal(voterResult[3], 0);
-
-        const notReceivedVotes = await claimVoting.myNotReceivesVotes(observer);
-        assert.equal(notReceivedVotes[0][0], 1);
-        assert.equal(notReceivedVotes[1][0][0], voterReward.toString());
-        assert.equal(notReceivedVotes[1][0][1], 0);
-        assert.equal(toBN(notReceivedVotes[1][0][2]).gt(toBN(reputation)), true);
-        assert.equal(notReceivedVotes[1][0][3], 0);
-      });
-      it("should calculate voter result (no, majority, rejected)", async () => {
-        const staked = [wei("4000"), wei("2000"), wei("4000"), wei("3000")];
-        const reputations = [toBN(PRECISION), toBN(PRECISION), toBN(PRECISION), toBN(PRECISION)];
-
-        await fastVote(1, USER3, staked[0], wei("500"), reputations[0], true);
-        await fastVote(1, USER4, staked[1], wei("500"), reputations[1], true);
-        await fastVote(1, USER5, staked[2], 0, reputations[2], false);
-        await fastVote(1, USER6, staked[3], 0, reputations[3], false);
-
-        const observer = USER6;
-        const observedStake = staked[3];
-        const observedReputation = reputations[3];
-
-        const allStake = await calculateAverageStake(staked, reputations, 2, 4);
-
-        await setCurrentTime(
-          toBN(timestamp)
-            .plus(await claimingRegistry.votingDuration(1))
-            .plus(10)
-            .toString()
-        );
-        await claimVoting.calculateResult(1, { from: USER1 });
-
-        const reputation = await reputationSystem.reputation(observer);
-        assert.equal(toBN(reputation).toString(), PRECISION.toString());
-
-        assert.equal(await claimingRegistry.claimStatus(1), ClaimStatus.REJECTED_CAN_APPEAL);
-
-        const voteIndex = await claimVoting.voteIndex(1, observer);
-        assert.equal(await claimVoting.voteStatus(voteIndex), VoteStatus.MAJORITY);
-
-        let lockedBMIs = toBN((await claimVoting.getVotingResult(1))[1]);
-        const voterReward = toBN(observedStake)
-          .times(toBN(observedReputation))
-          .div(allStake)
-          .times(toBN(lockedBMIs))
-          .dp(0, BigNumber.ROUND_FLOOR);
-
-        const voterResult = await claimVoting.voteResults(voteIndex);
-
-        assert.equal(voterResult[0], voterReward.toString());
-        assert.equal(voterResult[1], 0);
-        assert.equal(toBN(voterResult[2]).gt(toBN(reputation)), true);
-        assert.equal(voterResult[3], 0);
-
-        const notReceivedVotes = await claimVoting.myNotReceivesVotes(observer);
-        assert.equal(notReceivedVotes[0][0], 1);
-        assert.equal(notReceivedVotes[1][0][0], voterReward.toString());
-        assert.equal(notReceivedVotes[1][0][1], 0);
-        assert.equal(toBN(notReceivedVotes[1][0][2]).gt(toBN(reputation)), true);
-        assert.equal(notReceivedVotes[1][0][3], 0);
-      });
-      it("should calculate voter result (yes or no, minority)", async () => {
-        const staked = [wei("4000"), wei("2000"), wei("4000"), wei("3000")];
-        const reputations = [toBN(PRECISION), toBN(PRECISION), toBN(PRECISION), toBN(PRECISION)];
-
-        await fastVote(1, USER3, staked[0], wei("500"), reputations[0], true);
-        await fastVote(1, USER4, staked[1], wei("500"), reputations[1], true);
-        await fastVote(1, USER5, staked[2], 0, reputations[2], false);
-        await fastVote(1, USER6, staked[3], 0, reputations[3], false);
-
-        const observer = USER4;
-
-        await setCurrentTime(
-          toBN(timestamp)
-            .plus(await claimingRegistry.votingDuration(1))
-            .plus(10)
-            .toString()
-        );
-        await claimVoting.calculateResult(1, { from: USER1 });
-
-        const reputation = await reputationSystem.reputation(observer);
-        assert.equal(toBN(reputation).toString(), PRECISION.toString());
-
-        assert.equal(await claimingRegistry.claimStatus(1), ClaimStatus.REJECTED_CAN_APPEAL);
-
-        const voteIndex = await claimVoting.voteIndex(1, observer);
-        assert.equal(await claimVoting.voteStatus(voteIndex), VoteStatus.MINORITY);
-
-        const voterResult = await claimVoting.voteResults(voteIndex);
-
-        assert.equal(voterResult[0], 0);
-        assert.equal(voterResult[1], 0);
-        assert.equal(toBN(reputation).gt(toBN(voterResult[2])), true);
-        assert.equal(voterResult[3], 0);
-
-        const notReceivedVotes = await claimVoting.myNotReceivesVotes(observer);
-        assert.equal(notReceivedVotes[0][0], 1);
-        assert.equal(notReceivedVotes[1][0][0], 0);
-        assert.equal(notReceivedVotes[1][0][1], 0);
-        assert.equal(toBN(reputation).gt(toBN(notReceivedVotes[1][0][2])), true);
-        assert.equal(notReceivedVotes[1][0][3], 0);
-      });
-      it("should calculate voter result (yes or no, extereme minority)", async () => {
-        const staked = [wei("10"), wei("4000"), wei("2000"), wei("3000")];
-        const reputations = [toBN(PRECISION), toBN(PRECISION), toBN(PRECISION), toBN(PRECISION)];
-
-        await fastVote(1, USER3, staked[0], 0, reputations[0], false);
-        await fastVote(1, USER4, staked[1], wei("500"), reputations[1], true);
-        await fastVote(1, USER5, staked[2], wei("500"), reputations[2], true);
-        await fastVote(1, USER6, staked[3], wei("500"), reputations[3], true);
-
-        const observer = USER3;
-
-        const accStakedStkBMI = await stkBMIStaking.stakedStkBMI(observer, { from: observer });
-
-        await setCurrentTime(
-          toBN(timestamp)
-            .plus(await claimingRegistry.votingDuration(1))
-            .plus(10)
-            .toString()
-        );
-        await claimVoting.calculateResult(1, { from: USER1 });
-
-        const reputation = await reputationSystem.reputation(observer);
-        assert.equal(toBN(reputation).toString(), PRECISION.toString());
-
-        assert.equal(await claimingRegistry.claimStatus(1), ClaimStatus.ACCEPTED);
-
-        const voteIndex = await claimVoting.voteIndex(1, observer);
-        assert.equal(await claimVoting.voteStatus(voteIndex), VoteStatus.MINORITY);
-
-        let votedExtremePercentage = (await claimVoting.getVotingResult(1))[7];
-        votedExtremePercentage = BigNumber.min(
-          toBN(votedExtremePercentage),
-          PERCENTAGE_100.minus(toBN(votedExtremePercentage))
-        );
-        votedExtremePercentage = toBN(await claimVoting.PENALTY_THRESHOLD()).minus(votedExtremePercentage);
-
-        const voterConf = toBN(accStakedStkBMI)
-          .times(votedExtremePercentage)
-          .div(PERCENTAGE_100)
-          .dp(0, BigNumber.ROUND_FLOOR);
-
-        const voterResult = await claimVoting.voteResults(voteIndex);
-
-        assert.equal(voterResult[0], 0);
-        assert.equal(voterResult[1], 0);
-        assert.equal(toBN(reputation).gt(toBN(voterResult[2])), true);
-        assert.equal(voterResult[3].toString(), voterConf.toString());
-
-        const notReceivedVotes = await claimVoting.myNotReceivesVotes(observer);
-        assert.equal(notReceivedVotes[0][0], 1);
-        assert.equal(notReceivedVotes[1][0][0], 0);
-        assert.equal(notReceivedVotes[1][0][1], 0);
-        assert.equal(toBN(reputation).gt(toBN(notReceivedVotes[1][0][2])), true);
-        assert.equal(notReceivedVotes[1][0][3], voterConf.toString());
-      });
-      it("should calculate correct voter reputation", async () => {
-        await stbl.transfer(USER2, stblAmount);
-        await stbl.approve(policyBook1.address, 0, { from: USER2 });
-        await stbl.approve(policyBook1.address, stblAmount, { from: USER2 });
-        await policyBookFacade1.buyPolicy(5, coverTokensAmount, { from: USER2 });
-        assert.equal(await policyRegistry.getPoliciesLength(USER2), 2);
-
-        await bmi.transfer(USER2, wei("1000000"), { from: USER1 });
-        const toApproveOnePercent2 = await policyBookFacade1.getClaimApprovalAmount(USER2);
-        await bmi.approve(claimVoting.address, 0, { from: USER2 });
-        await bmi.approve(claimVoting.address, toApproveOnePercent2, { from: USER2 });
-        await policyBook1.submitClaimAndInitializeVoting("", { from: USER2 });
-
-        const staked = [wei("100"), wei("5000"), wei("5000"), wei("300")];
-        const reputations = [toBN(PRECISION), toBN(PRECISION), toBN(PRECISION), toBN(PRECISION)];
-
-        await fastVote(1, USER3, staked[0], 0, reputations[0], false);
-        await fastVote(2, USER3, staked[0], 0, reputations[0], false);
-        await fastVote(1, USER4, staked[1], wei("500"), reputations[1], true);
-        await fastVote(2, USER4, staked[1], wei("500"), reputations[1], true);
-        await fastVote(1, USER5, staked[2], wei("500"), reputations[2], true);
-        await fastVote(2, USER5, staked[2], wei("500"), reputations[2], true);
-        await fastVote(1, USER6, staked[3], wei("500"), reputations[3], true);
-        await fastVote(2, USER6, staked[3], wei("500"), reputations[3], true);
-
-        const observer1 = USER4;
-        const observer2 = USER5;
-
-        await setCurrentTime(
-          toBN(timestamp)
-            .plus(await claimingRegistry.votingDuration(1))
-            .plus(10)
-            .toString()
-        );
-        await claimVoting.calculateResult(2, { from: USER2 });
-
-        assert.equal(
-          toBN(await reputationSystem.reputation(observer1)).toString(),
-          toBN(await reputationSystem.reputation(observer2)).toString()
-        );
-
-        const voteIndex1 = await claimVoting.voteIndex(2, observer1);
-        const voteIndex2 = await claimVoting.voteIndex(2, observer2);
-
-        const voterResult1 = await claimVoting.voteResults(voteIndex1);
-        const voterResult2 = await claimVoting.voteResults(voteIndex2);
-
-        assert.equal(voterResult1[2].toString(), voterResult2[2].toString());
-      });
+    it("should allow calculator to be different than claimer after 3 days", async () => {
+      await fastVoteConfirmed(1, USER3, wei("1200"), wei("500"), toBN(PRECISION), true);
+      await fastVoteConfirmed(1, USER4, wei("10000"), wei("500"), toBN(PRECISION), true);
+      await fastVoteConfirmed(1, USER5, wei("400"), 0, toBN(PRECISION), false);
+      await fastVoteConfirmed(1, USER6, wei("400"), 0, toBN(PRECISION), false);
+      await fastVoteRejected(1, USER7, wei("10000"), wei("500"), toBN(PRECISION), true);
+      await fastVoteRejected(1, USER8, wei("10000"), wei("500"), toBN(PRECISION), true);
+
+      await setCurrentTime(
+        toBN(timestamp)
+          .plus(await claimingRegistry.votingDuration(1))
+          .plus(3 * 24 * 60 * 60) // 3 days
+          .plus(10)
+          .toString()
+      );
+
+      const res = await claimVoting.calculateResult(1, { from: USER2 });
+      console.log("CalculateResult (ACCEPT) gas used: " + res.receipt.gasUsed);
+    });
+    it("should calculate voting result (1)", async () => {
+      await fastVoteConfirmed(1, USER3, wei("120"), wei("500"), toBN(PRECISION).times(1.1), false);
+      await fastVoteConfirmed(1, USER4, wei("100"), wei("750"), toBN(PRECISION).times(2.4), false);
+      await fastVoteConfirmed(1, USER5, wei("1000"), wei("1000"), toBN(PRECISION).times(0.1), false);
+      await fastVoteConfirmed(1, USER6, wei("5000"), wei("1"), toBN(PRECISION).times(3), true);
+      await fastVoteRejected(1, USER7, wei("10000"), wei("500"), toBN(PRECISION), true);
+      await fastVoteRejected(1, USER8, wei("10000"), wei("500"), toBN(PRECISION), true);
+
+      await setCurrentTime(
+        toBN(timestamp)
+          .plus(await claimingRegistry.votingDuration(1))
+          .plus(10)
+          .toString()
+      );
+
+      const res = await claimVoting.calculateResult(1, { from: USER1 });
+      console.log("CalculateResult (ACCEPT) gas used: " + res.receipt.gasUsed);
+
+      assert.equal(await claimingRegistry.claimStatus(1), ClaimStatus.ACCEPTED);
+    });
+    it("should calculate voting result (2)", async () => {
+      await fastVoteConfirmed(1, USER3, wei("1000"), wei("500"), toBN(PRECISION), true);
+      await fastVoteConfirmed(1, USER4, wei("2883"), wei("500"), toBN(PRECISION), true);
+      await fastVoteConfirmed(1, USER5, wei("1000"), wei("0"), toBN(PRECISION), false);
+      await fastVoteConfirmed(1, USER6, wei("1000"), wei("0"), toBN(PRECISION), false);
+      await fastVoteRejected(1, USER7, wei("10000"), wei("500"), toBN(PRECISION), true);
+      await fastVoteRejected(1, USER8, wei("10000"), wei("500"), toBN(PRECISION), true);
+
+      await setCurrentTime(
+        toBN(timestamp)
+          .plus(await claimingRegistry.votingDuration(1))
+          .plus(10)
+          .toString()
+      );
+
+      await claimVoting.calculateResult(1, { from: USER1 });
+
+      assert.equal(await claimingRegistry.claimStatus(1), ClaimStatus.ACCEPTED);
+    });
+    it("should calculate voting result (3)", async () => {
+      await fastVoteConfirmed(1, USER3, wei("1000"), wei("500"), toBN(PRECISION), true);
+      await fastVoteConfirmed(1, USER4, wei("2882"), wei("500"), toBN(PRECISION), true);
+      await fastVoteConfirmed(1, USER5, wei("1000"), 0, toBN(PRECISION), false);
+      await fastVoteConfirmed(1, USER6, wei("1000"), 0, toBN(PRECISION), false);
+      await fastVoteRejected(1, USER7, wei("10000"), wei("500"), toBN(PRECISION), true);
+      await fastVoteRejected(1, USER8, wei("10000"), wei("500"), toBN(PRECISION), true);
+
+      await setCurrentTime(
+        toBN(timestamp)
+          .plus(await claimingRegistry.votingDuration(1))
+          .plus(10)
+          .toString()
+      );
+      const res = await claimVoting.calculateResult(1, { from: USER1 });
+      console.log("CalculateVotingResult (REJECT) gas used: " + res.receipt.gasUsed);
+
+      assert.equal(await claimingRegistry.claimStatus(1), ClaimStatus.REJECTED_CAN_APPEAL);
+    });
+    it("should calculate voting result, quorum (4)", async () => {
+      await fastVoteConfirmed(1, USER3, wei("1000"), wei("500"), toBN(PRECISION), true);
+      await fastVoteConfirmed(1, USER4, wei("8000"), wei("500"), toBN(PRECISION), true);
+      await fastVoteConfirmed(1, USER5, wei("4000"), 0, toBN(PRECISION), false);
+      await fastVoteConfirmed(1, USER6, wei("3000"), 0, toBN(PRECISION), false);
+      await fastVoteRejected(1, USER7, wei("10000"), wei("500"), toBN(PRECISION), true);
+      await fastVoteRejected(1, USER8, wei("10000"), wei("500"), toBN(PRECISION), true);
+
+      await setCurrentTime(
+        toBN(timestamp)
+          .plus(await claimingRegistry.votingDuration(1))
+          .plus(10)
+          .toString()
+      );
+      const res = await claimVoting.calculateResult(1, { from: USER1 });
+      console.log("CalculateVotingResult (REJECT QUORUM) gas used: " + res.receipt.gasUsed);
+
+      assert.equal((await claimingRegistry.claimStatus(1)).toString(), ClaimStatus.REJECTED_CAN_APPEAL);
+    });
+    it("should calculate voting result, quorum (5)", async () => {
+      await fastVoteConfirmed(1, USER3, wei("1200"), wei("500"), toBN(PRECISION), true);
+      await fastVoteConfirmed(1, USER4, wei("10000"), wei("500"), toBN(PRECISION), true);
+      await fastVoteConfirmed(1, USER5, wei("400"), 0, toBN(PRECISION), false);
+      await fastVoteConfirmed(1, USER6, wei("400"), 0, toBN(PRECISION), false);
+      await fastVoteRejected(1, USER7, wei("10000"), wei("500"), toBN(PRECISION), true);
+      await fastVoteRejected(1, USER8, wei("10000"), wei("500"), toBN(PRECISION), true);
+
+      await setCurrentTime(
+        toBN(timestamp)
+          .plus(await claimingRegistry.votingDuration(1))
+          .plus(10)
+          .toString()
+      );
+      await claimVoting.calculateResult(1, { from: USER1 });
+
+      assert.equal(await claimingRegistry.claimStatus(1), ClaimStatus.ACCEPTED);
+    });
+    it("should revert, public calculation (6)", async () => {
+      await fastVoteConfirmed(1, USER3, wei("1200"), wei("500"), toBN(PRECISION), true);
+      await fastVoteConfirmed(1, USER4, wei("10000"), wei("500"), toBN(PRECISION), true);
+      await fastVoteConfirmed(1, USER5, wei("400"), 0, toBN(PRECISION), false);
+      await fastVoteConfirmed(1, USER6, wei("400"), 0, toBN(PRECISION), false);
+      await fastVoteRejected(1, USER7, wei("10000"), wei("500"), toBN(PRECISION), true);
+      await fastVoteRejected(1, USER8, wei("10000"), wei("500"), toBN(PRECISION), true);
+
+      await setCurrentTime(toBN(await claimingRegistry.votingDuration(1)).plus(10));
+
+      await truffleAssert.reverts(
+        claimVoting.calculateResult(1, { from: accounts[3] }),
+        "CV: Not allowed to calculate"
+      );
+    });
+    it("should calculate reward, public calculation (7)", async () => {
+      await fastVoteConfirmed(1, USER3, wei("1200"), wei("500"), toBN(PRECISION), true);
+      await fastVoteConfirmed(1, USER4, wei("10000"), wei("500"), toBN(PRECISION), true);
+      await fastVoteConfirmed(1, USER5, wei("400"), 0, toBN(PRECISION), false);
+      await fastVoteConfirmed(1, USER6, wei("400"), 0, toBN(PRECISION), false);
+      await fastVoteRejected(1, USER7, wei("10000"), wei("500"), toBN(PRECISION), true);
+      await fastVoteRejected(1, USER8, wei("10000"), wei("500"), toBN(PRECISION), true);
+
+      const elapsedTime = toBN(48 * 60 * 60);
+      const currentTime = toBN(await claimingRegistry.anyoneCanCalculateClaimResultAfter(1))
+        .plus(elapsedTime)
+        .plus(2);
+
+      const lockedBMIs = toBN((await claimVoting.getVotingResult(1))[1]);
+      const accBalance = toBN(await bmi.balanceOf(USER4));
+
+      await setCurrentTime(currentTime);
+
+      await claimVoting.calculateResult(1, { from: USER4 });
+
+      const reward = BigNumber.min(
+        lockedBMIs,
+        elapsedTime
+          .times(
+            toBN(CALCULATION_REWARD_PER_DAY)
+              .idiv(60 * 60 * 24)
+              .times(lockedBMIs)
+          )
+          .idiv(PERCENTAGE_100)
+      );
+      // huge slippage to fix time bug
+      assert.closeTo(
+        toBN(await bmi.balanceOf(USER4)).toNumber(),
+        accBalance.plus(reward).toNumber(),
+        toBN(wei("0.001")).toNumber()
+      );
+      assert.closeTo(
+        toBN((await claimVoting.getVotingResult(1))[1]).toNumber(),
+        lockedBMIs.minus(reward).toNumber(),
+        toBN(wei("0.001")).toNumber()
+      );
+    });
+    it("should expire the claim if time passed", async () => {
+      await fastVoteConfirmed(1, USER3, wei("1200"), wei("500"), toBN(PRECISION), true);
+      await fastVoteConfirmed(1, USER4, wei("10000"), wei("500"), toBN(PRECISION), true);
+      await fastVoteConfirmed(1, USER5, wei("400"), 0, toBN(PRECISION), false);
+      await fastVoteConfirmed(1, USER6, wei("400"), 0, toBN(PRECISION), false);
+      await fastVoteRejected(1, USER7, wei("10000"), wei("500"), toBN(PRECISION), true);
+      await fastVoteRejected(1, USER8, wei("10000"), wei("500"), toBN(PRECISION), true);
+
+      await setCurrentTime(
+        toBN(timestamp)
+          .plus(await claimingRegistry.validityDuration(1))
+          .plus(10)
+          .toString()
+      );
+
+      await claimVoting.calculateResult(1, { from: USER2 });
+
+      assert.equal(await claimingRegistry.claimStatus(1), ClaimStatus.EXPIRED);
+    });
+    it("shouldn't be able to claim new policybook when policy has expired and old claim is pending", async () => {
+      assert.equal(await policyRegistry.isPolicyActive(USER1, policyBook1.address), true);
+
+      await setCurrentTime(toBN(10 * 7 * 24 * 60 * 60).plus(100));
+
+      assert.equal(await policyRegistry.isPolicyActive(USER1, policyBook1.address), false);
+
+      const reason = "PB: Claim is pending";
+      await truffleAssert.reverts(policyBookFacade1.buyPolicy(5, coverTokensAmount, { from: USER1 }), reason);
+    });
+    it("should be able to claim new policybook when policy has expired", async () => {
+      assert.equal(await policyRegistry.isPolicyActive(USER1, policyBook1.address), true);
+
+      await fastVoteConfirmed(1, USER3, wei("10000"), wei("500"), toBN(PRECISION), true);
+
+      await setCurrentTime(
+        toBN(timestamp)
+          .plus(await claimingRegistry.votingDuration(1))
+          .plus(10)
+          .toString()
+      );
+      await claimVoting.calculateResult(1, { from: USER1 });
+
+      assert.equal(await claimingRegistry.claimStatus(1), ClaimStatus.ACCEPTED);
+
+      await setCurrentTime(toBN(10 * 7 * 24 * 60 * 60).plus(100));
+
+      assert.equal(await policyRegistry.isPolicyActive(USER1, policyBook1.address), false);
+    });
+    it("should display correct status when old policy is accepted and new one is bought", async () => {
+      assert.equal(await policyRegistry.isPolicyActive(USER1, policyBook1.address), true);
+
+      await fastVoteConfirmed(1, USER3, wei("10000"), wei("500"), toBN(PRECISION), true);
+
+      await setCurrentTime(
+        toBN(timestamp)
+          .plus(await claimingRegistry.votingDuration(1))
+          .plus(10)
+          .toString()
+      );
+      await claimVoting.calculateResult(1, { from: USER1 });
+
+      assert.equal(await claimingRegistry.claimStatus(1), ClaimStatus.ACCEPTED);
+
+      await setCurrentTime(toBN(10 * 7 * 24 * 60 * 60).plus(100));
+
+      assert.equal(await policyRegistry.isPolicyActive(USER1, policyBook1.address), false);
+
+      await stbl.approve(policyBook1.address, 0, { from: USER1 });
+      await stbl.approve(policyBook1.address, stblAmount, { from: USER1 });
+      await policyBookFacade1.addLiquidity(liquidityAmount, { from: USER1 });
+      await policyBookFacade1.buyPolicy(5, coverTokensAmount, { from: USER1 });
+
+      assert.equal(await policyRegistry.isPolicyActive(USER1, policyBook1.address), true);
+
+      const info = await policyRegistry.getPoliciesInfo(USER1, true, 0, 1);
+
+      assert.equal(info._policiesCount, 1);
+      assert.equal(info._policyStatuses[0], ClaimStatus.CAN_CLAIM);
+    });
+    it("should only claim same policy after appeal expires", async () => {
+      assert.equal(await policyRegistry.isPolicyActive(USER1, policyBook1.address), true);
+
+      await fastVoteConfirmed(1, USER3, wei("10000"), wei("0"), toBN(PRECISION), true);
+
+      await setCurrentTime(
+        toBN(timestamp)
+          .plus(await claimingRegistry.votingDuration(1))
+          .plus(10)
+          .toString()
+      );
+      await claimVoting.calculateResult(1, { from: USER1 });
+
+      assert.equal(await claimingRegistry.claimStatus(1), ClaimStatus.REJECTED_CAN_APPEAL);
+
+      await setCurrentTime(
+        toBN(await claimingRegistry.claimEndTime(1))
+          .plus(await policyRegistry.STILL_CLAIMABLE_FOR())
+          .plus(100)
+      );
+
+      assert.equal(await claimingRegistry.claimStatus(1), ClaimStatus.REJECTED);
+
+      assert.equal(await policyRegistry.isPolicyActive(USER1, policyBook1.address), true);
+
+      const toApproveOnePercent = await policyBookFacade1.getClaimApprovalAmount(USER1);
+      await bmi.approve(claimVoting.address, 0, { from: USER1 });
+      await bmi.approve(claimVoting.address, toApproveOnePercent, { from: USER1 });
+
+      const reason = "ClaimingRegistry: The claimer can't submit this claim";
+      await truffleAssert.reverts(policyBook1.submitAppealAndInitializeVoting("", { from: USER1 }), reason);
+
+      await policyBook1.submitClaimAndInitializeVoting("", { from: USER1 });
     });
   });
 
-  describe("receiveResult()", async () => {
+  describe("receiveVoteResultBatch()", async () => {
     beforeEach("initializeVoting", async () => {
       await initVoting(liquidityAmount, coverTokensAmount, coverTokensAmount);
       await policyBook1.submitClaimAndInitializeVoting("", { from: USER1 });
       timestamp = await getBlockTimestamp();
       await capitalPool.setliquidityCushionBalance(getStableAmount("1000000"));
     });
-    it("should calculate voter result (yes, majority, accepted) // withdraw reward ready", async () => {
+    it("should receive voter result (yes, majority, accepted) // withdraw reward ready", async () => {
       const staked = [wei("4000"), wei("3000"), wei("1000"), wei("1000")];
       const reputations = [toBN(PRECISION), toBN(PRECISION), toBN(PRECISION), toBN(PRECISION)];
 
-      await fastVote(1, USER3, staked[0], wei("500"), reputations[0], true);
-      await fastVote(1, USER4, staked[1], wei("500"), reputations[1], true);
-      await fastVote(1, USER5, staked[2], 0, reputations[2], false);
-      await fastVote(1, USER6, staked[3], 0, reputations[3], false);
+      await fastVoteConfirmed(1, USER3, staked[0], wei("500"), reputations[0], true);
+      await fastVoteConfirmed(1, USER4, staked[1], wei("500"), reputations[1], true);
+      await fastVoteConfirmed(1, USER5, staked[2], 0, reputations[2], false);
+      await fastVoteConfirmed(1, USER6, staked[3], 0, reputations[3], false);
 
       const observer = USER3;
       const observedStake = staked[0];
@@ -2332,7 +2192,7 @@ contract("ClaimVoting", async (accounts) => {
       assert.equal(await claimingRegistry.claimStatus(1), ClaimStatus.ACCEPTED);
 
       const voteIndex = await claimVoting.voteIndex(1, observer);
-      assert.equal(await claimVoting.voteStatus(voteIndex), VoteStatus.MAJORITY);
+      assert.equal(await claimVoting.voteStatus(voteIndex), VoteStatus.AWAITING_RECEPTION);
 
       const voterReward = toBN(observedStake)
         .times(toBN(observedReputation))
@@ -2344,7 +2204,9 @@ contract("ClaimVoting", async (accounts) => {
       assert.equal(await claimVoting.canUnstake(observer), false);
       assert.equal(await claimVoting.canUnstake(USER4), false);
 
-      const res = await claimVoting.receiveResult({ from: observer });
+      const res = await claimVoting.receiveVoteResultBatch([1], { from: observer });
+      assert.equal(await claimVoting.voteStatus(voteIndex), VoteStatus.MAJORITY);
+
       timestamp = await getBlockTimestamp();
       console.log("ReceiveResult (yes, majority, accepted) gas used: " + res.receipt.gasUsed);
 
@@ -2377,15 +2239,14 @@ contract("ClaimVoting", async (accounts) => {
       assert.equal(await claimVoting.canUnstake(observer), true);
       assert.equal(await claimVoting.canUnstake(USER4), false);
     });
-
-    it("should calculate voter result (yes, majority, accepted) // miss withdraw reward, request with no new vote", async () => {
+    it("should receive voter result (yes, majority, accepted) // miss withdraw reward, request with no new vote", async () => {
       const staked = [wei("4000"), wei("3000"), wei("1000"), wei("1000")];
       const reputations = [toBN(PRECISION), toBN(PRECISION), toBN(PRECISION), toBN(PRECISION)];
 
-      await fastVote(1, USER3, staked[0], wei("500"), reputations[0], true);
-      await fastVote(1, USER4, staked[1], wei("500"), reputations[1], true);
-      await fastVote(1, USER5, staked[2], 0, reputations[2], false);
-      await fastVote(1, USER6, staked[3], 0, reputations[3], false);
+      await fastVoteConfirmed(1, USER3, staked[0], wei("500"), reputations[0], true);
+      await fastVoteConfirmed(1, USER4, staked[1], wei("500"), reputations[1], true);
+      await fastVoteConfirmed(1, USER5, staked[2], 0, reputations[2], false);
+      await fastVoteConfirmed(1, USER6, staked[3], 0, reputations[3], false);
 
       const observer = USER3;
       const observedStake = staked[0];
@@ -2416,7 +2277,7 @@ contract("ClaimVoting", async (accounts) => {
       assert.equal(await claimingRegistry.claimStatus(1), ClaimStatus.ACCEPTED);
 
       const voteIndex = await claimVoting.voteIndex(1, observer);
-      assert.equal(await claimVoting.voteStatus(voteIndex), VoteStatus.MAJORITY);
+      assert.equal(await claimVoting.voteStatus(voteIndex), VoteStatus.AWAITING_RECEPTION);
 
       const voterReward = toBN(observedStake)
         .times(toBN(observedReputation))
@@ -2424,7 +2285,8 @@ contract("ClaimVoting", async (accounts) => {
         .times(userProtocol)
         .dp(0, BigNumber.ROUND_FLOOR);
 
-      await claimVoting.receiveResult({ from: observer });
+      await claimVoting.receiveVoteResultBatch([1], { from: observer });
+      assert.equal(await claimVoting.voteStatus(voteIndex), VoteStatus.MAJORITY);
       timestamp = await getBlockTimestamp();
 
       assert.equal(toBN(await reputationSystem.reputation(observer)).gt(toBN(reputation)), true);
@@ -2447,7 +2309,7 @@ contract("ClaimVoting", async (accounts) => {
 
       const bmiBefore = await bmi.balanceOf(USER1);
 
-      await claimVoting.receiveResult({ from: observer });
+      await claimVoting.receiveVoteResultBatch([1], { from: observer });
       timestamp = await getBlockTimestamp();
 
       const bmiAfter = await bmi.balanceOf(USER1);
@@ -2477,15 +2339,14 @@ contract("ClaimVoting", async (accounts) => {
         getStableAmount("0.000001").toNumber()
       );
     });
-
-    it("should calculate voter result (yes, majority, accepted) // miss withdraw reward, request with new vote", async () => {
+    it("should receive voter result (yes, majority, accepted) // miss withdraw reward, request with new vote", async () => {
       let staked = [wei("4000"), wei("3000"), wei("1000"), wei("1000")];
       let reputations = [toBN(PRECISION), toBN(PRECISION), toBN(PRECISION), toBN(PRECISION)];
 
-      await fastVote(1, USER3, staked[0], wei("500"), reputations[0], true);
-      await fastVote(1, USER4, staked[1], wei("500"), reputations[1], true);
-      await fastVote(1, USER5, staked[2], 0, reputations[2], false);
-      await fastVote(1, USER6, staked[3], 0, reputations[3], false);
+      await fastVoteConfirmed(1, USER3, staked[0], wei("500"), reputations[0], true);
+      await fastVoteConfirmed(1, USER4, staked[1], wei("500"), reputations[1], true);
+      await fastVoteConfirmed(1, USER5, staked[2], 0, reputations[2], false);
+      await fastVoteConfirmed(1, USER6, staked[3], 0, reputations[3], false);
 
       const observer = USER3;
       const observedStake1 = staked[0];
@@ -2516,7 +2377,7 @@ contract("ClaimVoting", async (accounts) => {
       assert.equal(await claimingRegistry.claimStatus(1), ClaimStatus.ACCEPTED);
 
       const voteIndex1 = await claimVoting.voteIndex(1, observer);
-      assert.equal(await claimVoting.voteStatus(voteIndex1), VoteStatus.MAJORITY);
+      assert.equal(await claimVoting.voteStatus(voteIndex1), VoteStatus.AWAITING_RECEPTION);
 
       const voterReward1 = toBN(observedStake1)
         .times(toBN(observedReputation0))
@@ -2524,11 +2385,13 @@ contract("ClaimVoting", async (accounts) => {
         .times(userProtocol1)
         .dp(0, BigNumber.ROUND_FLOOR);
 
-      await claimVoting.receiveResult({ from: observer });
+      await claimVoting.receiveVoteResultBatch([1], { from: observer });
+      assert.equal(await claimVoting.voteStatus(voteIndex1), VoteStatus.MAJORITY);
+
       timestamp = await getBlockTimestamp();
-      await claimVoting.receiveResult({ from: USER4 });
-      await claimVoting.receiveResult({ from: USER5 });
-      await claimVoting.receiveResult({ from: USER6 });
+      await claimVoting.receiveVoteResultBatch([1], { from: USER4 });
+      await claimVoting.receiveVoteResultBatch([1], { from: USER5 });
+      await claimVoting.receiveVoteResultBatch([1], { from: USER6 });
 
       const observedReputation2 = await reputationSystem.reputation(observer);
       assert.equal(toBN(observedReputation2).gt(toBN(observedReputation1)), true);
@@ -2565,10 +2428,10 @@ contract("ClaimVoting", async (accounts) => {
         toBN(await reputationSystem.reputation(USER6)),
       ];
 
-      await fastVote(2, USER3, staked[0], wei("500"), reputations[0], true);
-      await fastVote(2, USER4, staked[1], wei("500"), reputations[1], true);
-      await fastVote(2, USER5, staked[2], 0, reputations[2], false);
-      await fastVote(2, USER6, staked[3], 0, reputations[3], false);
+      await fastVoteConfirmed(2, USER3, staked[0], wei("500"), reputations[0], true);
+      await fastVoteConfirmed(2, USER4, staked[1], wei("500"), reputations[1], true);
+      await fastVoteConfirmed(2, USER5, staked[2], 0, reputations[2], false);
+      await fastVoteConfirmed(2, USER6, staked[3], 0, reputations[3], false);
 
       allStake = await calculateAverageStake(staked, reputations, 0, 2);
       const observedStake2 = staked[0];
@@ -2593,7 +2456,7 @@ contract("ClaimVoting", async (accounts) => {
       assert.equal(await claimingRegistry.claimStatus(1), ClaimStatus.ACCEPTED);
 
       const voteIndex2 = await claimVoting.voteIndex(2, observer);
-      assert.equal(await claimVoting.voteStatus(voteIndex2), VoteStatus.MAJORITY);
+      assert.equal(await claimVoting.voteStatus(voteIndex2), VoteStatus.AWAITING_RECEPTION);
 
       const voterReward2 = toBN(observedStake2)
         .times(toBN(observedReputation2))
@@ -2601,7 +2464,9 @@ contract("ClaimVoting", async (accounts) => {
         .times(userProtocol2)
         .dp(0, BigNumber.ROUND_FLOOR);
 
-      await claimVoting.receiveResult({ from: observer });
+      await claimVoting.receiveVoteResultBatch([2], { from: observer });
+      assert.equal(await claimVoting.voteStatus(voteIndex2), VoteStatus.MAJORITY);
+
       timestamp = await getBlockTimestamp();
 
       const observedReputation4 = await reputationSystem.reputation(observer);
@@ -2631,15 +2496,14 @@ contract("ClaimVoting", async (accounts) => {
         getStableAmount("0.000001").toNumber()
       );
     });
-
-    it("should calculate voter result (yes, majority, rejected)", async () => {
+    it("should receive voter result (yes, majority, rejected)", async () => {
       const staked = [wei("4000"), wei("3000"), wei("4000"), wei("2000")];
       const reputations = [toBN(PRECISION), toBN(PRECISION), toBN(PRECISION), toBN(PRECISION)];
 
-      await fastVote(1, USER3, staked[0], wei("500"), reputations[0], true);
-      await fastVote(1, USER4, staked[1], wei("500"), reputations[1], true);
-      await fastVote(1, USER5, staked[2], 0, reputations[2], false);
-      await fastVote(1, USER6, staked[3], 0, reputations[3], false);
+      await fastVoteConfirmed(1, USER3, staked[0], wei("500"), reputations[0], true);
+      await fastVoteConfirmed(1, USER4, staked[1], wei("500"), reputations[1], true);
+      await fastVoteConfirmed(1, USER5, staked[2], 0, reputations[2], false);
+      await fastVoteConfirmed(1, USER6, staked[3], 0, reputations[3], false);
 
       const observer = USER3;
       const observedStake = staked[0];
@@ -2661,7 +2525,7 @@ contract("ClaimVoting", async (accounts) => {
       assert.equal(await claimingRegistry.claimStatus(1), ClaimStatus.REJECTED_CAN_APPEAL);
 
       const voteIndex = await claimVoting.voteIndex(1, observer);
-      assert.equal(await claimVoting.voteStatus(voteIndex), VoteStatus.MAJORITY);
+      assert.equal(await claimVoting.voteStatus(voteIndex), VoteStatus.AWAITING_RECEPTION);
 
       const claimVotingBMI = await bmi.balanceOf(claimVoting.address);
       const accBMI = await bmi.balanceOf(observer);
@@ -2673,7 +2537,9 @@ contract("ClaimVoting", async (accounts) => {
         .times(toBN(lockedBMI))
         .dp(0, BigNumber.ROUND_FLOOR);
 
-      const res = await claimVoting.receiveResult({ from: observer });
+      const res = await claimVoting.receiveVoteResultBatch([1], { from: observer });
+      assert.equal(await claimVoting.voteStatus(voteIndex), VoteStatus.MAJORITY);
+
       console.log("ReceiveResult (yes, majority, rejected) gas used: " + res.receipt.gasUsed);
 
       assert.equal(toBN(await reputationSystem.reputation(observer)).gt(toBN(reputation)), true);
@@ -2683,15 +2549,14 @@ contract("ClaimVoting", async (accounts) => {
         toBN(claimVotingBMI).minus(toBN(voterReward)).toString()
       );
     });
-
-    it("should calculate voter result (no, majority, rejected)", async () => {
+    it("should receive voter result (no, majority, rejected)", async () => {
       const staked = [wei("4000"), wei("2000"), wei("4000"), wei("3000")];
       const reputations = [toBN(PRECISION), toBN(PRECISION), toBN(PRECISION), toBN(PRECISION)];
 
-      await fastVote(1, USER3, staked[0], wei("500"), reputations[0], true);
-      await fastVote(1, USER4, staked[1], wei("500"), reputations[1], true);
-      await fastVote(1, USER5, staked[2], 0, reputations[2], false);
-      await fastVote(1, USER6, staked[3], 0, reputations[3], false);
+      await fastVoteConfirmed(1, USER3, staked[0], wei("500"), reputations[0], true);
+      await fastVoteConfirmed(1, USER4, staked[1], wei("500"), reputations[1], true);
+      await fastVoteConfirmed(1, USER5, staked[2], 0, reputations[2], false);
+      await fastVoteConfirmed(1, USER6, staked[3], 0, reputations[3], false);
 
       const observer = USER6;
       const observedStake = staked[3];
@@ -2718,9 +2583,11 @@ contract("ClaimVoting", async (accounts) => {
       assert.equal(await claimingRegistry.claimStatus(1), ClaimStatus.REJECTED_CAN_APPEAL);
 
       const voteIndex = await claimVoting.voteIndex(1, observer);
+      assert.equal(await claimVoting.voteStatus(voteIndex), VoteStatus.AWAITING_RECEPTION);
+
+      const res = await claimVoting.receiveVoteResultBatch([1], { from: observer });
       assert.equal(await claimVoting.voteStatus(voteIndex), VoteStatus.MAJORITY);
 
-      const res = await claimVoting.receiveResult({ from: observer });
       console.log("ReceiveResult (no, majority, rejected) gas used: " + res.receipt.gasUsed);
 
       assert.equal(toBN(await reputationSystem.reputation(observer)).gt(toBN(reputation)), true);
@@ -2739,15 +2606,14 @@ contract("ClaimVoting", async (accounts) => {
         claimVotingBMI.minus(voterReward).toString()
       );
     });
-
-    it("should calculate voter result (yes or no, minority)", async () => {
+    it("should receive voter result (yes or no, minority)", async () => {
       const staked = [wei("4000"), wei("2000"), wei("4000"), wei("3000")];
       const reputations = [toBN(PRECISION), toBN(PRECISION), toBN(PRECISION), toBN(PRECISION)];
 
-      await fastVote(1, USER3, staked[0], wei("500"), reputations[0], true);
-      await fastVote(1, USER4, staked[1], wei("500"), reputations[1], true);
-      await fastVote(1, USER5, staked[2], 0, reputations[2], false);
-      await fastVote(1, USER6, staked[3], 0, reputations[3], false);
+      await fastVoteConfirmed(1, USER3, staked[0], wei("500"), reputations[0], true);
+      await fastVoteConfirmed(1, USER4, staked[1], wei("500"), reputations[1], true);
+      await fastVoteConfirmed(1, USER5, staked[2], 0, reputations[2], false);
+      await fastVoteConfirmed(1, USER6, staked[3], 0, reputations[3], false);
 
       const observer = USER4;
 
@@ -2768,9 +2634,11 @@ contract("ClaimVoting", async (accounts) => {
       assert.equal(await claimingRegistry.claimStatus(1), ClaimStatus.REJECTED_CAN_APPEAL);
 
       const voteIndex = await claimVoting.voteIndex(1, observer);
+      assert.equal(await claimVoting.voteStatus(voteIndex), VoteStatus.AWAITING_RECEPTION);
+
+      const res = await claimVoting.receiveVoteResultBatch([1], { from: observer });
       assert.equal(await claimVoting.voteStatus(voteIndex), VoteStatus.MINORITY);
 
-      const res = await claimVoting.receiveResult({ from: observer });
       console.log("ReceiveResult (yes or no, minority) gas used: " + res.receipt.gasUsed);
 
       assert.equal(toBN(await reputationSystem.reputation(observer)).lt(toBN(reputation)), true);
@@ -2778,15 +2646,14 @@ contract("ClaimVoting", async (accounts) => {
       assert.equal(toBN(await bmi.balanceOf(observer)).toString(), toBN(accBMI).toString());
       assert.equal(toBN(await bmi.balanceOf(claimVoting.address)).toString(), toBN(claimVotingBMI).toString());
     });
-
-    it("should calculate voter result (yes or no, extereme minority)", async () => {
+    it("should receive voter result (yes or no, extereme minority)", async () => {
       const staked = [wei("10"), wei("4000"), wei("2000"), wei("3000")];
       const reputations = [toBN(PRECISION), toBN(PRECISION), toBN(PRECISION), toBN(PRECISION)];
 
-      await fastVote(1, USER3, staked[0], 0, reputations[0], false);
-      await fastVote(1, USER4, staked[1], wei("500"), reputations[1], true);
-      await fastVote(1, USER5, staked[2], wei("500"), reputations[2], true);
-      await fastVote(1, USER6, staked[3], wei("500"), reputations[3], true);
+      await fastVoteConfirmed(1, USER3, staked[0], 0, reputations[0], false);
+      await fastVoteConfirmed(1, USER4, staked[1], wei("500"), reputations[1], true);
+      await fastVoteConfirmed(1, USER5, staked[2], wei("500"), reputations[2], true);
+      await fastVoteConfirmed(1, USER6, staked[3], wei("500"), reputations[3], true);
 
       const observer = USER3;
 
@@ -2800,7 +2667,7 @@ contract("ClaimVoting", async (accounts) => {
 
       const stakingStkBMI = await stkBMI.balanceOf(stkBMIStaking.address);
       const accStakedStkBMI = await stkBMIStaking.stakedStkBMI(observer, { from: observer });
-      const reinsuranceStkBMI = await stkBMI.balanceOf(reinsurancePool.address);
+      const treasuryStkBMI = await stkBMI.balanceOf(bmiTreasury);
 
       const reputation = await reputationSystem.reputation(observer);
       assert.equal(toBN(reputation).toString(), PRECISION.toString());
@@ -2808,9 +2675,11 @@ contract("ClaimVoting", async (accounts) => {
       assert.equal(await claimingRegistry.claimStatus(1), ClaimStatus.ACCEPTED);
 
       const voteIndex = await claimVoting.voteIndex(1, observer);
+      assert.equal(await claimVoting.voteStatus(voteIndex), VoteStatus.AWAITING_RECEPTION);
+
+      const res = await claimVoting.receiveVoteResultBatch([1], { from: observer });
       assert.equal(await claimVoting.voteStatus(voteIndex), VoteStatus.MINORITY);
 
-      const res = await claimVoting.receiveResult({ from: observer });
       console.log("ReceiveResult (yes or no, extreme minority) gas used: " + res.receipt.gasUsed);
 
       let votedExtremePercentage = (await claimVoting.getVotingResult(1))[7];
@@ -2818,7 +2687,7 @@ contract("ClaimVoting", async (accounts) => {
         toBN(votedExtremePercentage),
         PERCENTAGE_100.minus(toBN(votedExtremePercentage))
       );
-      votedExtremePercentage = toBN(await claimVoting.PENALTY_THRESHOLD()).minus(votedExtremePercentage);
+      votedExtremePercentage = toBN(PENALTY_THRESHOLD).minus(votedExtremePercentage);
 
       const voterConf = toBN(accStakedStkBMI)
         .times(votedExtremePercentage)
@@ -2836,12 +2705,11 @@ contract("ClaimVoting", async (accounts) => {
         toBN(accStakedStkBMI).minus(toBN(voterConf)).toString()
       );
       assert.equal(
-        toBN(await stkBMI.balanceOf(reinsurancePool.address)).toString(),
-        toBN(reinsuranceStkBMI).plus(toBN(voterConf)).toString()
+        toBN(await stkBMI.balanceOf(bmiTreasury)).toString(),
+        toBN(treasuryStkBMI).plus(toBN(voterConf)).toString()
       );
     });
-
-    it("should calculate correct voter reputation", async () => {
+    it("should receive correct voter reputation", async () => {
       await stbl.transfer(USER2, stblAmount);
       await stbl.approve(policyBook1.address, 0, { from: USER2 });
       await stbl.approve(policyBook1.address, stblAmount, { from: USER2 });
@@ -2857,14 +2725,14 @@ contract("ClaimVoting", async (accounts) => {
       const staked = [wei("100"), wei("5000"), wei("5000"), wei("300")];
       const reputations = [toBN(PRECISION), toBN(PRECISION), toBN(PRECISION), toBN(PRECISION)];
 
-      await fastVote(1, USER3, staked[0], 0, reputations[0], false);
-      await fastVote(2, USER3, staked[0], 0, reputations[0], false);
-      await fastVote(1, USER4, staked[1], wei("500"), reputations[1], true);
-      await fastVote(2, USER4, staked[1], wei("500"), reputations[1], true);
-      await fastVote(1, USER5, staked[2], wei("500"), reputations[2], true);
-      await fastVote(2, USER5, staked[2], wei("500"), reputations[2], true);
-      await fastVote(1, USER6, staked[3], wei("500"), reputations[3], true);
-      await fastVote(2, USER6, staked[3], wei("500"), reputations[3], true);
+      await fastVoteConfirmed(1, USER3, staked[0], 0, reputations[0], false);
+      await fastVoteConfirmed(2, USER3, staked[0], 0, reputations[0], false);
+      await fastVoteConfirmed(1, USER4, staked[1], wei("500"), reputations[1], true);
+      await fastVoteConfirmed(2, USER4, staked[1], wei("500"), reputations[1], true);
+      await fastVoteConfirmed(1, USER5, staked[2], wei("500"), reputations[2], true);
+      await fastVoteConfirmed(2, USER5, staked[2], wei("500"), reputations[2], true);
+      await fastVoteConfirmed(1, USER6, staked[3], wei("500"), reputations[3], true);
+      await fastVoteConfirmed(2, USER6, staked[3], wei("500"), reputations[3], true);
 
       const observer1 = USER4;
       const observer2 = USER5;
@@ -2882,12 +2750,79 @@ contract("ClaimVoting", async (accounts) => {
         toBN(await reputationSystem.reputation(observer2)).toString()
       );
 
-      await claimVoting.receiveResult({ from: observer1 });
-      await claimVoting.receiveResult({ from: observer2 });
+      await claimVoting.receiveVoteResultBatch([2], { from: observer1 });
+      await claimVoting.receiveVoteResultBatch([2], { from: observer2 });
 
       assert.equal(
         toBN(await reputationSystem.reputation(observer1)).toString(),
         toBN(await reputationSystem.reputation(observer2)).toString()
+      );
+    });
+    it("should receive voter result (not exposed)", async () => {
+      const staked = [wei("4000"), wei("3000"), wei("1000"), wei("1000")];
+      const reputations = [toBN(PRECISION), toBN(PRECISION), toBN(PRECISION), toBN(PRECISION)];
+
+      let finalHashUser3, encryptedSuggestedAmountUser3;
+      [finalHashUser3, encryptedSuggestedAmountUser3] = await getAnonymousEncrypted(1, wei("500"), USER3_PRIVATE_KEY);
+      await mintAndStake(USER3, wei("1000000"), staked[0]);
+      await reputationSystem.setNewReputationNoCheck(USER3, reputations[0]);
+
+      await claimVoting.anonymouslyVoteBatch([1], [finalHashUser3], [encryptedSuggestedAmountUser3], {
+        from: USER3,
+      });
+      //await fastVote(1, USER3, staked[0], wei("500"), reputations[0], true);
+      await fastVoteConfirmed(1, USER4, staked[1], wei("500"), reputations[1], true);
+      await fastVoteConfirmed(1, USER5, staked[2], wei("500"), reputations[2], true);
+      await fastVoteConfirmed(1, USER6, staked[3], wei("500"), reputations[3], true);
+
+      const observer = USER3;
+      const observedStake = staked[0];
+      const observedReputation = reputations[0];
+
+      const allStake = await calculateAverageStake(staked, reputations, 0, 2);
+
+      const paidToProtocol = toBN((await policyBook1.userStats(USER1))[3])
+        .times(20)
+        .idiv(100);
+      const coverage = toBN((await policyBook1.userStats(USER1))[0]);
+      const userProtocol = BigNumber.min(paidToProtocol, coverage.idiv(100));
+
+      await setCurrentTime(
+        toBN(timestamp)
+          .plus(await claimingRegistry.votingDuration(1))
+          .plus(10)
+          .toString()
+      );
+      await claimVoting.calculateResult(1, { from: USER1 });
+
+      const stakingStkBMI = await stkBMI.balanceOf(stkBMIStaking.address);
+      const accStakedStkBMI = await stkBMIStaking.stakedStkBMI(observer, { from: observer });
+      const treasuryStkBMI = await stkBMI.balanceOf(bmiTreasury);
+
+      const reputation = await reputationSystem.reputation(observer);
+      assert.equal(toBN(reputation).toString(), PRECISION.toString());
+
+      assert.equal(await claimingRegistry.claimStatus(1), ClaimStatus.ACCEPTED);
+
+      const voteIndex = await claimVoting.voteIndex(1, observer);
+      assert.equal(await claimVoting.voteStatus(voteIndex), VoteStatus.EXPIRED);
+
+      const res = await claimVoting.receiveVoteResultBatch([1], { from: observer });
+      console.log("ReceiveResult (yes or no, extreme minority) gas used: " + res.receipt.gasUsed);
+
+      assert.equal(toBN(reputation).toString(), toBN(observedReputation).toString());
+
+      assert.equal(
+        toBN(await stkBMI.balanceOf(stkBMIStaking.address)).toString(),
+        toBN(stakingStkBMI).minus(toBN(observedStake)).toString()
+      );
+      assert.equal(
+        toBN(await stkBMIStaking.stakedStkBMI(observer, { from: observer })).toString(),
+        toBN(accStakedStkBMI).minus(toBN(observedStake)).toString()
+      );
+      assert.equal(
+        toBN(await stkBMI.balanceOf(bmiTreasury)).toString(),
+        toBN(treasuryStkBMI).plus(observedStake).toString()
       );
     });
   });
@@ -2900,8 +2835,8 @@ contract("ClaimVoting", async (accounts) => {
       timestamp = await getBlockTimestamp();
       await capitalPool.setliquidityCushionBalance(getStableAmount("1000000"));
 
-      await fastVote(1, USER3, wei("1200"), coverTokensAmount, toBN(PRECISION), true);
-      await fastVote(1, USER4, wei("10000"), coverTokensAmount, toBN(PRECISION), true);
+      await fastVoteConfirmed(1, USER3, wei("1200"), coverTokensAmount, toBN(PRECISION), true);
+      await fastVoteConfirmed(1, USER4, wei("10000"), coverTokensAmount, toBN(PRECISION), true);
     });
     it("should revert if claim is not expired", async () => {
       await setCurrentTime(
@@ -3022,13 +2957,13 @@ contract("ClaimVoting", async (accounts) => {
       await capitalPool.setliquidityCushionBalance(getStableAmount("1000000"));
     });
     it("should get correct repartition (1)", async () => {
-      const staked = [wei("4000"), wei("3000"), wei("1000"), wei("1000")];
+      const staked = [wei("1000"), wei("1000"), wei("1000"), wei("1000")];
       const reputations = [toBN(PRECISION), toBN(PRECISION), toBN(PRECISION), toBN(PRECISION)];
 
-      await fastVote(1, USER3, staked[0], wei("500"), reputations[0], true);
-      await fastVote(1, USER4, staked[1], wei("500"), reputations[1], true);
-      await fastVote(1, USER5, staked[2], 0, reputations[2], false);
-      await fastVote(1, USER6, staked[3], 0, reputations[3], false);
+      await fastVoteConfirmed(1, USER3, staked[0], wei("500"), reputations[0], true);
+      await fastVoteConfirmed(1, USER4, staked[1], wei("500"), reputations[1], true);
+      await fastVoteConfirmed(1, USER5, staked[2], 0, reputations[2], false);
+      await fastVoteConfirmed(1, USER6, staked[3], 0, reputations[3], false);
 
       await setCurrentTime(
         toBN(timestamp)
@@ -3037,19 +2972,35 @@ contract("ClaimVoting", async (accounts) => {
           .toString()
       );
       await claimVoting.calculateResult(1, { from: USER1 });
+      await claimVoting.receiveVoteResultBatch([1], { from: USER3 });
+      await claimVoting.receiveVoteResultBatch([1], { from: USER4 });
+      await claimVoting.receiveVoteResultBatch([1], { from: USER5 });
+      await claimVoting.receiveVoteResultBatch([1], { from: USER6 });
 
       const repartition = await claimingRegistry.getRepartition(1);
-      assert.equal(repartition[0].toString(), "50000");
-      assert.equal(repartition[1].toString(), "50000");
+      assert.equal(
+        repartition[0].toString(),
+        toBN(50)
+          .times(10 ** 25)
+          .toFixed()
+          .toString()
+      );
+      assert.equal(
+        repartition[1].toString(),
+        toBN(50)
+          .times(10 ** 25)
+          .toFixed()
+          .toString()
+      );
     });
     it("should get correct repartition (2)", async () => {
-      const staked = [wei("4000"), wei("3000"), wei("1000"), wei("1000")];
+      const staked = [wei("1000"), wei("1000"), wei("1000"), wei("1000")];
       const reputations = [toBN(PRECISION), toBN(PRECISION), toBN(PRECISION), toBN(PRECISION)];
 
-      await fastVote(1, USER3, staked[0], wei("500"), reputations[0], true);
-      await fastVote(1, USER4, staked[1], wei("500"), reputations[1], true);
-      await fastVote(1, USER5, staked[2], wei("500"), reputations[2], true);
-      await fastVote(1, USER6, staked[3], 0, reputations[3], false);
+      await fastVoteConfirmed(1, USER3, staked[0], wei("500"), reputations[0], true);
+      await fastVoteConfirmed(1, USER4, staked[1], wei("500"), reputations[1], true);
+      await fastVoteConfirmed(1, USER5, staked[2], wei("500"), reputations[2], true);
+      await fastVoteConfirmed(1, USER6, staked[3], 0, reputations[3], false);
 
       await setCurrentTime(
         toBN(timestamp)
@@ -3058,19 +3009,35 @@ contract("ClaimVoting", async (accounts) => {
           .toString()
       );
       await claimVoting.calculateResult(1, { from: USER1 });
+      await claimVoting.receiveVoteResultBatch([1], { from: USER3 });
+      await claimVoting.receiveVoteResultBatch([1], { from: USER4 });
+      await claimVoting.receiveVoteResultBatch([1], { from: USER5 });
+      await claimVoting.receiveVoteResultBatch([1], { from: USER6 });
 
       const repartition = await claimingRegistry.getRepartition(1);
-      assert.equal(repartition[0].toString(), "75000");
-      assert.equal(repartition[1].toString(), "25000");
+      assert.equal(
+        repartition[0].toString(),
+        toBN(75)
+          .times(10 ** 25)
+          .toFixed()
+          .toString()
+      );
+      assert.equal(
+        repartition[1].toString(),
+        toBN(25)
+          .times(10 ** 25)
+          .toFixed()
+          .toString()
+      );
     });
     it("should get correct repartition (3)", async () => {
-      const staked = [wei("4000"), wei("3000"), wei("1000"), wei("1000")];
+      const staked = [wei("1000"), wei("1000"), wei("1000"), wei("1000")];
       const reputations = [toBN(PRECISION), toBN(PRECISION), toBN(PRECISION), toBN(PRECISION)];
 
-      await fastVote(1, USER3, staked[0], 0, reputations[0], false);
-      await fastVote(1, USER4, staked[1], 0, reputations[1], false);
-      await fastVote(1, USER5, staked[2], 0, reputations[2], false);
-      await fastVote(1, USER6, staked[3], 0, reputations[3], false);
+      await fastVoteConfirmed(1, USER3, staked[0], 0, reputations[0], false);
+      await fastVoteConfirmed(1, USER4, staked[1], 0, reputations[1], false);
+      await fastVoteConfirmed(1, USER5, staked[2], 0, reputations[2], false);
+      await fastVoteConfirmed(1, USER6, staked[3], 0, reputations[3], false);
 
       await setCurrentTime(
         toBN(timestamp)
@@ -3079,10 +3046,26 @@ contract("ClaimVoting", async (accounts) => {
           .toString()
       );
       await claimVoting.calculateResult(1, { from: USER1 });
+      await claimVoting.receiveVoteResultBatch([1], { from: USER3 });
+      await claimVoting.receiveVoteResultBatch([1], { from: USER4 });
+      await claimVoting.receiveVoteResultBatch([1], { from: USER5 });
+      await claimVoting.receiveVoteResultBatch([1], { from: USER6 });
 
       const repartition = await claimingRegistry.getRepartition(1);
-      assert.equal(repartition[0].toString(), "100000");
-      assert.equal(repartition[1].toString(), "0");
+      assert.equal(
+        repartition[0].toString(),
+        toBN(0)
+          .times(10 ** 25)
+          .toFixed()
+          .toString()
+      );
+      assert.equal(
+        repartition[1].toString(),
+        toBN(100)
+          .times(10 ** 25)
+          .toFixed()
+          .toString()
+      );
     });
   });
 
@@ -3143,16 +3126,16 @@ contract("ClaimVoting", async (accounts) => {
       whatVoteFor = await claimVoting.whatCanIVoteFor(0, claimsCount, { from: USER6 });
       assert.equal(whatVoteFor[0], 1);
 
-      await fastVote(1, USER3, wei("1200"), coverTokensAmount, toBN(PRECISION), true);
+      await fastVoteConfirmed(1, USER3, wei("1200"), coverTokensAmount, toBN(PRECISION), true);
       whatVoteFor = await claimVoting.whatCanIVoteFor(0, claimsCount, { from: USER3 });
       assert.equal(whatVoteFor[0], 0);
-      await fastVote(1, USER4, wei("100"), coverTokensAmount, toBN(PRECISION), true);
+      await fastVoteConfirmed(1, USER4, wei("100"), coverTokensAmount, toBN(PRECISION), true);
       whatVoteFor = await claimVoting.whatCanIVoteFor(0, claimsCount, { from: USER4 });
       assert.equal(whatVoteFor[0], 0);
-      await fastVote(1, USER5, wei("1000"), coverTokensAmount, toBN(PRECISION), true);
+      await fastVoteConfirmed(1, USER5, wei("1000"), coverTokensAmount, toBN(PRECISION), true);
       whatVoteFor = await claimVoting.whatCanIVoteFor(0, claimsCount, { from: USER5 });
       assert.equal(whatVoteFor[0], 0);
-      await fastVote(1, USER6, wei("5000"), coverTokensAmount, toBN(PRECISION), true);
+      await fastVoteConfirmed(1, USER6, wei("5000"), coverTokensAmount, toBN(PRECISION), true);
       whatVoteFor = await claimVoting.whatCanIVoteFor(0, claimsCount, { from: USER6 });
       assert.equal(whatVoteFor[0], 0);
 
@@ -3169,10 +3152,10 @@ contract("ClaimVoting", async (accounts) => {
       await initVoting(liquidityAmount, coverTokensAmount, 0);
       await policyBook1.submitClaimAndInitializeVoting("", { from: USER1 });
 
-      await fastVote(1, USER3, wei("1200"), coverTokensAmount, toBN(PRECISION), true);
-      await fastVote(1, USER4, wei("100"), coverTokensAmount, toBN(PRECISION), true);
-      await fastVote(1, USER5, wei("1000"), coverTokensAmount, toBN(PRECISION), true);
-      await fastVote(1, USER6, wei("5000"), coverTokensAmount, toBN(PRECISION), true);
+      await fastVoteConfirmed(1, USER3, wei("1200"), coverTokensAmount, toBN(PRECISION), true);
+      await fastVoteConfirmed(1, USER4, wei("100"), coverTokensAmount, toBN(PRECISION), true);
+      await fastVoteConfirmed(1, USER5, wei("1000"), coverTokensAmount, toBN(PRECISION), true);
+      await fastVoteConfirmed(1, USER6, wei("5000"), coverTokensAmount, toBN(PRECISION), true);
 
       await setCurrentTime(
         toBN(timestamp)
@@ -3215,7 +3198,7 @@ contract("ClaimVoting", async (accounts) => {
 
       const bmiCBefore = await bmi.balanceOf(claimVoting.address);
       const bmiUBefore = await bmi.balanceOf(USER1);
-      let bmiAmountLocked = await claimVoting.lockedBMIAmount(1);
+      let bmiAmountLocked = (await claimVoting.votingInfo(1)).lockedBMIAmount;
 
       await claimingRegistry.withdrawClaim(1, { from: USER1 });
 
@@ -3224,7 +3207,7 @@ contract("ClaimVoting", async (accounts) => {
 
       assert.equal(toBN(bmiCAfter).toString(), toBN(bmiCBefore).minus(bmiAmountLocked).toString());
       assert.equal(toBN(bmiUAfter).toString(), toBN(bmiUBefore).plus(bmiAmountLocked).toString());
-      bmiAmountLocked = await claimVoting.lockedBMIAmount(1);
+      bmiAmountLocked = (await claimVoting.votingInfo(1)).lockedBMIAmount;
       assert.equal(bmiAmountLocked.toString(), "0");
 
       assert.equal(
@@ -3259,10 +3242,10 @@ contract("ClaimVoting", async (accounts) => {
       await initVoting(liquidityAmount, coverTokensAmount, 0);
       await policyBook1.submitClaimAndInitializeVoting("", { from: USER1 });
 
-      await fastVote(1, USER3, wei("1200"), claimAmount, toBN(PRECISION), true);
-      await fastVote(1, USER4, wei("100"), claimAmount, toBN(PRECISION), true);
-      await fastVote(1, USER5, wei("1000"), claimAmount, toBN(PRECISION), true);
-      await fastVote(1, USER6, wei("5000"), claimAmount, toBN(PRECISION), true);
+      await fastVoteConfirmed(1, USER3, wei("1200"), claimAmount, toBN(PRECISION), true);
+      await fastVoteConfirmed(1, USER4, wei("100"), claimAmount, toBN(PRECISION), true);
+      await fastVoteConfirmed(1, USER5, wei("1000"), claimAmount, toBN(PRECISION), true);
+      await fastVoteConfirmed(1, USER6, wei("5000"), claimAmount, toBN(PRECISION), true);
 
       await setCurrentTime(
         toBN(timestamp)
@@ -3306,7 +3289,7 @@ contract("ClaimVoting", async (accounts) => {
 
       const bmiCBefore = await bmi.balanceOf(claimVoting.address);
       const bmiUBefore = await bmi.balanceOf(USER1);
-      let bmiAmountLocked = await claimVoting.lockedBMIAmount(1);
+      let bmiAmountLocked = (await claimVoting.votingInfo(1)).lockedBMIAmount;
 
       await claimingRegistry.withdrawClaim(1, { from: USER1 });
 
@@ -3315,7 +3298,7 @@ contract("ClaimVoting", async (accounts) => {
 
       assert.equal(toBN(bmiCAfter).toString(), toBN(bmiCBefore).minus(bmiAmountLocked).toString());
       assert.equal(toBN(bmiUAfter).toString(), toBN(bmiUBefore).plus(bmiAmountLocked).toString());
-      bmiAmountLocked = await claimVoting.lockedBMIAmount(1);
+      bmiAmountLocked = (await claimVoting.votingInfo(1)).lockedBMIAmount;
       assert.equal(bmiAmountLocked.toString(), "0");
 
       assert.equal(

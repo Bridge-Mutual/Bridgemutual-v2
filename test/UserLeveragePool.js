@@ -14,7 +14,7 @@ const BMICoverStaking = artifacts.require("BMICoverStaking");
 const BMICoverStakingView = artifacts.require("BMICoverStakingView");
 const LiquidityRegistry = artifacts.require("LiquidityRegistry");
 const PolicyBookRegistry = artifacts.require("PolicyBookRegistry");
-const RewardsGenerator = artifacts.require("RewardsGenerator");
+const RewardsGenerator = artifacts.require("RewardsGeneratorMock");
 const ReinsurancePool = artifacts.require("ReinsurancePoolMock");
 const PolicyBookAdmin = artifacts.require("PolicyBookAdmin");
 const PolicyRegistry = artifacts.require("PolicyRegistry");
@@ -60,6 +60,11 @@ function toBN(number) {
   return new BigNumber(number);
 }
 
+async function getBlockTimestamp() {
+  const latest = toBN(await web3.eth.getBlockNumber());
+  return (await web3.eth.getBlock(latest)).timestamp;
+}
+
 const { toWei } = web3.utils;
 
 contract("UserLeveragePool", async (accounts) => {
@@ -93,6 +98,8 @@ contract("UserLeveragePool", async (accounts) => {
 
   const epochPeriod = toBN(604800); // 7 days
   const initialDeposit = toBN(toWei("1000"));
+  const epochsNumber = toBN(5);
+  const premium = toBN(toWei("150"));
 
   const USER1 = accounts[1];
   const USER2 = accounts[2];
@@ -104,6 +111,7 @@ contract("UserLeveragePool", async (accounts) => {
   const APY_PRECISION = toBN(10 ** 5);
   const PRECISION = toBN(10).pow(25);
   let withdrawalPeriod;
+  const withdrawalExpirePeriod = toBN(172800);
 
   const NOTHING = accounts[9];
 
@@ -239,11 +247,12 @@ contract("UserLeveragePool", async (accounts) => {
     policyBookRegistry = await PolicyBookRegistry.at(await contractsRegistry.getPolicyBookRegistryContract());
     claimVoting = await ClaimVoting.at(await contractsRegistry.getClaimVotingContract());
     claimingRegistry = await ClaimingRegistry.at(await contractsRegistry.getClaimingRegistryContract());
+    leveragePortfolioView = await LeveragePortfolioView.at(await contractsRegistry.getLeveragePortfolioViewContract());
 
     await policyBookFabric.__PolicyBookFabric_init();
     await claimVoting.__ClaimVoting_init();
     await bmiCoverStaking.__BMICoverStaking_init();
-    await rewardsGenerator.__RewardsGenerator_init();
+    await rewardsGenerator.__RewardsGenerator_init(network);
 
     await policyBookAdmin.__PolicyBookAdmin_init(
       policyBookImpl.address,
@@ -568,8 +577,6 @@ contract("UserLeveragePool", async (accounts) => {
     const liquidityAmount = toBN(toWei("10000"));
     const coverTokensAmount = toBN(toWei("5000"));
 
-    const epochsNumber = toBN(5);
-    const premium = toBN(toWei("150"));
     const amountToWithdraw = toBN(toWei("1000"));
 
     beforeEach("setup", async () => {
@@ -769,6 +776,11 @@ contract("UserLeveragePool", async (accounts) => {
         expectedWithdrawalAmount.toString()
       );
     });
+    it("reverts if token to withdraw is zero", async () => {
+      const reason = "LP: Amount is zero";
+
+      await truffleAssert.reverts(userLeveragePool.requestWithdrawal(0, { from: USER1 }), reason);
+    });
   });
 
   describe("extreme premium case", async () => {
@@ -808,6 +820,10 @@ contract("UserLeveragePool", async (accounts) => {
       assert.equal(toBN(await userLeveragePool.getAPY()).toString(), "0");
     });
 
+    it("calculates correct APY without premium", async () => {
+      assert.equal(toBN(await userLeveragePool.getAPY()), 0);
+    });
+
     it("should calculate correct APY", async () => {
       await stbl.transfer(USER1, stblAmount);
 
@@ -830,6 +846,497 @@ contract("UserLeveragePool", async (accounts) => {
         expectedAPY.toNumber(),
         1
       );
+    });
+  });
+
+  describe("unlockTokens", async () => {
+    let stblAmount;
+    const liquidityAmount = toBN(toWei("10000"));
+    const coverTokensAmount = toBN(toWei("5000"));
+
+    const epochsNumber = toBN(5);
+    const premium = toBN(toWei("150"));
+    const amountToWithdraw = toBN(toWei("1000"));
+
+    beforeEach("setup", async () => {
+      stblAmount = getStableAmount("100000");
+      await stbl.transfer(USER1, stblAmount);
+      await stbl.approve(userLeveragePool.address, stblAmount, { from: USER1 });
+      await stbl.approve(policyBookMock.address, stblAmount, { from: USER1 });
+
+      await userLeveragePool.addLiquidity(liquidityAmount, { from: USER1 });
+      await capitalPool.setliquidityCushionBalance(convert(liquidityAmount));
+
+      policyBookMock.setTotalLiquidity(liquidityAmount);
+      policyBookMock.setTotalCoverTokens(coverTokensAmount);
+      await policyBookAdmin.setPolicyBookFacadeMPLs(policyBookFacade.address, PRECISION.times(20), PRECISION.times(50));
+    });
+
+    it("reverts if withdraw amount is zero", async () => {
+      const reason = "LP: Amount is zero";
+
+      await truffleAssert.reverts(userLeveragePool.unlockTokens({ from: USER1 }), reason);
+    });
+
+    it("should unlock amount of tokens", async () => {
+      await userLeveragePool.approve(userLeveragePool.address, amountToWithdraw, { from: USER1 });
+      await userLeveragePool.requestWithdrawal(amountToWithdraw, { from: USER1 });
+
+      await userLeveragePool.unlockTokens({ from: USER1 });
+
+      assert.equal((await userLeveragePool.withdrawalsInfo(USER1)).withdrawalAmount.toNumber(), 0);
+    });
+  });
+
+  describe("endEpoch", async () => {
+    it("should calculate correct end epoch time", async () => {
+      const secsInWeek = 7 * 24 * 60 * 60;
+      const epochStartTime = toBN(await userLeveragePool.epochStartTime());
+      const timestamp = toBN(await getBlockTimestamp());
+      const endTime = epochStartTime.plus(secsInWeek);
+
+      assert.equal(
+        toBN(await userLeveragePool.secondsToEndCurrentEpoch()).toString(),
+        endTime.minus(timestamp).toString()
+      );
+    });
+  });
+
+  describe("staking modifier", async () => {
+    const amount = toBN(toWei("1000"));
+
+    const liquidityAmount = toBN(toWei("1000"));
+    const coverTokensAmount = toBN(toWei("500"));
+
+    const insuranceContract1 = accounts[6];
+    const insuranceContract2 = accounts[7];
+
+    let policyBook1;
+    let policyBookFacade1;
+    let policyBook2;
+    let policyBookFacade2;
+
+    beforeEach("setup", async () => {
+      const stblInitialDeposit = getStableAmount("10000");
+
+      await stbl.approve(policyBookFabric.address, 0);
+      await stbl.approve(policyBookFabric.address, stblInitialDeposit);
+
+      // Setup PolicyBook 1
+      const policyBookAddress1 = (
+        await policyBookFabric.create(
+          insuranceContract1,
+          ContractType.CONTRACT,
+          `test1 description`,
+          `TEST1`,
+          initialDeposit,
+          zeroAddress
+        )
+      ).logs[0].args.at;
+      policyBook1 = await PolicyBookMock.at(policyBookAddress1);
+      const policyBookFacadeAddress1 = await policyBook1.policyBookFacade();
+      policyBookFacade1 = await PolicyBookFacade.at(policyBookFacadeAddress1);
+
+      await policyBookAdmin.whitelist(policyBook1.address, true);
+      await policyBookAdmin.setPolicyBookFacadeSafePricingModel(policyBookFacade1.address, true);
+
+      policyBook1.setTotalLiquidity(liquidityAmount);
+      policyBook1.setTotalCoverTokens(coverTokensAmount);
+      await policyBookAdmin.setPolicyBookFacadeMPLs(
+        policyBookFacade1.address,
+        PRECISION.times(20),
+        PRECISION.times(50)
+      );
+
+      // Setup PolicyBook 2
+      const policyBookAddress2 = (
+        await policyBookFabric.create(
+          insuranceContract2,
+          ContractType.CONTRACT,
+          `test2 description`,
+          `TEST2`,
+          initialDeposit,
+          zeroAddress
+        )
+      ).logs[0].args.at;
+      policyBook2 = await PolicyBookMock.at(policyBookAddress2);
+      const policyBookFacadeAddress2 = await policyBook2.policyBookFacade();
+      policyBookFacade2 = await PolicyBookFacade.at(policyBookFacadeAddress2);
+
+      await policyBookAdmin.whitelist(policyBook2.address, true);
+      await policyBookAdmin.setPolicyBookFacadeSafePricingModel(policyBookFacade2.address, true);
+
+      policyBook2.setTotalLiquidity(liquidityAmount);
+      policyBook2.setTotalCoverTokens(coverTokensAmount);
+      await policyBookAdmin.setPolicyBookFacadeMPLs(
+        policyBookFacade2.address,
+        PRECISION.times(20),
+        PRECISION.times(50)
+      );
+
+      // Add liquidity and stake
+      await stbl.transfer(USER1, stblInitialDeposit);
+
+      await stbl.approve(userLeveragePool.address, stblInitialDeposit, { from: USER1 });
+      await userLeveragePool.approve(bmiCoverStaking.address, amount, { from: USER1 });
+
+      await userLeveragePool.addLiquidityAndStake(amount, amount, { from: USER1 });
+
+      // Deploy to regular pool
+      await policyBookFacade1.deployLeverageFundsByLP(userLeveragePool.address);
+      await policyBookFacade2.deployLeverageFundsByLP(userLeveragePool.address);
+    });
+
+    it("should calculate correct rewards multiplier", async () => {
+      await userLeveragePool.forceUpdateBMICoverStakingRewardMultiplier();
+
+      const totalLiquidity = await userLeveragePool.totalLiquidity();
+
+      // PolicyBook 1
+      const totalLiquidityPolicyBook1 = await policyBook1.totalLiquidity();
+      const totalCoverTokensPolicyBook1 = await policyBook1.totalCoverTokens();
+      const _poolUR1 = toBN(totalCoverTokensPolicyBook1).times(PERCENTAGE_100).div(totalLiquidityPolicyBook1);
+
+      const BM_b1 = (await rewardsGenerator.getPolicyBookReward(policyBook1.address)).rewardMultiplier;
+
+      const L1 = toBN(await userLeveragePool.poolsLDeployedAmount(policyBook1.address))
+        .times(PRECISION)
+        .div(totalLiquidity);
+
+      const M1 = await leveragePortfolioView.calcM(_poolUR1, userLeveragePool.address);
+
+      const A1 = await userLeveragePool.a2_ProtocolConstant();
+
+      // BMI mulit calcBMIMultiplier
+      const calcBMIMultiplier1 = toBN(BM_b1)
+        .times(L1)
+        .times(M1)
+        .div(PERCENTAGE_100)
+        .times(A1)
+        .div(PERCENTAGE_100)
+        .div(10 ** 3);
+
+      // PolicyBook 2
+      const totalLiquidityPolicyBook2 = await policyBook2.totalLiquidity();
+      const totalCoverTokensPolicyBook2 = await policyBook2.totalCoverTokens();
+      const _poolUR2 = toBN(totalCoverTokensPolicyBook2).times(PERCENTAGE_100).div(totalLiquidityPolicyBook2);
+
+      const BM_b2 = (await rewardsGenerator.getPolicyBookReward(policyBook2.address)).rewardMultiplier;
+
+      const L2 = toBN(await userLeveragePool.poolsLDeployedAmount(policyBook2.address))
+        .times(PRECISION)
+        .div(totalLiquidity);
+      const M2 = await leveragePortfolioView.calcM(_poolUR2, userLeveragePool.address);
+      const A2 = await userLeveragePool.a2_ProtocolConstant();
+
+      // BMI mulit calcBMIMultiplier
+      const calcBMIMultiplier2 = toBN(BM_b2)
+        .times(L2)
+        .times(M2)
+        .div(PERCENTAGE_100)
+        .times(A2)
+        .div(PERCENTAGE_100)
+        .div(10 ** 3);
+
+      const sumBMs = toBN(calcBMIMultiplier1).plus(calcBMIMultiplier2);
+
+      const BM_l = (await rewardsGenerator.getPolicyBookReward(userLeveragePool.address)).rewardMultiplier;
+
+      assert.equal(BM_l.toString(), sumBMs.idiv(10 ** 22).toString());
+    });
+  });
+
+  describe("getWithdrawalStatus", async () => {
+    let stblAmount;
+    let liquidityAmount;
+    let coverTokensAmount;
+    let amountToWithdraw;
+    let epochsNumber;
+
+    beforeEach("setup", async () => {
+      stblAmount = getStableAmount("100000");
+      liquidityAmount = toBN(toWei("10000"));
+      coverTokensAmount = toBN(toWei("8000"));
+      amountToWithdraw = toBN(toWei("1000"));
+      epochsNumber = 5;
+      await stbl.transfer(USER1, stblAmount);
+      await stbl.approve(userLeveragePool.address, stblAmount, { from: USER1 });
+
+      await userLeveragePool.approve(userLeveragePool.address, liquidityAmount.plus(amountToWithdraw), { from: USER1 });
+
+      await userLeveragePool.addLiquidity(liquidityAmount, { from: USER1 });
+    });
+
+    it("should return NONE status if announce does not exists", async () => {
+      assert.equal(toBN(await userLeveragePool.getWithdrawalStatus(USER1)).toString(), WithdrawalStatus.NONE);
+    });
+
+    it("should return PENDING status if withdrawal period not expired", async () => {
+      await userLeveragePool.requestWithdrawal(amountToWithdraw, { from: USER1 });
+
+      assert.equal(toBN(await userLeveragePool.getWithdrawalStatus(USER1)).toString(), WithdrawalStatus.PENDING);
+    });
+
+    it("should return READY status if withdrawal is possible", async () => {
+      const timestamp = await getBlockTimestamp();
+      await userLeveragePool.requestWithdrawal(amountToWithdraw, { from: USER1 });
+
+      // await setCurrentTime(withdrawalPeriod.plus(timestamp));
+      await time.increaseTo(
+        toBN(await time.latest())
+          .plus(withdrawalPeriod.plus(10))
+          .toString()
+      );
+      await time.advanceBlock();
+
+      assert.equal(toBN(await userLeveragePool.getWithdrawalStatus(USER1)).toString(), WithdrawalStatus.READY);
+    });
+
+    it("should return READY status if withdrawal allowed after period", async () => {
+      await userLeveragePool.requestWithdrawal(amountToWithdraw.times(5), { from: USER1 });
+      await capitalPool.addPremium(epochsNumber, premium, userLeveragePool.address);
+
+      await time.increaseTo(
+        toBN(await time.latest())
+          .plus(withdrawalPeriod.plus(10))
+          .toString()
+      );
+      await time.advanceBlock();
+      await capitalPool.setliquidityCushionBalance(getStableAmount("5000"));
+      await capitalPool.sethardUsdtAccumulatedBalance(0);
+
+      await userLeveragePool.withdrawLiquidity({ from: USER1 });
+      assert.isTrue(toBN((await userLeveragePool.withdrawalsInfo(USER1)).withdrawalAmount).gt(0));
+
+      await time.increaseTo(
+        toBN(await time.latest())
+          .plus(withdrawalPeriod.plus(10))
+          .toString()
+      );
+      await time.advanceBlock();
+
+      assert.equal(toBN(await userLeveragePool.getWithdrawalStatus(USER1)).toString(), WithdrawalStatus.READY);
+    });
+
+    it("should return EXPIRED status if withdrawal not possible, withdrawal expire period expired", async () => {
+      await userLeveragePool.requestWithdrawal(amountToWithdraw, { from: USER1 });
+
+      //await setCurrentTime(withdrawalPeriod.plus(withdrawalExpirePeriod).plus(10));
+      await time.increaseTo(
+        toBN(await time.latest())
+          .plus(withdrawalPeriod.plus(withdrawalExpirePeriod).plus(10))
+          .toString()
+      );
+      await time.advanceBlock();
+
+      assert.equal(toBN(await userLeveragePool.getWithdrawalStatus(USER1)).toString(), WithdrawalStatus.EXPIRED);
+    });
+  });
+
+  describe("requestWithdrawal", async () => {
+    let stblAmount;
+    let liquidityAmount;
+    let amountToWithdraw;
+
+    beforeEach("setup", async () => {
+      stblAmount = getStableAmount("100000");
+      liquidityAmount = toBN(toWei("10000"));
+      amountToWithdraw = toBN(toWei("1000"));
+      await stbl.transfer(USER1, stblAmount);
+      await stbl.approve(userLeveragePool.address, stblAmount, { from: USER1 });
+
+      await stbl.transfer(USER2, stblAmount);
+      await stbl.approve(userLeveragePool.address, stblAmount, { from: USER2 });
+
+      await userLeveragePool.approve(userLeveragePool.address, liquidityAmount.plus(amountToWithdraw), { from: USER1 });
+
+      await userLeveragePool.addLiquidity(liquidityAmount, { from: USER1 });
+    });
+
+    it("should correctly announce withdrawal", async () => {
+      const timestamp = await getBlockTimestamp();
+      const txReceipt = await userLeveragePool.requestWithdrawal(amountToWithdraw, { from: USER1 });
+      const event = await userLeveragePool.getPastEvents("WithdrawalRequested");
+
+      assert.equal(
+        toBN(await userLeveragePool.balanceOf(USER1)).toString(),
+        liquidityAmount.minus(amountToWithdraw).toString()
+      );
+      assert.equal(
+        toBN(await userLeveragePool.balanceOf(userLeveragePool.address)).toString(),
+        amountToWithdraw.toString()
+      );
+
+      assert.equal(event[0].event, "WithdrawalRequested");
+      assert.equal(event[0].args._liquidityHolder, USER1);
+      assert.equal(toBN(event[0].args._tokensToWithdraw).toString(), amountToWithdraw.toString());
+      assert.closeTo(
+        toBN(event[0].args._readyToWithdrawDate).toNumber(),
+        withdrawalPeriod.plus(toBN(timestamp)).toNumber(),
+        3
+      );
+
+      assert.equal(toBN(await userLeveragePool.getWithdrawalStatus(USER1)).toString(), WithdrawalStatus.PENDING);
+
+      const withdrawalInfo = await userLeveragePool.withdrawalsInfo(USER1);
+
+      assert.equal(toBN(withdrawalInfo.withdrawalAmount).toString(), amountToWithdraw.toString());
+      assert.closeTo(
+        toBN(withdrawalInfo.readyToWithdrawDate).toNumber(),
+        withdrawalPeriod.plus(toBN(timestamp)).plus(1).toNumber(),
+        2
+      );
+    });
+
+    it("should announce withdrawal if withdrawal status EXPIRED and previous request less than new", async () => {
+      let timestamp = await getBlockTimestamp();
+      await userLeveragePool.requestWithdrawal(amountToWithdraw, { from: USER1 });
+
+      assert.equal(
+        toBN(await userLeveragePool.balanceOf(USER1)).toString(),
+        liquidityAmount.minus(amountToWithdraw).toString()
+      );
+      assert.equal(
+        toBN(await userLeveragePool.balanceOf(userLeveragePool.address)).toString(),
+        amountToWithdraw.toString()
+      );
+
+      const expiryDate = withdrawalPeriod.plus(toBN(timestamp)).plus(withdrawalExpirePeriod).plus(200);
+      await setCurrentTime(expiryDate);
+
+      assert.equal(toBN(await userLeveragePool.getWithdrawalStatus(USER1)).toString(), WithdrawalStatus.EXPIRED);
+
+      timestamp = await getBlockTimestamp();
+      await userLeveragePool.requestWithdrawal(amountToWithdraw.times(2), { from: USER1 });
+
+      assert.equal(
+        toBN(await userLeveragePool.balanceOf(USER1)).toString(),
+        liquidityAmount.minus(amountToWithdraw.times(2)).toString()
+      );
+      assert.equal(
+        toBN(await userLeveragePool.balanceOf(userLeveragePool.address)).toString(),
+        amountToWithdraw.times(2).toString()
+      );
+
+      const event = await userLeveragePool.getPastEvents("WithdrawalRequested");
+
+      assert.equal(event[0].event, "WithdrawalRequested");
+      assert.equal(event[0].args._liquidityHolder, USER1);
+      assert.equal(toBN(event[0].args._tokensToWithdraw).toString(), amountToWithdraw.times(2).toString());
+      assert.closeTo(
+        toBN(event[0].args._readyToWithdrawDate).toNumber(),
+        withdrawalPeriod.plus(toBN(timestamp)).toNumber(),
+        2
+      );
+
+      assert.equal(toBN(await userLeveragePool.getWithdrawalStatus(USER1)).toString(), WithdrawalStatus.PENDING);
+
+      const withdrawalInfo = await userLeveragePool.withdrawalsInfo(USER1);
+
+      assert.equal(toBN(withdrawalInfo.withdrawalAmount).toString(), amountToWithdraw.times(2).toString());
+      assert.closeTo(
+        toBN(withdrawalInfo.readyToWithdrawDate).toNumber(),
+        withdrawalPeriod.plus(toBN(timestamp)).toNumber(),
+        1
+      );
+    });
+
+    it("should announce withdrawal if withdrawal status EXPIRED and previous request greater than new", async () => {
+      await userLeveragePool.requestWithdrawal(amountToWithdraw, { from: USER1 });
+
+      assert.equal(
+        toBN(await userLeveragePool.balanceOf(USER1)).toString(),
+        liquidityAmount.minus(amountToWithdraw).toString()
+      );
+      assert.equal(
+        toBN(await userLeveragePool.balanceOf(userLeveragePool.address)).toString(),
+        amountToWithdraw.toString()
+      );
+
+      const expiryDate = withdrawalPeriod.plus(withdrawalExpirePeriod).plus(10);
+
+      //await setCurrentTime(expiryDate);
+      await time.increaseTo(
+        toBN(await time.latest())
+          .plus(expiryDate)
+          .toString()
+      );
+      await time.advanceBlock();
+
+      assert.equal(toBN(await userLeveragePool.getWithdrawalStatus(USER1)).toString(), WithdrawalStatus.EXPIRED);
+
+      const timestamp = await getBlockTimestamp();
+      await userLeveragePool.requestWithdrawal(amountToWithdraw.div(2), { from: USER1 });
+
+      assert.equal(
+        toBN(await userLeveragePool.balanceOf(USER1)).toString(),
+        liquidityAmount.minus(amountToWithdraw.div(2)).toString()
+      );
+      assert.equal(
+        toBN(await userLeveragePool.balanceOf(userLeveragePool.address)).toString(),
+        amountToWithdraw.div(2).toString()
+      );
+
+      assert.equal(toBN(await userLeveragePool.getWithdrawalStatus(USER1)).toString(), WithdrawalStatus.PENDING);
+
+      const withdrawalInfo = await userLeveragePool.withdrawalsInfo(USER1);
+      assert.equal(toBN(withdrawalInfo.withdrawalAmount).toString(), amountToWithdraw.div(2).toString());
+      assert.closeTo(
+        toBN(withdrawalInfo.readyToWithdrawDate).toNumber(),
+        withdrawalPeriod.plus(timestamp).plus(1).toNumber(),
+        1
+      );
+    });
+
+    it("should correctly requestWithdrawal multiple times", async () => {
+      let timestamp = await getBlockTimestamp();
+      await userLeveragePool.requestWithdrawal(amountToWithdraw, { from: USER1 });
+
+      assert.equal(
+        toBN(await userLeveragePool.balanceOf(USER1)).toString(),
+        liquidityAmount.minus(amountToWithdraw).toString()
+      );
+      assert.equal(
+        toBN(await userLeveragePool.balanceOf(userLeveragePool.address)).toString(),
+        amountToWithdraw.toString()
+      );
+
+      await setCurrentTime(withdrawalPeriod.plus(timestamp).plus(withdrawalExpirePeriod).plus(10));
+
+      assert.equal(toBN(await userLeveragePool.getWithdrawalStatus(USER1)).toString(), WithdrawalStatus.EXPIRED);
+
+      timestamp = await getBlockTimestamp();
+      await userLeveragePool.requestWithdrawal(amountToWithdraw.div(2), { from: USER1 });
+
+      assert.equal(
+        toBN(await userLeveragePool.balanceOf(USER1)).toString(),
+        liquidityAmount.minus(amountToWithdraw.div(2)).toString()
+      );
+      assert.equal(
+        toBN(await userLeveragePool.balanceOf(userLeveragePool.address)).toString(),
+        amountToWithdraw.div(2).toString()
+      );
+
+      await setCurrentTime(withdrawalPeriod.plus(timestamp).plus(withdrawalExpirePeriod).plus(10));
+      assert.equal(toBN(await userLeveragePool.getWithdrawalStatus(USER1)).toString(), WithdrawalStatus.EXPIRED);
+
+      await userLeveragePool.requestWithdrawal(amountToWithdraw.times(2), { from: USER1 });
+
+      assert.equal(
+        toBN(await userLeveragePool.balanceOf(USER1)).toString(),
+        liquidityAmount.minus(amountToWithdraw.times(2)).toString()
+      );
+      assert.equal(
+        toBN(await userLeveragePool.balanceOf(userLeveragePool.address)).toString(),
+        amountToWithdraw.times(2).toString()
+      );
+    });
+
+    it("should get exception, amount to be announced is greater than the available amount", async () => {
+      await userLeveragePool.addLiquidity(liquidityAmount, { from: USER2 });
+
+      const reason = "LP: Wrong announced amount";
+      await truffleAssert.reverts(userLeveragePool.requestWithdrawal(liquidityAmount.plus(1), { from: USER1 }), reason);
     });
   });
 });

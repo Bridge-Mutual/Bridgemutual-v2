@@ -1,4 +1,4 @@
-const BMICoverStaking = artifacts.require("BMICoverStaking");
+const BMICoverStaking = artifacts.require("BMICoverStakingMock");
 const BMICoverStakingView = artifacts.require("BMICoverStakingView");
 const RewardsGenerator = artifacts.require("RewardsGeneratorMock");
 const ContractsRegistry = artifacts.require("ContractsRegistry");
@@ -25,6 +25,7 @@ const ShieldMining = artifacts.require("ShieldMining");
 const LeveragePortfolioView = artifacts.require("LeveragePortfolioView");
 const YieldGenerator = artifacts.require("YieldGenerator");
 const MATICSTBLMock = artifacts.require("MATICSTBLMock");
+const Attacker = artifacts.require("Attacker");
 
 const PolicyBookMock = artifacts.require("PolicyBookMock");
 const PolicyBookFacade = artifacts.require("PolicyBookFacade");
@@ -86,6 +87,8 @@ contract("BMICoverStaking", async (accounts) => {
   let bmiStaking;
   let policyBookAdmin;
   let network;
+  let priceFeed;
+  let bmiPriceInUSDT;
 
   before("setup", async () => {
     network = await getNetwork();
@@ -220,10 +223,11 @@ contract("BMICoverStaking", async (accounts) => {
     const nftStaking = await NFTStaking.at(await contractsRegistry.getNFTStakingContract());
     const shieldMining = await ShieldMining.at(await contractsRegistry.getShieldMiningContract());
     const yieldGenerator = await YieldGenerator.at(await contractsRegistry.getYieldGeneratorContract());
+    priceFeed = await PriceFeed.at(await contractsRegistry.getPriceFeedContract());
 
     await stkBMIToken.__STKBMIToken_init();
     await bmiCoverStaking.__BMICoverStaking_init();
-    await rewardsGenerator.__RewardsGenerator_init();
+    await rewardsGenerator.__RewardsGenerator_init(network);
     await bmiStaking.__BMIStaking_init(0);
     await stkBMIStaking.__StkBMIStaking_init();
 
@@ -290,7 +294,7 @@ contract("BMICoverStaking", async (accounts) => {
     const policyBookAddress = (
       await policyBookFabric.create(
         mockInsuranceContractAddress1,
-        ContractType.STABLECOIN,
+        ContractType.CONTRACT,
         "mock1",
         "1",
         initialDeposit,
@@ -325,7 +329,7 @@ contract("BMICoverStaking", async (accounts) => {
     const policyBook2Address = (
       await policyBookFabric.create(
         mockInsuranceContractAddress2,
-        ContractType.STABLECOIN,
+        ContractType.CONTRACT,
         "mock2",
         "2",
         initialDeposit,
@@ -348,6 +352,7 @@ contract("BMICoverStaking", async (accounts) => {
     // await setCurrentTime(1);
 
     await rewardsGenerator.setRewardPerBlock(wei("100"));
+    bmiPriceInUSDT = (await priceFeed.howManyUSDTsInBMI(wei("1"))).toString();
 
     await reverter.snapshot();
   });
@@ -409,7 +414,13 @@ contract("BMICoverStaking", async (accounts) => {
 
       await policyBook.approve(bmiCoverStaking.address, wei("1000")); // just for a new block
 
-      const info = await bmiCoverStakingView.stakingInfoByStaker(MAIN, [policyBook.address], 0, 1);
+      const info = await bmiCoverStakingView.stakingInfoByStaker(
+        MAIN,
+        [policyBook.address],
+        toBN(bmiPriceInUSDT),
+        0,
+        1
+      );
 
       assert.equal(info.policyBooksInfo.length, 1);
       assert.equal(toBN(info.policyBooksInfo[0].totalStakedSTBL).toString(), toBN(wei("1000")).toString());
@@ -419,7 +430,7 @@ contract("BMICoverStaking", async (accounts) => {
       );
       assert.equal(
         toBN(info.policyBooksInfo[0].stakingAPY).toString(),
-        toBN(await bmiCoverStakingView.getPolicyBookAPY(policyBook.address)).toString()
+        toBN(await bmiCoverStakingView.getPolicyBookAPY(policyBook.address, toBN(bmiPriceInUSDT))).toString()
       );
       assert.equal(toBN(info.policyBooksInfo[0].liquidityAPY).toString(), toBN(await policyBook.getAPY()).toString());
 
@@ -606,6 +617,33 @@ contract("BMICoverStaking", async (accounts) => {
       const infoToken8 = await bmiCoverStakingView.stakingInfoByToken(8);
       assert.equal(infoToken8.policyBookAddress, policyBook2.address);
     });
+
+    it("don't mints 2 NFTs with the same ID under attack", async () => {
+      const attacker = await Attacker.new(bmiCoverStaking.address);
+
+      let nftID = await bmiCoverStaking.nftMintId();
+      assert.equal(nftID, 1);
+
+      let balance = await bmiCoverStaking.balanceOf(attacker.address, 1);
+      assert.equal(balance, 0);
+
+      await policyBook.transfer(attacker.address, wei("50"), { from: HELP });
+      await truffleAssert.reverts(attacker.attack(wei("10"), policyBook.address), "ReentrancyGuard: reentrant call");
+
+      // // id incremented twice
+      // nftID = await bmiCoverStaking.nftMintId();
+      // assert.equal(nftID, 3);
+
+      // // balance on first incrementation of 2
+      // balance = await bmiCoverStaking.balanceOf(attacker.address, 1);
+      // assert.equal(balance, 2);
+
+      // balance = await bmiCoverStaking.balanceOf(attacker.address, 2);
+      // assert.equal(balance, 0);
+
+      // tokenOfOwnerByIndex = await bmiCoverStaking.tokenOfOwnerByIndex(attacker.address, 0);
+      // assert.equal(tokenOfOwnerByIndex, 1);
+    });
   });
 
   describe("extreme cases tests", async () => {
@@ -705,6 +743,23 @@ contract("BMICoverStaking", async (accounts) => {
         toBN(wei("0.00001")).toNumber()
       );
     });
+
+    it("should can't restake BMIs in other chains", async () => {
+      // await setCurrentTime(1);
+      await bmiCoverStaking.setAllowStakeProfit(false);
+
+      await bmiMock.mintArbitrary(bmiCoverStaking.address, wei("10000"));
+      await policyBook.approve(bmiCoverStaking.address, wei("1000"));
+
+      await bmiCoverStaking.stakeBMIX(wei("1000"), policyBook.address);
+
+      await advanceBlocks(9);
+
+      const staked = await bmiStaking.getStakedBMI(MAIN);
+      assert.equal(toBN(staked).toString(), "0");
+
+      await truffleAssert.reverts(bmiCoverStaking.restakeBMIProfit(1), "BDS: restake not avaiable");
+    });
   });
 
   describe("APY", async () => {
@@ -712,13 +767,13 @@ contract("BMICoverStaking", async (accounts) => {
       await policyBook.approve(bmiCoverStaking.address, wei("1000"));
       await bmiCoverStaking.stakeBMIX(wei("10"), policyBook.address);
 
-      let APY = toBN(await bmiCoverStakingView.getPolicyBookAPY(policyBook.address));
+      let APY = toBN(await bmiCoverStakingView.getPolicyBookAPY(policyBook.address, toBN(bmiPriceInUSDT)));
 
       assert.equal(APY.div(APY_PRECISION).toString(), "2140227272.72727");
 
       await policyBookAdmin.whitelist(policyBook.address, false);
 
-      APY = toBN(await bmiCoverStakingView.getPolicyBookAPY(policyBook.address));
+      APY = toBN(await bmiCoverStakingView.getPolicyBookAPY(policyBook.address, toBN(bmiPriceInUSDT)));
 
       assert.equal(APY, 0);
     });
@@ -743,7 +798,7 @@ contract("BMICoverStaking", async (accounts) => {
       await truffleAssert.reverts(bmiCoverStaking.stakeBMIX(wei("1000"), HELP), "BDS: Not a PB");
     });
 
-    it("should withdraw 100 BMI", async () => {
+    it("should withdraw 100 BMI with slashing", async () => {
       await bmiMock.mintArbitrary(bmiCoverStaking.address, wei("10000"));
       await policyBook.approve(bmiCoverStaking.address, wei("1000"));
 
@@ -762,7 +817,23 @@ contract("BMICoverStaking", async (accounts) => {
       assert.equal(result.logs[0].args.to, MAIN);
     });
 
-    it("should withdraw all 100 BMI", async () => {
+    it("should withdraw 100 BMI without slashing", async () => {
+      await bmiCoverStaking.setAllowStakeProfit(false);
+      await bmiMock.mintArbitrary(bmiCoverStaking.address, wei("10000"));
+      await policyBook.approve(bmiCoverStaking.address, wei("1000"));
+
+      await bmiCoverStaking.stakeBMIX(wei("1000"), policyBook.address);
+      const result = await bmiCoverStaking.withdrawBMIProfit(1);
+
+      assert.equal(result.logs.length, 1);
+      assert.equal(result.logs[0].event, "StakingBMIProfitWithdrawn");
+      assert.equal(result.logs[0].args.id, 1);
+      assert.equal(result.logs[0].args.policyBookAddress, policyBook.address);
+      assert.equal(toBN(result.logs[0].args.amount).toNumber(), toBN(wei("100")).toNumber());
+      assert.equal(result.logs[0].args.to, MAIN);
+    });
+
+    it("should withdraw all 100 BMI with slashing", async () => {
       await bmiMock.mintArbitrary(bmiCoverStaking.address, wei("10000"));
       await policyBook.approve(bmiCoverStaking.address, wei("2000"));
 
@@ -791,6 +862,29 @@ contract("BMICoverStaking", async (accounts) => {
       );
       assert.equal(result.logs[0].args.to, MAIN);
     });
+
+    it("should withdraw all 100 BMI without slashing", async () => {
+      await bmiCoverStaking.setAllowStakeProfit(false);
+      await bmiMock.mintArbitrary(bmiCoverStaking.address, wei("10000"));
+      await policyBook.approve(bmiCoverStaking.address, wei("2000"));
+
+      await bmiCoverStaking.stakeBMIX(wei("1000"), policyBook.address);
+      await bmiCoverStaking.stakeBMIX(wei("1000"), policyBook.address);
+      const result = await bmiCoverStaking.withdrawStakerBMIProfit(policyBook.address);
+
+      assert.equal(result.logs.length, 2);
+      assert.equal(result.logs[1].event, "StakingBMIProfitWithdrawn");
+      assert.equal(result.logs[1].args.id, 1);
+      assert.equal(result.logs[1].args.policyBookAddress, policyBook.address);
+      assert.equal(toBN(result.logs[1].args.amount).toNumber(), toBN(wei("150")).toNumber());
+      assert.equal(result.logs[1].args.to, MAIN);
+
+      assert.equal(result.logs[0].event, "StakingBMIProfitWithdrawn");
+      assert.equal(result.logs[0].args.id, 2);
+      assert.equal(result.logs[0].args.policyBookAddress, policyBook.address);
+      assert.equal(toBN(result.logs[0].args.amount).toNumber(), toBN(wei("50")).toNumber());
+      assert.equal(result.logs[0].args.to, MAIN);
+    });
   });
 
   describe("withdrawFundsWithProfit", async () => {
@@ -816,7 +910,7 @@ contract("BMICoverStaking", async (accounts) => {
       await truffleAssert.reverts(bmiCoverStaking.withdrawBMIProfit(1, { from: HELP }), "BDS: Not a token owner");
     });
 
-    it("should withdraw funds, profit and burn NFT", async () => {
+    it("should withdraw funds, profit and burn NFT with slashing", async () => {
       // await setCurrentTime(1);
 
       await bmiMock.mintArbitrary(bmiCoverStaking.address, wei("10000"));
@@ -871,7 +965,58 @@ contract("BMICoverStaking", async (accounts) => {
       assert.equal(result.logs[3].args.policyBookAddress, policyBook.address);
     });
 
-    it("should withdraw all funds, all profit and burn NFT", async () => {
+    it("should withdraw funds, profit and burn NFT without slashing", async () => {
+      // await setCurrentTime(1);
+      await bmiCoverStaking.setAllowStakeProfit(false);
+      await bmiMock.mintArbitrary(bmiCoverStaking.address, wei("10000"));
+      await policyBook.approve(bmiCoverStaking.address, wei("1000"));
+
+      assert.equal(await policyBook.balanceOf(bmiCoverStaking.address), 0);
+      assert.equal(toBN(await policyBook.balanceOf(MAIN)).toString(), toBN(wei("1001000")).toString());
+
+      assert.equal(await stblMock.balanceOf(rewardsGenerator.address), 0);
+      assert.equal(toBN(await policyBook.totalLiquidity()).toString(), toBN(wei("2001000")).toString());
+      await bmiCoverStaking.stakeBMIX(wei("1000"), policyBook.address);
+
+      assert.equal(toBN(await policyBook.balanceOf(bmiCoverStaking.address)).toString(), toBN(wei("1000")).toString());
+      /*
+      assert.equal(
+        toBN(await stblMock.balanceOf(policyBook.address)).toString(),
+        toBN(wei("2001000", "mwei")).toString()
+      );
+      */
+
+      assert.equal((await bmiCoverStakingView.stakingInfoByToken(1)).stakedBMIXAmount, wei("1000"));
+      assert.equal(await bmiCoverStaking.balanceOf(MAIN), 1);
+      assert.equal(await bmiCoverStaking.ownerOf(1), MAIN);
+
+      await setCurrentTime(50 * 24 * 60 * 60);
+
+      const result = await bmiCoverStaking.withdrawFundsWithProfit(1);
+
+      assert.equal(await bmiCoverStaking.balanceOf(MAIN), 0);
+
+      assert.equal(await policyBook.balanceOf(bmiCoverStaking.address), 0);
+      assert.equal(toBN(await policyBook.balanceOf(MAIN)).toString(), toBN(wei("1001000")).toString());
+
+      assert.equal(result.logs.length, 4);
+      assert.equal(result.logs[0].event, "StakingBMIProfitWithdrawn");
+      assert.equal(result.logs[0].args.policyBookAddress, policyBook.address);
+      assert.equal(result.logs[0].args.id, 1);
+      assert.equal(result.logs[0].args.to, MAIN);
+      assert.equal(toBN(result.logs[0].args.amount).toNumber(), toBN(wei("200")).toNumber()); // slashed 20%
+
+      assert.equal(result.logs[1].event, "StakingFundsWithdrawn");
+      assert.equal(result.logs[1].args.policyBookAddress, policyBook.address);
+      assert.equal(result.logs[1].args.id, 1);
+      assert.equal(result.logs[1].args.to, MAIN);
+
+      assert.equal(result.logs[3].event, "StakingNFTBurned");
+      assert.equal(result.logs[3].args.id, 1);
+      assert.equal(result.logs[3].args.policyBookAddress, policyBook.address);
+    });
+
+    it("should withdraw all funds, all profit and burn NFT with slashing", async () => {
       // await setCurrentTime(1);
 
       await bmiMock.mintArbitrary(bmiCoverStaking.address, wei("10000"));
@@ -917,6 +1062,55 @@ contract("BMICoverStaking", async (accounts) => {
         toBN(wei("120")).toNumber(),
         toBN(wei("0.0013")).toNumber()
       ); // slashed 20% (shared 1 block with 2)
+
+      assert.equal(result.logs[5].event, "StakingFundsWithdrawn");
+      assert.equal(result.logs[5].args.policyBookAddress, policyBook.address);
+      assert.equal(result.logs[5].args.id, 1);
+      assert.equal(result.logs[5].args.to, MAIN);
+
+      assert.equal(result.logs[7].event, "StakingNFTBurned");
+      assert.equal(result.logs[7].args.id, 1);
+      assert.equal(result.logs[7].args.policyBookAddress, policyBook.address);
+    });
+
+    it("should withdraw all funds, all profit and burn NFT without slashing", async () => {
+      // await setCurrentTime(1);
+      await bmiCoverStaking.setAllowStakeProfit(false);
+      await bmiMock.mintArbitrary(bmiCoverStaking.address, wei("10000"));
+      await policyBook.approve(bmiCoverStaking.address, wei("2000"));
+
+      await bmiCoverStaking.stakeBMIX(wei("1000"), policyBook.address);
+
+      await bmiCoverStaking.stakeBMIX(wei("1000"), policyBook.address);
+
+      const result = await bmiCoverStaking.withdrawStakerFundsWithProfit(policyBook.address);
+
+      assert.equal(await bmiCoverStaking.balanceOf(MAIN), 0);
+
+      assert.equal(await policyBook.balanceOf(bmiCoverStaking.address), 0);
+      assert.equal(toBN(await policyBook.balanceOf(MAIN)).toString(), toBN(wei("1001000")).toString());
+
+      assert.equal(result.logs.length, 8);
+      assert.equal(result.logs[0].event, "StakingBMIProfitWithdrawn");
+      assert.equal(result.logs[0].args.policyBookAddress, policyBook.address);
+      assert.equal(result.logs[0].args.id, 2);
+      assert.equal(result.logs[0].args.to, MAIN);
+      assert.equal(toBN(result.logs[0].args.amount).toNumber(), toBN(wei("50")).toNumber()); // slashed 20% (shared 1 block with 2)
+
+      assert.equal(result.logs[1].event, "StakingFundsWithdrawn");
+      assert.equal(result.logs[1].args.policyBookAddress, policyBook.address);
+      assert.equal(result.logs[1].args.id, 2);
+      assert.equal(result.logs[1].args.to, MAIN);
+
+      assert.equal(result.logs[3].event, "StakingNFTBurned");
+      assert.equal(result.logs[3].args.id, 2);
+      assert.equal(result.logs[3].args.policyBookAddress, policyBook.address);
+
+      assert.equal(result.logs[4].event, "StakingBMIProfitWithdrawn");
+      assert.equal(result.logs[4].args.policyBookAddress, policyBook.address);
+      assert.equal(result.logs[4].args.id, 1);
+      assert.equal(result.logs[4].args.to, MAIN);
+      assert.equal(toBN(result.logs[4].args.amount).toNumber(), toBN(wei("150")).toNumber()); // slashed 20% (shared 1 block with 2)
 
       assert.equal(result.logs[5].event, "StakingFundsWithdrawn");
       assert.equal(result.logs[5].args.policyBookAddress, policyBook.address);

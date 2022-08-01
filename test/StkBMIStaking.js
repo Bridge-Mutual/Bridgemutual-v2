@@ -29,7 +29,7 @@ const ReputationSystem = artifacts.require("ReputationSystemMock");
 const STKBMITokenMock = artifacts.require("STKBMITokenMock");
 const StkBMIStaking = artifacts.require("StkBMIStaking");
 
-const PolicyBook = artifacts.require("PolicyBook");
+const PolicyBook = artifacts.require("PolicyBookMock");
 const PolicyBookMock = artifacts.require("PolicyBookMock");
 const PolicyBookFacade = artifacts.require("PolicyBookFacade");
 
@@ -183,6 +183,7 @@ contract("StkBMIStaking", async (accounts) => {
     await contractsRegistry.addContract(await contractsRegistry.DEFI_PROTOCOL_3_NAME(), NOTHING);
     await contractsRegistry.addContract(await contractsRegistry.BMI_UTILITY_NFT_NAME(), NOTHING);
     await contractsRegistry.addContract(await contractsRegistry.LIQUIDITY_BRIDGE_NAME(), NOTHING);
+    await contractsRegistry.addContract(await contractsRegistry.BMI_TREASURY_NAME(), NOTHING);
 
     await contractsRegistry.addContract(await contractsRegistry.USDT_NAME(), stbl.address);
     await contractsRegistry.addContract(await contractsRegistry.BMI_NAME(), bmi.address);
@@ -275,7 +276,7 @@ contract("StkBMIStaking", async (accounts) => {
     await policyBookFabric.__PolicyBookFabric_init();
     await claimingRegistry.__ClaimingRegistry_init();
     await claimVoting.__ClaimVoting_init();
-    await rewardsGenerator.__RewardsGenerator_init();
+    await rewardsGenerator.__RewardsGenerator_init(network);
     await capitalPool.__CapitalPool_init();
     await reinsurancePool.__ReinsurancePool_init();
     await bmiCoverStaking.__BMICoverStaking_init();

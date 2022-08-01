@@ -59,4 +59,8 @@ contract PolicyBookMock is PolicyBook {
     function hasProcedureOngoing(address poolAddress) public view returns (bool hasProcedure) {
         hasProcedure = claimingRegistry.hasProcedureOngoing(poolAddress);
     }
+
+    function getVirtualEpochs(address user) public view override returns (uint256 virtualEpochs) {
+        virtualEpochs = VIRTUAL_EPOCHS;
+    }
 }

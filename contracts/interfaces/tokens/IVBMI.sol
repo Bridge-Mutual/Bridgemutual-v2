@@ -6,7 +6,5 @@ import "../../interfaces/tokens/erc20permit-upgradeable/IERC20PermitUpgradeable.
 import "@openzeppelin/contracts-upgradeable/token/ERC20/IERC20Upgradeable.sol";
 
 interface IVBMI is IERC20Upgradeable, IERC20PermitUpgradeable {
-    function unlockStkBMIFor(address user) external;
-
     function slashUserTokens(address user, uint256 amount) external;
 }

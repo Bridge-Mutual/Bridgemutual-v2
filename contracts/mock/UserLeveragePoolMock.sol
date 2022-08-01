@@ -3,6 +3,8 @@ pragma solidity ^0.7.4;
 pragma experimental ABIEncoderV2;
 
 import "../UserLeveragePool.sol";
+import "./PolicyBookFacadeMock.sol";
+import "../interfaces/IPolicyBook.sol";
 
 contract UserLeveragePoolMock is UserLeveragePool {
     using EnumerableSet for EnumerableSet.AddressSet;
@@ -29,5 +31,7 @@ contract UserLeveragePoolMock is UserLeveragePool {
 
     function addInvestedPools(address policyBookAddress) external {
         leveragedCoveragePools.add(policyBookAddress);
+        address policyBookFacadeAdd = address(IPolicyBook(policyBookAddress).policyBookFacade());
+        IPolicyBookFacadeMock(policyBookFacadeAdd).addLeveragePools(address(this));
     }
 }

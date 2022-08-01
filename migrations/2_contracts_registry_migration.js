@@ -1,4 +1,4 @@
-const { logTransaction } = require("./helpers/logger.js");
+const { logTransaction, logAddress } = require("./helpers/logger.js");
 const { mainnet } = require("./helpers/AddressCatalog.js");
 
 const Proxy = artifacts.require("TransparentUpgradeableProxy");
@@ -15,6 +15,7 @@ module.exports = async (deployer, network, accounts) => {
   } else {
     await deployer.deploy(BMIProxyAdmin);
     proxy = (await BMIProxyAdmin.deployed()).address;
+    logAddress("BMIProxyAdmin", proxy);
   }
 
   await deployer.deploy(Proxy, contractsRegistry.address, proxy, []);

@@ -31,6 +31,8 @@ abstract contract AbstractLeveragePortfolio is
     using Math for uint256;
     using EnumerableSet for EnumerableSet.AddressSet;
 
+    uint256 private constant MAX_INVESTED_POOLS = 20;
+
     ICapitalPool public capitalPool;
     IPolicyBookRegistry public policyBookRegistry;
     ILeveragePortfolioView public leveragePortfolioView;
@@ -171,6 +173,9 @@ abstract contract AbstractLeveragePortfolio is
         internal
         returns (uint256 deployedAmount)
     {
+        if (isExceedMaxInvestedPools(policyBookAddress)) {
+            return 0;
+        }
         if (vStableWeight == 0) {
             vStableWeight = leveragePortfolioView.calcvStableFormulaforAllPools();
         }
@@ -186,6 +191,8 @@ abstract contract AbstractLeveragePortfolio is
         if (deployedAmount > 0) {
             poolsVDeployedAmount[policyBookAddress] = deployedAmount;
             leveragedCoveragePools.add(policyBookAddress);
+        } else {
+            poolsVDeployedAmount[policyBookAddress] = 0;
         }
 
         emit VirtualStableDeployed(policyBookAddress, deployedAmount);
@@ -198,6 +205,9 @@ abstract contract AbstractLeveragePortfolio is
         LeveragePortfolio leveragePoolType,
         address policyBookAddress
     ) internal returns (uint256 deployedAmount) {
+        if (isExceedMaxInvestedPools(policyBookAddress)) {
+            return 0;
+        }
         IPolicyBookFacade _policyBookFacade =
             leveragePortfolioView.getPolicyBookFacade(policyBookAddress);
 
@@ -239,6 +249,19 @@ abstract contract AbstractLeveragePortfolio is
         );
 
         emit LeverageStableDeployed(policyBookAddress, deployedAmount);
+    }
+
+    function isExceedMaxInvestedPools(address _policyBookAdd)
+        internal
+        view
+        returns (bool _isExceed)
+    {
+        if (
+            !leveragedCoveragePools.contains(_policyBookAdd) &&
+            leveragedCoveragePools.length() >= MAX_INVESTED_POOLS
+        ) {
+            _isExceed = true;
+        }
     }
 
     /// @notice reevaluate all pools provided by the leverage stable upon threshold

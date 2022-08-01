@@ -232,7 +232,7 @@ contract("PolicyBook2", async (accounts) => {
     );
     await claimingRegistry.__ClaimingRegistry_init();
     await reinsurancePool.__ReinsurancePool_init();
-    await rewardsGeneratorMock.__RewardsGenerator_init();
+    await rewardsGeneratorMock.__RewardsGenerator_init(network);
     await nftStaking.__NFTStaking_init();
     await yieldGenerator.__YieldGenerator_init(network);
     await capitalPool.__CapitalPool_init();
@@ -704,7 +704,7 @@ contract("PolicyBook2", async (accounts) => {
       rewardsGenerator = await RewardsGeneratorMock.at(await contractsRegistry.getRewardsGeneratorContract());
       const policyBookRegistry = await PolicyBookRegistry.at(await contractsRegistry.getPolicyBookRegistryContract());
 
-      await rewardsGenerator.__RewardsGenerator_init();
+      await rewardsGenerator.__RewardsGenerator_init(network);
       await policyBookMock.__PolicyBookMock_init(NOTHING, ContractType.CONTRACT);
       await policyBookFacadeMock.__PolicyBookFacade_init(policyBookMock.address, accounts[0], wei("1000"));
 

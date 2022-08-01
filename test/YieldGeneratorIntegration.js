@@ -21,7 +21,7 @@ const BMICoverStakingView = artifacts.require("BMICoverStakingView");
 const NFTStaking = artifacts.require("NFTStaking");
 const ShieldMining = artifacts.require("ShieldMining");
 
-const PolicyBook = artifacts.require("PolicyBook");
+const PolicyBook = artifacts.require("PolicyBookMock");
 const PolicyBookFacade = artifacts.require("PolicyBookFacade");
 const UserLeveragePool = artifacts.require("UserLeveragePool");
 
@@ -269,7 +269,7 @@ contract("YieldGenerator", async (accounts) => {
     );
     await policyBookFabric.__PolicyBookFabric_init();
     await claimingRegistry.__ClaimingRegistry_init();
-    await rewardsGenerator.__RewardsGenerator_init();
+    await rewardsGenerator.__RewardsGenerator_init(network);
     await bmiCoverStaking.__BMICoverStaking_init();
     await nftStaking.__NFTStaking_init();
 
@@ -358,7 +358,6 @@ contract("YieldGenerator", async (accounts) => {
       depositAmount = getStableAmount("1000");
 
       const oneDayGain = toBN(await yieldGenerator.getOneDayGain(0)).div(PRECISION);
-     
 
       const rate = toBN((await lendingPool.getReserveData(stblMock.address)).currentLiquidityRate);
 
@@ -366,7 +365,6 @@ contract("YieldGenerator", async (accounts) => {
       assert.equal(oneDayGain.toString(), expectedOneDayGain.div(PRECISION).toString());
 
       const oneDayReturn = oneDayGain.times(depositAmount); // 84377.94094353089 mgetStableAmount = 0.08 usdt
-     
     });
     it("deposit", async () => {
       depositAmount = getStableAmount("1000");
@@ -407,7 +405,6 @@ contract("YieldGenerator", async (accounts) => {
       assert.equal(toBN(await aaveProtocol.totalDeposit()).toString(), getStableAmount("5397.058823").toString());
     });
 
-    
     it("claimRewards", async () => {
       depositAmount = getStableAmount("1000");
       await stblMock.mintArbitrary(capitalPool.address, depositAmount);
@@ -418,6 +415,7 @@ contract("YieldGenerator", async (accounts) => {
       await yieldGenerator.claimRewards();
 
       assert.equal((await stblMock.balanceOf(reinsurancePool.address)).toString(), 0);
+      assert.equal((await reinsurancePool.totalLiquidity()).toString(), wei("100"));
       assert.equal((await stblMock.balanceOf(capitalPool.address)).toString(), rewardAmount.toString());
       assert.equal((await stblMock.balanceOf(aToken.address)).toString(), depositAmount.toFixed().toString());
 
@@ -458,7 +456,6 @@ contract("YieldGenerator", async (accounts) => {
       depositAmount = getStableAmount("1000");
 
       const oneDayGain = toBN(await yieldGenerator.getOneDayGain(1)).div(PRECISION);
-     
 
       const rate = toBN(await cToken.getSupplyRatePerBlock())
         .times(BLOCKS_PER_DAY)
@@ -469,7 +466,6 @@ contract("YieldGenerator", async (accounts) => {
       assert.equal(oneDayGain.toString(), expectedOneDayGain.div(PRECISION).toString());
 
       const oneDayReturn = oneDayGain.times(depositAmount); // 78685.62858345 mgetStableAmount = 0.07 usdt
-      
     });
     it("deposit", async () => {
       depositAmount = getStableAmount("1000");
@@ -539,6 +535,7 @@ contract("YieldGenerator", async (accounts) => {
       await yieldGenerator.claimRewards();
 
       assert.equal((await stblMock.balanceOf(reinsurancePool.address)).toString(), 0);
+      assert.equal((await reinsurancePool.totalLiquidity()).toString(), wei("75.784753"));
       assert.equal(toBN(await stblMock.balanceOf(capitalPool.address)).toString(), rewardAmount.toString());
       assert.equal(toBN(await stblMock.balanceOf(cToken.address)).toString(), depositAmount.toString());
 
@@ -583,7 +580,6 @@ contract("YieldGenerator", async (accounts) => {
       depositAmount = getStableAmount("1000");
 
       const oneDayGain = toBN(await yieldGenerator.getOneDayGain(2)).div(PRECISION);
-      
 
       const priceChange = toBN(await vault.pricePerShare())
         .minus(pricePerShareInit)
@@ -594,7 +590,6 @@ contract("YieldGenerator", async (accounts) => {
       assert.equal(oneDayGain.toNumber(), expectedOneDayGain.div(PRECISION).toNumber());
 
       const oneDayReturn = oneDayGain.times(depositAmount); // 83333.33333333333 mgetStableAmount = 0.08 usdt
-     
     });
 
     it("deposit", async function () {
@@ -647,6 +642,7 @@ contract("YieldGenerator", async (accounts) => {
       await yieldGenerator.claimRewards();
 
       assert.equal((await stblMock.balanceOf(reinsurancePool.address)).toString(), 0);
+      assert.equal((await reinsurancePool.totalLiquidity()).toString(), wei("107.125091"));
       assert.equal(toBN(await stblMock.balanceOf(capitalPool.address)).toString(), rewardAmount.toString());
       assert.equal(toBN(await stblMock.balanceOf(vault.address)).toString(), depositAmount.toString());
 

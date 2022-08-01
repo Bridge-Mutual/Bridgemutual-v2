@@ -43,18 +43,6 @@ contract VBMI is IVBMI, ERC20PermitUpgradeable, AbstractDependant {
         stkBMIStaking = IStkBMIStaking(_contractsRegistry.getStkBMIStakingContract());
     }
 
-    function unlockStkBMIFor(address user) external override {
-        require(_msgSender() == 0x28234C11ea2665c25D60523d80659b123130da80);
-
-        uint256 userAmount = balanceOf(user);
-
-        stkBMIToken.transfer(address(stkBMIStaking), userAmount);
-
-        stkBMIStaking.lockStkBMIFor(user, userAmount);
-
-        emit Unlocked(user, userAmount);
-    }
-
     function _transfer(
         address sender,
         address recipient,

@@ -41,13 +41,6 @@ contract ClaimVoting is IClaimVoting, Initializable, AbstractDependant {
 
     uint256 public stblDecimals;
 
-    uint256 public constant PERCENTAGE_50 = 50 * PRECISION;
-
-    uint256 public constant APPROVAL_PERCENTAGE = 66 * PRECISION;
-    uint256 public constant PENALTY_THRESHOLD = 11 * PRECISION;
-    uint256 public constant QUORUM = 10 * PRECISION;
-    uint256 public constant CALCULATION_REWARD_PER_DAY = PRECISION;
-
     // claim index -> info
     mapping(uint256 => VotingResult) internal _votings;
 
@@ -74,8 +67,6 @@ contract ClaimVoting is IClaimVoting, Initializable, AbstractDependant {
 
     event AnonymouslyVoted(uint256 claimIndex);
     event VoteExposed(uint256 claimIndex, address voter, uint256 suggestedClaimAmount);
-    event VoteCalculated(uint256 claimIndex, address voter, VoteStatus status);
-    event RewardsForVoteCalculationSent(address voter, uint256 bmiAmount);
     event RewardsForClaimCalculationSent(address calculator, uint256 bmiAmount);
     event ClaimCalculated(uint256 claimIndex, address calculator);
 
@@ -87,6 +78,14 @@ contract ClaimVoting is IClaimVoting, Initializable, AbstractDependant {
     modifier onlyClaimingRegistry() {
         require(msg.sender == address(claimingRegistry), "CV: Not ClaimingRegistry");
         _;
+    }
+
+    function _isVoteAwaitingReception(uint256 index) internal view returns (bool) {
+        uint256 claimIndex = _allVotesByIndexInst[index].claimIndex;
+
+        return
+            _allVotesByIndexInst[index].status == VoteStatus.EXPOSED_PENDING &&
+            !claimingRegistry.isClaimPending(claimIndex);
     }
 
     function _isVoteAwaitingExposure(uint256 index) internal view returns (bool) {
@@ -101,6 +100,12 @@ contract ClaimVoting is IClaimVoting, Initializable, AbstractDependant {
 
         return (_allVotesByIndexInst[index].status == VoteStatus.ANONYMOUS_PENDING &&
             !claimingRegistry.isClaimVotable(claimIndex));
+    }
+
+    function isToReceive(uint256 claimIndex, address user) external view override returns (bool) {
+        return
+            _myNotReceivedVotes[user].contains(claimIndex) &&
+            !claimingRegistry.isClaimPending(claimIndex);
     }
 
     function __ClaimVoting_init() external initializer {
@@ -118,7 +123,6 @@ contract ClaimVoting is IClaimVoting, Initializable, AbstractDependant {
             _contractsRegistry.getPolicyBookRegistryContract()
         );
         reputationSystem = IReputationSystem(_contractsRegistry.getReputationSystemContract());
-        reinsurancePool = IReinsurancePool(_contractsRegistry.getReinsurancePoolContract());
         bmiToken = IERC20(_contractsRegistry.getBMIContract());
         stkBMIStaking = IStkBMIStaking(_contractsRegistry.getStkBMIStakingContract());
 
@@ -154,36 +158,46 @@ contract ClaimVoting is IClaimVoting, Initializable, AbstractDependant {
         _votings[claimIndex].reinsuranceTokensAmount = reinsuranceTokensAmount;
     }
 
-    /// @dev check if no vote or vote pending reception, if true -> can vote
-    /// @dev Voters can vote on other Claims only when they updated their reputation and received outcomes for all Resolved Claims.
-    /// @dev _myNotReceivedVotes represent list of vote pending calculation or calculated but not received
-    function canVote(address user) public view override returns (bool) {
-        return _myNotReceivedVotes[user].length() == 0;
-    }
-
     /// @dev check in StkBMIStaking when withdrawing, if true -> can withdraw
     /// @dev Voters can unstake stkBMI only when there are no voted Claims
     function canUnstake(address user) external view override returns (bool) {
-        uint256 voteLength = _myVotes[user].length();
+        return _myNotReceivedVotes[user].length() == 0;
+    }
 
-        for (uint256 i = 0; i < voteLength; i++) {
-            if (voteStatus(_myVotes[user].at(i)) != VoteStatus.RECEIVED) {
+    /// @dev check if no vote or vote pending reception, if true -> can vote
+    /// @dev Voters can vote on other Claims only when they updated their reputation and received outcomes for all Resolved Claims.
+    /// @dev _myNotReceivedVotes represent list of vote pending reception
+    function canVote(address user) public view override returns (bool) {
+        for (uint256 i = 0; i < _myNotReceivedVotes[user].length(); i++) {
+            uint256 voteIndex = _allVotesToIndex[user][_myNotReceivedVotes[user].at(i)];
+            if (_isVoteAwaitingReception(voteIndex) || _isVoteExpired(voteIndex)) {
                 return false;
             }
         }
         return true;
     }
 
-    function countVoteOnClaim(uint256 claimIndex) external view override returns (uint256) {
-        return _votings[claimIndex].voteIndexes.length();
-    }
-
-    function lockedBMIAmount(uint256 claimIndex) public view override returns (uint256) {
-        return _votings[claimIndex].lockedBMIAmount;
+    function votingInfo(uint256 claimIndex)
+        external
+        view
+        override
+        returns (
+            uint256 countVoteOnClaim,
+            uint256 lockedBMIAmount,
+            uint256 votedYesPercentage
+        )
+    {
+        countVoteOnClaim = _votings[claimIndex].voteIndexes.length();
+        lockedBMIAmount = _votings[claimIndex].lockedBMIAmount;
+        votedYesPercentage = _votings[claimIndex].votedYesPercentage;
     }
 
     function countVotes(address user) external view override returns (uint256) {
         return _myVotes[user].length();
+    }
+
+    function countNotReceivedVotes(address user) external view override returns (uint256) {
+        return _myNotReceivedVotes[user].length();
     }
 
     function voteIndex(uint256 claimIndex, address user) external view returns (uint256) {
@@ -197,19 +211,12 @@ contract ClaimVoting is IClaimVoting, Initializable, AbstractDependant {
             );
     }
 
-    function voteIndexByClaimIndexAt(uint256 claimIndex, uint256 orderIndex)
-        external
-        view
-        override
-        returns (uint256)
-    {
-        return _votings[claimIndex].voteIndexes.at(orderIndex);
-    }
-
     function voteStatus(uint256 index) public view override returns (VoteStatus) {
         require(_allVotesIndexes.contains(index), "CV: Vote doesn't exist");
 
-        if (_isVoteAwaitingExposure(index)) {
+        if (_isVoteAwaitingReception(index)) {
+            return VoteStatus.AWAITING_RECEPTION;
+        } else if (_isVoteAwaitingExposure(index)) {
             return VoteStatus.AWAITING_EXPOSURE;
         } else if (_isVoteExpired(index)) {
             return VoteStatus.EXPIRED;
@@ -261,89 +268,58 @@ contract ClaimVoting is IClaimVoting, Initializable, AbstractDependant {
         }
     }
 
-    /// @dev use with claimingRegistry.countClaims()
-    function allClaims(uint256 offset, uint256 limit)
-        external
-        view
-        override
-        returns (AllClaimInfo[] memory _allClaimsInfo)
-    {
-        uint256 to = (offset.add(limit)).min(claimingRegistry.countClaims()).max(offset);
+    /// @dev use with claimingRegistry.countClaims() if listOption == ALL
+    /// @dev use with claimingRegistry.countPolicyClaimerClaims() if listOption == MINE
+    function listClaims(
+        uint256 offset,
+        uint256 limit,
+        ListOption listOption
+    ) external view override returns (AllClaimInfo[] memory _claimsInfo) {
+        uint256 count;
+        if (listOption == ListOption.ALL) {
+            count = claimingRegistry.countClaims();
+        } else if (listOption == ListOption.MINE) {
+            count = claimingRegistry.countPolicyClaimerClaims(msg.sender);
+        }
 
-        _allClaimsInfo = new AllClaimInfo[](to - offset);
+        uint256 to = (offset.add(limit)).min(count).max(offset);
+
+        _claimsInfo = new AllClaimInfo[](to - offset);
 
         for (uint256 i = offset; i < to; i++) {
-            uint256 index = claimingRegistry.claimIndexAt(i);
+            uint256 index;
+            if (listOption == ListOption.ALL) {
+                index = claimingRegistry.claimIndexAt(i);
+            } else if (listOption == ListOption.MINE) {
+                index = claimingRegistry.claimOfOwnerIndexAt(msg.sender, i);
+            }
 
             IClaimingRegistry.ClaimInfo memory claimInfo = claimingRegistry.claimInfo(index);
 
-            _allClaimsInfo[i - offset].publicClaimInfo.claimIndex = index;
-            _allClaimsInfo[i - offset].publicClaimInfo.claimer = claimInfo.claimer;
-            _allClaimsInfo[i - offset].publicClaimInfo.policyBookAddress = claimInfo
+            _claimsInfo[i - offset].publicClaimInfo.claimIndex = index;
+            _claimsInfo[i - offset].publicClaimInfo.claimer = claimInfo.claimer;
+            _claimsInfo[i - offset].publicClaimInfo.policyBookAddress = claimInfo
                 .policyBookAddress;
-            _allClaimsInfo[i - offset].publicClaimInfo.evidenceURI = claimInfo.evidenceURI;
-            _allClaimsInfo[i - offset].publicClaimInfo.appeal = claimInfo.appeal;
-            _allClaimsInfo[i - offset].publicClaimInfo.claimAmount = claimInfo.claimAmount;
-            _allClaimsInfo[i - offset].publicClaimInfo.time = claimInfo.dateSubmitted;
+            _claimsInfo[i - offset].publicClaimInfo.evidenceURI = claimInfo.evidenceURI;
+            _claimsInfo[i - offset].publicClaimInfo.appeal = claimInfo.appeal;
+            _claimsInfo[i - offset].publicClaimInfo.claimAmount = claimInfo.claimAmount;
+            _claimsInfo[i - offset].publicClaimInfo.time = claimInfo.dateSubmitted;
 
-            _allClaimsInfo[i - offset].finalVerdict = claimInfo.status;
+            _claimsInfo[i - offset].finalVerdict = claimInfo.status;
 
-            if (
-                _allClaimsInfo[i - offset].finalVerdict == IClaimingRegistry.ClaimStatus.ACCEPTED
-            ) {
-                _allClaimsInfo[i - offset].finalClaimAmount = _votings[index]
+            if (_claimsInfo[i - offset].finalVerdict == IClaimingRegistry.ClaimStatus.ACCEPTED) {
+                _claimsInfo[i - offset].finalClaimAmount = _votings[index]
                     .votedAverageWithdrawalAmount;
             }
 
             if (claimingRegistry.canClaimBeCalculatedByAnyone(index)) {
-                _allClaimsInfo[i - offset].bmiCalculationReward = _getBMIRewardForCalculation(
-                    index
-                );
+                _claimsInfo[i - offset].bmiCalculationReward = claimingRegistry
+                    .getBMIRewardForCalculation(index);
             }
         }
     }
 
-    /// @dev use with claimingRegistry.countPolicyClaimerClaims()
-    function myClaims(uint256 offset, uint256 limit)
-        external
-        view
-        override
-        returns (MyClaimInfo[] memory _myClaimsInfo)
-    {
-        uint256 to =
-            (offset.add(limit)).min(claimingRegistry.countPolicyClaimerClaims(msg.sender)).max(
-                offset
-            );
-
-        _myClaimsInfo = new MyClaimInfo[](to - offset);
-
-        for (uint256 i = offset; i < to; i++) {
-            uint256 index = claimingRegistry.claimOfOwnerIndexAt(msg.sender, i);
-
-            IClaimingRegistry.ClaimInfo memory claimInfo = claimingRegistry.claimInfo(index);
-
-            _myClaimsInfo[i - offset].index = index;
-            _myClaimsInfo[i - offset].policyBookAddress = claimInfo.policyBookAddress;
-            _myClaimsInfo[i - offset].evidenceURI = claimInfo.evidenceURI;
-            _myClaimsInfo[i - offset].appeal = claimInfo.appeal;
-            _myClaimsInfo[i - offset].claimAmount = claimInfo.claimAmount;
-            _myClaimsInfo[i - offset].finalVerdict = claimInfo.status;
-
-            if (_myClaimsInfo[i - offset].finalVerdict == IClaimingRegistry.ClaimStatus.ACCEPTED) {
-                _myClaimsInfo[i - offset].finalClaimAmount = _votings[index]
-                    .votedAverageWithdrawalAmount;
-            } else if (
-                _myClaimsInfo[i - offset].finalVerdict ==
-                IClaimingRegistry.ClaimStatus.AWAITING_CALCULATION
-            ) {
-                _myClaimsInfo[i - offset].bmiCalculationReward = _getBMIRewardForCalculation(
-                    index
-                );
-            }
-        }
-    }
-
-    /// @dev use with countVotes()
+    /// @dev use with countNotReceivedVotes()
     function myVotes(uint256 offset, uint256 limit)
         external
         view
@@ -355,8 +331,8 @@ contract ClaimVoting is IClaimVoting, Initializable, AbstractDependant {
         _myVotesInfo = new MyVoteInfo[](to - offset);
 
         for (uint256 i = offset; i < to; i++) {
-            uint256 voteIndex = _myVotes[msg.sender].at(i);
-            uint256 claimIndex = _allVotesByIndexInst[voteIndex].claimIndex;
+            uint256 claimIndex = _myNotReceivedVotes[msg.sender].at(i);
+            uint256 voteIndex = _allVotesToIndex[msg.sender][claimIndex];
 
             IClaimingRegistry.ClaimInfo memory claimInfo = claimingRegistry.claimInfo(claimIndex);
 
@@ -401,24 +377,62 @@ contract ClaimVoting is IClaimVoting, Initializable, AbstractDependant {
         }
     }
 
-    function myNotReceivesVotes(address user)
-        public
+    // filter on display is made on FE
+    // if the claim is calculated and the vote is received or if the claim is EXPIRED, it will not display reward
+    // as reward is calculated on lockedBMIAmount and actual reputation it will not be accurate
+    function myVoteUpdate(uint256 claimIndex)
+        external
         view
         override
-        returns (uint256[] memory claimIndexes, VotesUpdatesInfo[] memory voteRewardInfo)
+        returns (VotesUpdatesInfo memory _myVotesUpdatesInfo)
     {
-        uint256 notReceivedCount = _myNotReceivedVotes[user].length();
-        claimIndexes = new uint256[](notReceivedCount);
-        voteRewardInfo = new VotesUpdatesInfo[](notReceivedCount);
+        uint256 voteIndex = _allVotesToIndex[msg.sender][claimIndex];
+        uint256 oldReputation = reputationSystem.reputation(msg.sender);
 
-        for (uint256 i = 0; i < notReceivedCount; i++) {
-            uint256 claimIndex = _myNotReceivedVotes[user].at(i);
-            uint256 voteIndex = _allVotesToIndex[user][claimIndex];
-            claimIndexes[i] = claimIndex;
-            voteRewardInfo[i].bmiReward = voteResults[voteIndex].bmiReward;
-            voteRewardInfo[i].stblReward = voteResults[voteIndex].stblReward;
-            voteRewardInfo[i].reputationChange = voteResults[voteIndex].reputationChange;
-            voteRewardInfo[i].stakeChange = voteResults[voteIndex].stakeChange;
+        uint256 stblAmount;
+        uint256 bmiAmount;
+        uint256 newReputation;
+        uint256 bmiPenaltyAmount;
+
+        if (_isVoteExpired(voteIndex)) {
+            _myVotesUpdatesInfo.stakeChange = int256(
+                _allVotesByIndexInst[voteIndex].stakedStkBMIAmount
+            );
+        } else if (_isVoteAwaitingReception(voteIndex)) {
+            if (
+                _votings[claimIndex].votedYesPercentage >= PERCENTAGE_50 &&
+                _allVotesByIndexInst[_allVotesToIndex[msg.sender][claimIndex]].suggestedAmount > 0
+            ) {
+                (stblAmount, bmiAmount, newReputation) = _calculateMajorityYesVote(
+                    claimIndex,
+                    msg.sender,
+                    oldReputation
+                );
+
+                _myVotesUpdatesInfo.reputationChange += int256(newReputation.sub(oldReputation));
+            } else if (
+                _votings[claimIndex].votedYesPercentage < PERCENTAGE_50 &&
+                _allVotesByIndexInst[_allVotesToIndex[msg.sender][claimIndex]].suggestedAmount == 0
+            ) {
+                (bmiAmount, newReputation) = _calculateMajorityNoVote(
+                    claimIndex,
+                    msg.sender,
+                    oldReputation
+                );
+
+                _myVotesUpdatesInfo.reputationChange += int256(newReputation.sub(oldReputation));
+            } else {
+                (bmiPenaltyAmount, newReputation) = _calculateMinorityVote(
+                    claimIndex,
+                    msg.sender,
+                    oldReputation
+                );
+
+                _myVotesUpdatesInfo.reputationChange -= int256(oldReputation.sub(newReputation));
+            }
+            _myVotesUpdatesInfo.stblReward = stblAmount;
+            _myVotesUpdatesInfo.bmiReward = bmiAmount;
+            _myVotesUpdatesInfo.stakeChange = int256(bmiPenaltyAmount);
         }
     }
 
@@ -438,11 +452,11 @@ contract ClaimVoting is IClaimVoting, Initializable, AbstractDependant {
 
             uint256 votedSuggestedPrice = info.votedAverageWithdrawalAmount.mul(votedPower);
             uint256 voterSuggestedPrice = suggestedClaimAmount.mul(voterPower);
-            if (totalPower > 0) {
-                info.votedAverageWithdrawalAmount = votedSuggestedPrice
-                    .add(voterSuggestedPrice)
-                    .div(totalPower);
-            }
+
+            info.votedAverageWithdrawalAmount = votedSuggestedPrice.add(voterSuggestedPrice).div(
+                totalPower
+            );
+
             info.votedYesStakedStkBMIAmountWithReputation = totalPower;
         } else {
             info.votedNoStakedStkBMIAmountWithReputation = info
@@ -457,16 +471,24 @@ contract ClaimVoting is IClaimVoting, Initializable, AbstractDependant {
         address voter,
         uint256 claimIndex,
         uint256 suggestedClaimAmount,
-        bool accept
+        bool accept,
+        bool isConfirmed
     ) internal {
         uint256 index = _allVotesToIndex[voter][claimIndex];
 
         _allVotesByIndexInst[index].finalHash = 0;
         delete _allVotesByIndexInst[index].encryptedVote;
 
-        _allVotesByIndexInst[index].suggestedAmount = suggestedClaimAmount;
-        _allVotesByIndexInst[index].accept = accept;
-        _allVotesByIndexInst[index].status = VoteStatus.EXPOSED_PENDING;
+        if (isConfirmed) {
+            _allVotesByIndexInst[index].suggestedAmount = suggestedClaimAmount;
+            _allVotesByIndexInst[index].accept = accept;
+
+            _allVotesByIndexInst[index].status = VoteStatus.EXPOSED_PENDING;
+        } else {
+            _votings[claimIndex].voteIndexes.remove(index);
+            _myNotReceivedVotes[voter].remove(claimIndex);
+            _allVotesByIndexInst[index].status = VoteStatus.REJECTED;
+        }
     }
 
     function _addAnonymousVote(
@@ -477,6 +499,7 @@ contract ClaimVoting is IClaimVoting, Initializable, AbstractDependant {
         uint256 stakedStkBMI
     ) internal {
         _myVotes[voter].add(_voteIndex);
+        _myNotReceivedVotes[voter].add(claimIndex);
 
         _allVotesByIndexInst[_voteIndex].claimIndex = claimIndex;
         _allVotesByIndexInst[_voteIndex].finalHash = finalHash;
@@ -499,7 +522,7 @@ contract ClaimVoting is IClaimVoting, Initializable, AbstractDependant {
         bytes32[] calldata finalHashes,
         string[] calldata encryptedVotes
     ) external override {
-        require(canVote(msg.sender), "CV: There are reception awaiting votes");
+        require(canVote(msg.sender), "CV: Awaiting votes");
         require(
             claimIndexes.length == finalHashes.length &&
                 claimIndexes.length == encryptedVotes.length,
@@ -545,11 +568,13 @@ contract ClaimVoting is IClaimVoting, Initializable, AbstractDependant {
     function exposeVoteBatch(
         uint256[] calldata claimIndexes,
         uint256[] calldata suggestedClaimAmounts,
-        bytes32[] calldata hashedSignaturesOfClaims
+        bytes32[] calldata hashedSignaturesOfClaims,
+        bool[] calldata isConfirmed
     ) external override {
         require(
             claimIndexes.length == suggestedClaimAmounts.length &&
-                claimIndexes.length == hashedSignaturesOfClaims.length,
+                claimIndexes.length == hashedSignaturesOfClaims.length &&
+                claimIndexes.length == isConfirmed.length,
             "CV: Length mismatches"
         );
 
@@ -577,15 +602,23 @@ contract ClaimVoting is IClaimVoting, Initializable, AbstractDependant {
 
             bool voteFor = (suggestedClaimAmounts[i] > 0);
 
-            _calculateAverages(
-                claimIndex,
-                _allVotesByIndexInst[voteIndex].stakedStkBMIAmount,
-                suggestedClaimAmounts[i],
-                _allVotesByIndexInst[voteIndex].voterReputation,
-                voteFor
-            );
+            if (isConfirmed[i]) {
+                _calculateAverages(
+                    claimIndex,
+                    _allVotesByIndexInst[voteIndex].stakedStkBMIAmount,
+                    suggestedClaimAmounts[i],
+                    _allVotesByIndexInst[voteIndex].voterReputation,
+                    voteFor
+                );
+            }
 
-            _modifyExposedVote(msg.sender, claimIndex, suggestedClaimAmounts[i], voteFor);
+            _modifyExposedVote(
+                msg.sender,
+                claimIndex,
+                suggestedClaimAmounts[i],
+                voteFor,
+                isConfirmed[i]
+            );
 
             emit VoteExposed(claimIndex, msg.sender, suggestedClaimAmounts[i]);
         }
@@ -596,10 +629,6 @@ contract ClaimVoting is IClaimVoting, Initializable, AbstractDependant {
         address voter,
         uint256 votedStakedStkBMIAmountWithReputation
     ) internal view returns (uint256) {
-        if (votedStakedStkBMIAmountWithReputation == 0) {
-            return 0;
-        }
-
         uint256 voteIndex = _allVotesToIndex[voter][claimIndex];
 
         uint256 voterBMI = _allVotesByIndexInst[voteIndex].stakedStkBMIAmount;
@@ -664,17 +693,17 @@ contract ClaimVoting is IClaimVoting, Initializable, AbstractDependant {
         address voter,
         uint256 oldReputation
     ) internal view returns (uint256 _bmiPenalty, uint256 _newReputation) {
+        uint256 voteIndex = _allVotesToIndex[voter][claimIndex];
+        VotingResult storage info = _votings[claimIndex];
+
         uint256 minorityPercentageWithPrecision =
-            Math.min(
-                _votings[claimIndex].votedYesPercentage,
-                PERCENTAGE_100.sub(_votings[claimIndex].votedYesPercentage)
-            );
+            Math.min(info.votedYesPercentage, PERCENTAGE_100.sub(info.votedYesPercentage));
 
         if (minorityPercentageWithPrecision < PENALTY_THRESHOLD) {
             // calculate confiscated staked stkBMI tokens sent to reinsurance pool
             _bmiPenalty = Math.min(
                 stkBMIStaking.stakedStkBMI(voter),
-                _allVotesByIndexInst[_allVotesToIndex[voter][claimIndex]]
+                _allVotesByIndexInst[voteIndex]
                     .stakedStkBMIAmount
                     .mul(PENALTY_THRESHOLD.sub(minorityPercentageWithPrecision))
                     .div(PERCENTAGE_100)
@@ -687,92 +716,81 @@ contract ClaimVoting is IClaimVoting, Initializable, AbstractDependant {
         );
     }
 
-    function _calculateVoteResult(uint256 claimIndex) internal {
-        for (uint256 i = 0; i < _votings[claimIndex].voteIndexes.length(); i++) {
-            uint256 voteIndex = _votings[claimIndex].voteIndexes.at(i);
-            address voter = _allVotesByIndexInst[voteIndex].voter;
-            uint256 oldReputation = reputationSystem.reputation(voter);
+    function receiveVoteResultBatch(uint256[] calldata claimIndexes) external override {
+        (uint256 rewardAmount, ) = claimingRegistry.rewardWithdrawalInfo(msg.sender);
 
-            require(_allVotesIndexes.contains(voteIndex), "CV: Vote doesn't exist");
+        uint256 stblAmount = rewardAmount;
+        uint256 bmiAmount;
+        uint256 bmiPenaltyAmount;
+        uint256 reputation = reputationSystem.reputation(msg.sender);
 
-            uint256 stblAmount;
-            uint256 bmiAmount;
-            uint256 bmiPenaltyAmount;
-            uint256 newReputation;
-            VoteStatus status;
+        for (uint256 i = 0; i < claimIndexes.length; i++) {
+            uint256 claimIndex = claimIndexes[i];
+            require(claimingRegistry.claimExists(claimIndex), "CV: Claim doesn't exist");
+            uint256 voteIndex = _allVotesToIndex[msg.sender][claimIndex];
+            require(voteIndex != 0, "CV: No vote on this claim");
 
-            if (_isVoteAwaitingExposure(voteIndex)) {
-                bmiPenaltyAmount = _allVotesByIndexInst[_allVotesToIndex[voter][claimIndex]]
-                    .stakedStkBMIAmount;
-                voteResults[voteIndex].stakeChange = int256(bmiPenaltyAmount);
-            } else if (
-                _votings[claimIndex].votedYesPercentage >= PERCENTAGE_50 &&
-                _allVotesByIndexInst[voteIndex].suggestedAmount > 0
+            if (
+                claimingRegistry.claimStatus(claimIndex) == IClaimingRegistry.ClaimStatus.EXPIRED
             ) {
-                (stblAmount, bmiAmount, newReputation) = _calculateMajorityYesVote(
-                    claimIndex,
-                    voter,
-                    oldReputation
-                );
+                _myNotReceivedVotes[msg.sender].remove(claimIndex);
+            } else if (_isVoteExpired(voteIndex)) {
+                uint256 _bmiPenaltyAmount = _allVotesByIndexInst[voteIndex].stakedStkBMIAmount;
+                bmiPenaltyAmount = bmiPenaltyAmount.add(_bmiPenaltyAmount);
 
-                voteResults[voteIndex].stblReward = stblAmount;
+                _allVotesByIndexInst[voteIndex].status = VoteStatus.EXPIRED;
 
-                status = VoteStatus.MAJORITY;
-            } else if (
-                _votings[claimIndex].votedYesPercentage < PERCENTAGE_50 &&
-                _allVotesByIndexInst[voteIndex].suggestedAmount == 0
-            ) {
-                (bmiAmount, newReputation) = _calculateMajorityNoVote(
-                    claimIndex,
-                    voter,
-                    oldReputation
-                );
-                status = VoteStatus.MAJORITY;
-            } else {
-                (bmiPenaltyAmount, newReputation) = _calculateMinorityVote(
-                    claimIndex,
-                    voter,
-                    oldReputation
-                );
-                voteResults[voteIndex].stakeChange = int256(bmiPenaltyAmount);
+                _myNotReceivedVotes[msg.sender].remove(claimIndex);
+            } else if (_isVoteAwaitingReception(voteIndex)) {
+                if (
+                    _votings[claimIndex].votedYesPercentage >= PERCENTAGE_50 &&
+                    _allVotesByIndexInst[voteIndex].suggestedAmount > 0
+                ) {
+                    (uint256 _stblAmount, uint256 _bmiAmount, uint256 newReputation) =
+                        _calculateMajorityYesVote(claimIndex, msg.sender, reputation);
 
-                status = VoteStatus.MINORITY;
+                    stblAmount = stblAmount.add(_stblAmount);
+                    bmiAmount = bmiAmount.add(_bmiAmount);
+                    reputation = newReputation;
+
+                    _allVotesByIndexInst[voteIndex].status = VoteStatus.MAJORITY;
+                } else if (
+                    _votings[claimIndex].votedYesPercentage < PERCENTAGE_50 &&
+                    _allVotesByIndexInst[voteIndex].suggestedAmount == 0
+                ) {
+                    (uint256 _bmiAmount, uint256 newReputation) =
+                        _calculateMajorityNoVote(claimIndex, msg.sender, reputation);
+
+                    bmiAmount = bmiAmount.add(_bmiAmount);
+                    reputation = newReputation;
+
+                    _allVotesByIndexInst[voteIndex].status = VoteStatus.MAJORITY;
+                } else {
+                    (uint256 _bmiPenaltyAmount, uint256 newReputation) =
+                        _calculateMinorityVote(claimIndex, msg.sender, reputation);
+
+                    bmiPenaltyAmount = bmiPenaltyAmount.add(_bmiPenaltyAmount);
+                    reputation = newReputation;
+
+                    _allVotesByIndexInst[voteIndex].status = VoteStatus.MINORITY;
+                }
+                _myNotReceivedVotes[msg.sender].remove(claimIndex);
             }
-
-            _allVotesByIndexInst[voteIndex].status = status;
-            voteResults[voteIndex].reputationChange = int256(newReputation);
-            voteResults[voteIndex].bmiReward = bmiAmount;
-
-            _myNotReceivedVotes[voter].add(claimIndex);
-
-            emit VoteCalculated(claimIndex, voter, status);
         }
-    }
-
-    function _getBMIRewardForCalculation(uint256 claimIndex) internal view returns (uint256) {
-        uint256 lockedBMIs = _votings[claimIndex].lockedBMIAmount;
-        uint256 timeElapsed =
-            claimingRegistry.claimSubmittedTime(claimIndex).add(
-                claimingRegistry.anyoneCanCalculateClaimResultAfter(claimIndex)
-            );
-
-        if (claimingRegistry.canClaimBeCalculatedByAnyone(claimIndex)) {
-            timeElapsed = block.timestamp.sub(timeElapsed);
-        } else {
-            timeElapsed = timeElapsed.sub(block.timestamp);
+        if (stblAmount > 0) {
+            claimingRegistry.requestRewardWithdrawal(msg.sender, stblAmount);
         }
-
-        return
-            Math.min(
-                lockedBMIs,
-                lockedBMIs.mul(timeElapsed.mul(CALCULATION_REWARD_PER_DAY.div(1 days))).div(
-                    PERCENTAGE_100
-                )
-            );
+        if (bmiAmount > 0) {
+            bmiToken.transfer(msg.sender, bmiAmount);
+        }
+        if (bmiPenaltyAmount > 0) {
+            stkBMIStaking.slashUserTokens(msg.sender, uint256(bmiPenaltyAmount));
+        }
+        reputationSystem.setNewReputation(msg.sender, reputation);
     }
 
     function _sendRewardsForCalculationTo(uint256 claimIndex, address calculator) internal {
-        uint256 reward = _getBMIRewardForCalculation(claimIndex);
+        uint256 reward = claimingRegistry.getBMIRewardForCalculation(claimIndex);
 
         _votings[claimIndex].lockedBMIAmount = _votings[claimIndex].lockedBMIAmount.sub(reward);
 
@@ -782,14 +800,14 @@ contract ClaimVoting is IClaimVoting, Initializable, AbstractDependant {
     }
 
     function calculateResult(uint256 claimIndex) external override {
-        // TODO invert order condition to prevent duplicate storage hits
+        // SEND REWARD FOR CALCULATION
         require(
-            claimingRegistry.canClaimBeCalculatedByAnyone(claimIndex) ||
-                claimingRegistry.claimOwner(claimIndex) == msg.sender,
+            claimingRegistry.canCalculateClaim(claimIndex, msg.sender),
             "CV: Not allowed to calculate"
         );
         _sendRewardsForCalculationTo(claimIndex, msg.sender);
 
+        // PROCEED CALCULATION
         if (claimingRegistry.claimStatus(claimIndex) == IClaimingRegistry.ClaimStatus.EXPIRED) {
             claimingRegistry.expireClaim(claimIndex);
         } else {
@@ -801,13 +819,11 @@ contract ClaimVoting is IClaimVoting, Initializable, AbstractDependant {
             );
 
             _resolveClaim(claimIndex);
-            _calculateVoteResult(claimIndex);
         }
     }
 
     function _resolveClaim(uint256 claimIndex) internal {
         uint256 totalStakedStkBMI = stkBMIStaking.totalStakedStkBMI();
-
         uint256 allVotedStakedStkBMI = _votings[claimIndex].allVotedStakedStkBMIAmount;
 
         // if no votes or not an appeal and voted < 10% supply of staked StkBMI
@@ -823,11 +839,10 @@ contract ClaimVoting is IClaimVoting, Initializable, AbstractDependant {
             uint256 votedYesPower = _votings[claimIndex].votedYesStakedStkBMIAmountWithReputation;
             uint256 votedNoPower = _votings[claimIndex].votedNoStakedStkBMIAmountWithReputation;
             uint256 totalPower = votedYesPower.add(votedNoPower);
-            if (totalPower > 0) {
-                _votings[claimIndex].votedYesPercentage = votedYesPower.mul(PERCENTAGE_100).div(
-                    totalPower
-                );
-            }
+
+            _votings[claimIndex].votedYesPercentage = votedYesPower.mul(PERCENTAGE_100).div(
+                totalPower
+            );
 
             if (_votings[claimIndex].votedYesPercentage >= APPROVAL_PERCENTAGE) {
                 // approve + send STBL & return locked BMI to the claimer
@@ -841,50 +856,6 @@ contract ClaimVoting is IClaimVoting, Initializable, AbstractDependant {
             }
         }
         emit ClaimCalculated(claimIndex, msg.sender);
-    }
-
-    function receiveResult() external override {
-        uint256 notReceivedLength = _myNotReceivedVotes[msg.sender].length();
-        uint256 oldReputation = reputationSystem.reputation(msg.sender);
-
-        (uint256 rewardAmount, ) = claimingRegistry.rewardWithdrawalInfo(msg.sender);
-
-        uint256 stblAmount = rewardAmount;
-        uint256 bmiAmount;
-        int256 bmiPenaltyAmount;
-        uint256 newReputation = oldReputation;
-
-        for (uint256 i = 0; i < notReceivedLength; i++) {
-            uint256 claimIndex = _myNotReceivedVotes[msg.sender].at(i);
-            uint256 voteIndex = _allVotesToIndex[msg.sender][claimIndex];
-            stblAmount = stblAmount.add(voteResults[voteIndex].stblReward);
-            bmiAmount = bmiAmount.add(voteResults[voteIndex].bmiReward);
-            bmiPenaltyAmount += voteResults[voteIndex].stakeChange;
-            if (uint256(voteResults[voteIndex].reputationChange) > oldReputation) {
-                newReputation = newReputation.add(
-                    uint256(voteResults[voteIndex].reputationChange).sub(oldReputation)
-                );
-            } else if (uint256(voteResults[voteIndex].reputationChange) < oldReputation) {
-                newReputation = newReputation.sub(
-                    oldReputation.sub(uint256(voteResults[voteIndex].reputationChange))
-                );
-            }
-            _allVotesByIndexInst[voteIndex].status = VoteStatus.RECEIVED;
-        }
-        if (stblAmount > 0) {
-            claimingRegistry.requestRewardWithdrawal(msg.sender, stblAmount);
-        }
-        if (bmiAmount > 0) {
-            bmiToken.transfer(msg.sender, bmiAmount);
-        }
-        if (bmiPenaltyAmount > 0) {
-            stkBMIStaking.slashUserTokens(msg.sender, uint256(bmiPenaltyAmount));
-        }
-        reputationSystem.setNewReputation(msg.sender, newReputation);
-
-        delete _myNotReceivedVotes[msg.sender];
-
-        emit RewardsForVoteCalculationSent(msg.sender, bmiAmount);
     }
 
     function transferLockedBMI(uint256 claimIndex, address claimer)

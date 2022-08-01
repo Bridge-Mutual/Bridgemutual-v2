@@ -259,7 +259,7 @@ contract("PolicyBookPremiumDistribution", async (accounts) => {
     await policyBookFabric.__PolicyBookFabric_init();
     await claimingRegistry.__ClaimingRegistry_init();
     await claimVoting.__ClaimVoting_init();
-    await rewardsGenerator.__RewardsGenerator_init();
+    await rewardsGenerator.__RewardsGenerator_init(network);
     await capitalPool.__CapitalPool_init();
     await reinsurancePool.__ReinsurancePool_init();
     await bmiCoverStaking.__BMICoverStaking_init();
@@ -338,18 +338,25 @@ contract("PolicyBookPremiumDistribution", async (accounts) => {
     policyBookFacade = await PolicyBookFacade.at(policyBookFacadeAddr);
     //await policyBookAdmin.setPolicyBookFacadeSafePricingModel(policyBookFacade.address, true);
 
-    await stbl.mintArbitrary(USER1, getStableAmount("200000"));
-    await stbl.approve(policyBook.address, getStableAmount("200000"), { from: USER1 });
+    await stbl.mintArbitrary(USER1, getStableAmount("300000"));
+    await stbl.approve(policyBook.address, getStableAmount("300000"), { from: USER1 });
+    await stbl.approve(userLeveragePool.address, getStableAmount("300000"), { from: USER1 });
 
-    await stbl.mintArbitrary(USER2, getStableAmount("200000"));
-    await stbl.approve(policyBook.address, getStableAmount("200000"), { from: USER2 });
+    await stbl.mintArbitrary(USER2, getStableAmount("300000"));
+    await stbl.approve(policyBook.address, getStableAmount("300000"), { from: USER2 });
+    await stbl.approve(userLeveragePool.address, getStableAmount("300000"), { from: USER2 });
 
-    await stbl.mintArbitrary(USER3, getStableAmount("200000"));
-    await stbl.approve(policyBook.address, getStableAmount("200000"), { from: USER3 });
+    await stbl.mintArbitrary(USER3, getStableAmount("300000"));
+    await stbl.approve(policyBook.address, getStableAmount("300000"), { from: USER3 });
+    await stbl.approve(userLeveragePool.address, getStableAmount("300000"), { from: USER3 });
 
     await policyBookFacade.addLiquidity(liquidityAmount.div(toBN(3)), { from: USER1 });
     await policyBookFacade.addLiquidity(liquidityAmount.div(toBN(3)), { from: USER2 });
     await policyBookFacade.addLiquidity(liquidityAmount.div(toBN(3)), { from: USER3 });
+
+    await userLeveragePool.addLiquidity(liquidityAmount.div(toBN(3)), { from: USER1 });
+    await userLeveragePool.addLiquidity(liquidityAmount.div(toBN(3)), { from: USER2 });
+    await userLeveragePool.addLiquidity(liquidityAmount.div(toBN(3)), { from: USER3 });
 
     await reverter.snapshot();
   });
@@ -371,10 +378,17 @@ contract("PolicyBookPremiumDistribution", async (accounts) => {
     );
   };
 
+  const compareLiquidityLP = async (additional) => {
+    approximatelyEqual(await userLeveragePool.totalLiquidity(), liquidityAmount.add(toWeiBN(additional)));
+  };
+
   const triggerDistribution = async () => {
     return await policyBook.triggerPremiumsDistribution();
   };
 
+  const triggerDistributionLP = async () => {
+    return await userLeveragePool.triggerPremiumsDistribution();
+  };
   describe("calculations", async () => {
     it("should correctly distribute with a large gap in calculation", async () => {
       const tokenAmount = 400;
@@ -521,6 +535,150 @@ contract("PolicyBookPremiumDistribution", async (accounts) => {
       await policyBookFacade.withdrawLiquidity({ from: USER1 });
 
       await compareLiquidity(tokenAmount * nonProtocolMultiplier * (withdrawPeriodPlusOne / 14));
+    });
+  });
+
+  describe("calculations - leverage pool", async () => {
+    it("should correctly distribute with a large gap in calculation", async () => {
+      const tokenAmount = 400;
+
+      await capitalPool.addPremium(5, toWeiBN(tokenAmount / 4), userLeveragePool.address, { from: USER1 });
+      await capitalPool.addPremium(20, toWeiBN((tokenAmount / 4) * 3), userLeveragePool.address, { from: USER1 });
+
+      const epoch = await userLeveragePool.lastPremiumDistributionEpoch();
+
+      await setDay(301);
+
+      await triggerDistributionLP(); // 90 days
+      await triggerDistributionLP(); // 90 days
+
+      await compareLiquidityLP(tokenAmount);
+      assert.equal(toBN(await userLeveragePool.lastPremiumDistributionEpoch()).toString(), epoch.toNumber() + 182);
+    });
+
+    it("should correctly distribute larger than max and then distribute zeros", async () => {
+      await setDay(1);
+
+      const tokenAmount = 400;
+
+      await capitalPool.addPremium(5, toWeiBN(tokenAmount / 4), userLeveragePool.address, { from: USER1 });
+      await capitalPool.addPremium(20, toWeiBN((tokenAmount / 4) * 3), userLeveragePool.address, { from: USER1 });
+
+      await setDay(201);
+      await triggerDistributionLP(); // 90 days
+      await triggerDistributionLP(); // 90 days
+
+      await compareLiquidityLP(tokenAmount);
+
+      await setDay(401);
+      await triggerDistribution();
+
+      await compareLiquidityLP(tokenAmount);
+    });
+
+    it("should not distribute on the same day", async () => {
+      await setDay(1);
+
+      const tokenAmount = 400;
+
+      await capitalPool.addPremium(5, toWeiBN(tokenAmount / 4), userLeveragePool.address, { from: USER1 });
+      await capitalPool.addPremium(20, toWeiBN((tokenAmount / 4) * 3), userLeveragePool.address, { from: USER1 });
+
+      await triggerDistributionLP();
+
+      await compareLiquidity(0);
+    });
+
+    it("should distribute correct amount on the next day", async () => {
+      const tokenAmount1 = 252;
+      const tokenAmount2 = 210;
+
+      await setDay(1);
+
+      await capitalPool.addPremium(4, toWeiBN(tokenAmount1), userLeveragePool.address, { from: USER1 });
+      await capitalPool.addPremium(1, toWeiBN(tokenAmount2), userLeveragePool.address, { from: USER1 });
+
+      await setDay(2);
+      await triggerDistributionLP();
+
+      await compareLiquidityLP((tokenAmount1 + tokenAmount2) / 7);
+    });
+
+    it("should distribute correct amount on the last days", async () => {
+      await setDay(1);
+
+      const tokenAmount = 140;
+
+      await capitalPool.addPremium(1, toWeiBN(tokenAmount), userLeveragePool.address, { from: USER2 });
+
+      await setDay(14);
+      await triggerDistributionLP();
+      await compareLiquidityLP((tokenAmount * 13) / 14);
+      await setDay(15);
+      await triggerDistributionLP();
+      await compareLiquidityLP(tokenAmount);
+      await setDay(16);
+      await triggerDistributionLP();
+      await compareLiquidityLP(tokenAmount);
+    });
+
+    it("should not distribute in the same day twice", async () => {
+      await setDay(1);
+
+      const tokenAmount = 140;
+
+      await capitalPool.addPremium(1, toWeiBN(tokenAmount), userLeveragePool.address, { from: USER2 });
+
+      await setDay(2);
+      await triggerDistributionLP();
+      await compareLiquidityLP(tokenAmount / 14);
+      await triggerDistributionLP();
+      await compareLiquidityLP(tokenAmount / 14);
+    });
+  });
+
+  describe("triggers - leverage pool", async () => {
+    const tokenAmount = 140;
+
+    beforeEach(async () => {
+      await setDay(1);
+
+      await capitalPool.addPremium(1, toWeiBN(tokenAmount), userLeveragePool.address, { from: USER1 });
+    });
+
+    it("buy policy distributes premiums", async () => {
+      await setDay(2);
+
+      await capitalPool.addPremium(1, toWeiBN(tokenAmount), userLeveragePool.address, { from: USER2 });
+
+      await compareLiquidityLP(tokenAmount / 14);
+    });
+
+    it("add liquidity distributes premiums", async () => {
+      await setDay(2);
+      await userLeveragePool.addLiquidity(toWeiBN("10"), { from: USER1 });
+
+      await compareLiquidityLP(tokenAmount / 14 + 10);
+    });
+
+    it("request withdrawal distributes premiums", async () => {
+      await setDay(2);
+      await userLeveragePool.approve(userLeveragePool.address, toBN("10"), { from: USER1 });
+      await userLeveragePool.requestWithdrawal(toBN("10"), { from: USER1 });
+
+      await compareLiquidityLP(tokenAmount / 14);
+    });
+
+    it("withdraw liquidity distributes premiums", async () => {
+      await capitalPool.setliquidityCushionBalance(wei("1000"));
+      await userLeveragePool.approve(userLeveragePool.address, toBN("10"), { from: USER1 });
+      await userLeveragePool.requestWithdrawal(toBN("10"), { from: USER1 });
+      const secsInDay = 24 * 60 * 60;
+      const withdrawPeriodPlusOne = (await capitalPool.getWithdrawPeriod()).toNumber() / secsInDay + 1;
+      await setDay(withdrawPeriodPlusOne);
+      await userLeveragePool.withdrawLiquidity({ from: USER1 });
+
+      await compareLiquidityLP(tokenAmount * (withdrawPeriodPlusOne / 14));
     });
   });
 });

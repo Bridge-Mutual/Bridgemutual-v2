@@ -64,7 +64,7 @@ contract("ContractsRegistry", async (accounts) => {
 
     rewardsGenerator = await RewardsGenerator.at(await contractsRegistry.getRewardsGeneratorContract());
 
-    await rewardsGenerator.__RewardsGenerator_init();
+    await rewardsGenerator.__RewardsGenerator_init(network);
     await contractsRegistry.injectDependencies(await contractsRegistry.REWARDS_GENERATOR_NAME());
 
     await reverter.snapshot();

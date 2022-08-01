@@ -30,12 +30,12 @@ let mainnetAddress = {
 
 let bscMainnetAddress = {
   // Tokens
-  bmi_token: "0x3e1b4Ff4AE3Ab8f0Cb40a34a6ad3fC817F7dA2b6",
+  bmi_token: "0xB371f0EB8DfB3b47FDFC23bBCBC797954d3d4F23",
   usdt_token: "0x55d398326f99059fF775485246999027B3197955",
   wbnb_token: "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c",
   //TODO has to set
-  stkbmi_token: "",
-  bmi_treasury: "",
+  stkbmi_token: "0x2BAe71def55B9dbc2F03179f9868d4384456EED6",
+  bmi_treasury: "0x7562Ce0cdA3535268386E07A4d5C668833dcD9e9",
 
   amm_router: "0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506", // SushiSwap: Router
 
@@ -43,12 +43,9 @@ let bscMainnetAddress = {
   //capitalPool_mantainer: "0xc910BaE4B0a32c35b09F1ca26f42111BC54136DE",
   //TODO has to change
   team: [
-    "0x2C6b033790F3492188A13902a438EF6Ddb6A48b1",
-    "0xfe8be8ddcc9b4b022b421c17e16602be48dd4c65",
-    "0x2B63c26f08dafFa95f700151B669cb3976eF94Bc",
-    "0xEE1558fd89567D662bF62F55990bEbC24852A0f7",
-    "0xCDb942Cdf9A393f1309B3D6505C597e9E70ba0a8",
-    "0xB98C1Fb3d404e983bc2dEAbCAd5E18B93a10E839",
+    "0x2C6b033790F3492188A13902a438EF6Ddb6A48b1", //Mikce address
+    "0xa226e23912df06f02E1f33b8fD98B75191FA1E71", //Lukas address
+    "0xEE1558fd89567D662bF62F55990bEbC24852A0f7", // kiril address
   ],
 };
 
@@ -68,12 +65,9 @@ let polygonMainnetAddress = {
 
   //TODO has to change
   team: [
-    "0x2C6b033790F3492188A13902a438EF6Ddb6A48b1",
-    "0xfe8be8ddcc9b4b022b421c17e16602be48dd4c65",
-    "0x2B63c26f08dafFa95f700151B669cb3976eF94Bc",
-    "0xEE1558fd89567D662bF62F55990bEbC24852A0f7",
-    "0xCDb942Cdf9A393f1309B3D6505C597e9E70ba0a8",
-    "0xB98C1Fb3d404e983bc2dEAbCAd5E18B93a10E839",
+    "0x2C6b033790F3492188A13902a438EF6Ddb6A48b1", //Mikce address
+    "0xa226e23912df06f02E1f33b8fD98B75191FA1E71", //Lukas address
+    "0xEE1558fd89567D662bF62F55990bEbC24852A0f7", // kiril address
   ],
 };
 

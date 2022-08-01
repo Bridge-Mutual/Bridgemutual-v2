@@ -35,14 +35,15 @@ contract LeveragePortfolioView is ILeveragePortfolioView, AbstractDependant {
         policyQuote = IPolicyQuote(_contractsRegistry.getPolicyQuoteContract());
     }
 
-    /// @notice calc M factor by formual M = min( abs((1/ (Tur-UR))*d) /a, max)
-    /// @param poolUR uint256 utitilization ratio for a coverage pool
-    /// @return uint256 M facotr
+    /// @notice calcM factor by formual M = min( abs((1/ (Tur-UR))*d) /a, max)
+    /// @param  poolUR uint256 utitilization ratio for a coverage pool
+    /// @param  leveragePoolAddress address of the user leverage pool
+    /// @return _multiplier M facotr
     function calcM(uint256 poolUR, address leveragePoolAddress)
         external
         view
         override
-        returns (uint256)
+        returns (uint256 _multiplier)
     {
         ILeveragePortfolio leveragePool = ILeveragePortfolio(leveragePoolAddress);
         uint256 _targetUR = leveragePool.targetUR();
@@ -51,19 +52,18 @@ contract LeveragePortfolioView is ILeveragePortfolioView, AbstractDependant {
         uint256 _ur;
         if (_targetUR > poolUR) {
             _ur = _targetUR.sub(poolUR);
-        } else {
+        } else if (poolUR > _targetUR) {
             _ur = poolUR.sub(_targetUR);
         }
 
-        uint256 _multiplier =
-            Math.min(
+        if (_ur > 0) {
+            _multiplier = Math.min(
                 leveragePool.d_ProtocolConstant().mul(_PRECISION).div(_ur).mul(_PRECISION).div(
                     leveragePool.a_ProtocolConstant()
                 ),
                 leveragePool.max_ProtocolConstant()
             );
-
-        return _multiplier;
+        }
     }
 
     /// @dev If Formula 1 < 0 or Formula 1 causes dividing by 0, then the system will use Formula 2.

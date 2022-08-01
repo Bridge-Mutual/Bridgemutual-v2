@@ -22,7 +22,7 @@ const ShieldMining = artifacts.require("ShieldMining");
 const UserLeveragePool = artifacts.require("UserLeveragePool");
 const YieldGenerator = artifacts.require("YieldGenerator");
 
-const PolicyBook = artifacts.require("PolicyBook");
+const PolicyBook = artifacts.require("PolicyBookMock");
 const PolicyBookFacade = artifacts.require("PolicyBookFacade");
 
 const Reverter = require("./helpers/reverter");
@@ -186,7 +186,7 @@ contract("PolicyBookFabric", async (accounts) => {
     const shieldMining = await ShieldMining.at(await contractsRegistry.getShieldMiningContract());
     const yieldGenerator = await YieldGenerator.at(await contractsRegistry.getYieldGeneratorContract());
 
-    await rewardsGenerator.__RewardsGenerator_init();
+    await rewardsGenerator.__RewardsGenerator_init(network);
 
     await policyBookAdmin.__PolicyBookAdmin_init(
       _policyBookImpl.address,

@@ -42,6 +42,7 @@ module.exports = {
       gasLimit: 10000000, // <-- Use this high gas value
       gasPrice: 50000000000,
       disableConfirmationListener: true,
+      skipDryRun: true,
     },
     development_websockets: {
       host: "127.0.0.1", // Localhost (default: none)
@@ -56,7 +57,7 @@ module.exports = {
         new HDWalletProvider([process.env.PRIVATE_KEY], `wss://rinkeby.infura.io/ws/v3/${process.env.PROJECT_ID}`),
       network_id: 4, // Rinkeby's id
       gas: 7000000,
-      gasPrice: 30000000000, // 30 gwei
+      gasPrice: 20000000000, // 30 gwei
       skipDryRun: true, // Skip dry run before migrations? (default: false for public nets )
     },
     rinkeby_maintainer: {
@@ -88,7 +89,7 @@ module.exports = {
         new HDWalletProvider([process.env.PRIVATE_KEY], `wss://mainnet.infura.io/ws/v3/${process.env.PROJECT_ID}`),
       network_id: 1,
       gas: 8000000,
-      gasPrice: 50000000000,
+      gasPrice: 35000000000, // 30000000000  // 40000000000 // 50000000000 // 25000000000 // 35000000000
       skipDryRun: true,
     },
     mainnet_maintainer: {
@@ -120,6 +121,14 @@ module.exports = {
       disableConfirmationListener: true,
       skipDryRun: true,
     },
+    server_fork: {
+      host: "135.181.118.59",
+      port: 8545,
+      network_id: "1",
+      gas: 8000000,
+      gasPrice: 50000000000,
+      skipDryRun: true,
+    },
     bsc_development: {
       host: "127.0.0.1", // Localhost (default: none)
       port: 8545, // Standard Ethereum port (default: none)
@@ -136,9 +145,15 @@ module.exports = {
       timeout: 10000,
     },
     bsc_mainnet: {
-      provider: () => new HDWalletProvider([process.env.PRIVATE_KEY], "https://bsc-dataseed.binance.org/"),
+      provider: () =>
+        new HDWalletProvider(
+          [process.env.PRIVATE_KEY],
+          "https://fragrant-muddy-feather.bsc.quiknode.pro/dfac8c8c3dbbd0cb141e6c2188ee9e05780f9c0b/"
+        ),
       network_id: 56,
       gas: 8000000,
+      gasPrice: 5000000000, // 5 gwei
+      skipDryRun: true,
     },
     polygon_development: {
       host: "127.0.0.1", // Localhost (default: none)

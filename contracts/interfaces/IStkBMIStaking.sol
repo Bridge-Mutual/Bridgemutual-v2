@@ -6,8 +6,6 @@ interface IStkBMIStaking {
 
     function totalStakedStkBMI() external view returns (uint256);
 
-    function lockStkBMIFor(address user, uint256 amount) external;
-
     function lockStkBMI(uint256 amount) external;
 
     function unlockStkBMI(uint256 amount) external;

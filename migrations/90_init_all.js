@@ -116,11 +116,8 @@ module.exports = async (deployer, network, accounts) => {
 
   logTransaction(await bmiCoverStaking.__BMICoverStaking_init(), "Init BMICoverStaking");
 
-  logTransaction(await rewardsGenerator.__RewardsGenerator_init(), "Init RewardsGenerator");
-
   logTransaction(await bmiUtilityNFT.__BMIUtilityNFT_init(), "Init BMIUtilityNFT");
 
-  logTransaction(await shieldMining.__ShieldMining_init(), "Init ShieldMining");
   logTransaction(await nftStaking.__NFTStaking_init(), "Init NFTStaking");
   if (["ropsten", "rinkeby", "development", "mainnet"].includes(network)) {
     logTransaction(
@@ -164,13 +161,18 @@ module.exports = async (deployer, network, accounts) => {
     ),
     "Init PolicyBookAdmin"
   );
+  let _network;
   if (["ropsten", "rinkeby", "development", "mainnet"].includes(network)) {
-    logTransaction(await yieldGenerator.__YieldGenerator_init(Networks.ETH), "Init YieldGenerator");
+    _network = Networks.ETH;
   } else if (["bsc_test", "bsc_development", "bsc_mainnet"].includes(network)) {
-    logTransaction(await yieldGenerator.__YieldGenerator_init(Networks.BSC), "Init YieldGenerator");
+    _network = Networks.BSC;
   } else if (["polygon_test", "polygon_development", "polygon_mainnet"].includes(network)) {
-    logTransaction(await yieldGenerator.__YieldGenerator_init(Networks.POL), "Init YieldGenerator");
+    _network = Networks.POL;
   }
+
+  logTransaction(await rewardsGenerator.__RewardsGenerator_init(_network), "Init RewardsGenerator");
+  logTransaction(await yieldGenerator.__YieldGenerator_init(_network), "Init YieldGenerator");
+  logTransaction(await shieldMining.__ShieldMining_init(_network), "Init ShieldMining");
 
   ////////////////////////////////////////////////////////////
 
@@ -311,6 +313,10 @@ module.exports = async (deployer, network, accounts) => {
   /// configiuration
 
   let capitalPool_mantainer;
+
+  if (!["mainnet", "bsc_mainnet", "polygon_mainnet"].includes(network)) {
+    logTransaction(await capitalPool.setRebalanceDuration(toBN(3600)), "capitalPool setRebalanceDuration");
+  }
   if (["ropsten", "rinkeby", "mainnet", "development"].includes(network)) {
     capitalPool_mantainer = mainnet.capitalPool_mantainer;
     if (["development"].includes(network)) {
@@ -318,9 +324,6 @@ module.exports = async (deployer, network, accounts) => {
     }
     logTransaction(await capitalPool.setMaintainer(capitalPool_mantainer), "CapitalPool setMaintainer ");
 
-    if (!["mainnet"].includes(network)) {
-      logTransaction(await capitalPool.setRebalanceDuration(toBN(3600)));
-    }
     logTransaction(
       await yieldGenerator.setProtocolSettings(
         [true, true, true],

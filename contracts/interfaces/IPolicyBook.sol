@@ -145,7 +145,7 @@ interface IPolicyBook {
     /// @notice end active policy from ClaimingRegistry in case of a new bought policy
     function endActivePolicy(address _holder) external;
 
-    function updateEpochsInfo() external;
+    function updateEpochsInfo(bool _rebalance) external;
 
     /// @notice Let eligible contracts add liqiudity for another user by supplying stable coin
     /// @param _liquidityHolderAddr is address of address to assign cover
@@ -180,7 +180,9 @@ interface IPolicyBook {
     function unlockTokens() external;
 
     /// @notice Let user to withdraw deposited liqiudity, access: ANY
-    function withdrawLiquidity(address sender) external returns (uint256);
+    function withdrawLiquidity(address sender)
+        external
+        returns (uint256 _tokensToWithdraw, uint256 _stblTokensToWithdraw);
 
     ///@notice for doing defi hard rebalancing, access: policyBookFacade
     function updateLiquidity(uint256 _newLiquidity) external;

@@ -53,13 +53,20 @@ interface ILiquidityRegistry {
 
     function registerWithdrawl(address _policyBook, address _users) external;
 
-    function getAllPendingWithdrawalRequestsAmount()
+    function getAllPendingWithdrawalRequestsAmount(uint256 _limit)
         external
         view
         returns (uint256 _totalWithdrawlAmount);
 
-    function getPendingWithdrawalAmountByPolicyBook(address _policyBook)
+    function getPendingWithdrawalAmountByPolicyBook(address _policyBook, uint256 _limit)
         external
         view
         returns (uint256 _totalWithdrawlAmount);
+
+    function getWithdrawlRequestUsersListCount() external view returns (uint256);
+
+    function getPoolWithdrawlRequestsUsersListCount(address _policyBook)
+        external
+        view
+        returns (uint256);
 }

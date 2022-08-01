@@ -6,7 +6,10 @@ import "./ILeveragePortfolio.sol";
 import "./IUserLeveragePool.sol";
 
 interface ILeveragePortfolioView {
-    function calcM(uint256 poolUR, address leveragePoolAddress) external view returns (uint256);
+    function calcM(uint256 poolUR, address leveragePoolAddress)
+        external
+        view
+        returns (uint256 _multiplier);
 
     function calcMaxLevFunds(ILeveragePortfolio.LevFundsFactors memory factors)
         external

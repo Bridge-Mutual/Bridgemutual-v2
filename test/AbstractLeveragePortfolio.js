@@ -41,6 +41,7 @@ const Reverter = require("./helpers/reverter");
 const BigNumber = require("bignumber.js");
 
 const setCurrentTime = require("./helpers/ganacheTimeTraveler");
+const { time } = require("@openzeppelin/test-helpers");
 const { getStableAmount, getNetwork, Networks } = require("./helpers/utils");
 
 const { assert } = require("chai");
@@ -86,6 +87,7 @@ contract("AbstractLeveragePortfolio", async (accounts) => {
   let decodedResult;
   let policyBookFabric;
   let leveragePortfolioView;
+  let withdrawalPeriod;
 
   let userLeveragePool;
 
@@ -244,19 +246,21 @@ contract("AbstractLeveragePortfolio", async (accounts) => {
     policyBookRegistry = await PolicyBookRegistry.at(await contractsRegistry.getPolicyBookRegistryContract());
     rewardsGenerator = await RewardsGenerator.at(await contractsRegistry.getRewardsGeneratorContract());
     capitalPool = await CapitalPool.at(await contractsRegistry.getCapitalPoolContract());
-
+    const claimingRegistry = await ClaimingRegistry.at(await contractsRegistry.getClaimingRegistryContract());
     leveragePortfolioView = await LeveragePortfolioView.at(await contractsRegistry.getLeveragePortfolioViewContract());
+    const liquidityRegistry = await LiquidityRegistry.at(await contractsRegistry.getLiquidityRegistryContract());
     bmiUtilityNFT = await BMIUtilityNFT.at(await contractsRegistry.getBMIUtilityNFTContract());
     await policyBookAdmin.__PolicyBookAdmin_init(
       policyBookImpl.address,
       policyBookFacadeImpl.address,
       _userLeveragePoolImpl.address
     );
-
+    const policyRegistry = await PolicyRegistry.at(await contractsRegistry.getPolicyRegistryContract());
     await reinsurancePool.__ReinsurancePool_init();
     await policyBookFabric.__PolicyBookFabric_init();
+    await claimingRegistry.__ClaimingRegistry_init();
     await nftStaking.__NFTStaking_init();
-    await rewardsGenerator.__RewardsGenerator_init();
+    await rewardsGenerator.__RewardsGenerator_init(network);
     await capitalPool.__CapitalPool_init();
     await bmiUtilityNFT.__BMIUtilityNFT_init();
     await contractsRegistry.injectDependencies(await contractsRegistry.POLICY_BOOK_REGISTRY_NAME());
@@ -264,9 +268,10 @@ contract("AbstractLeveragePortfolio", async (accounts) => {
     await contractsRegistry.injectDependencies(await contractsRegistry.LIQUIDITY_REGISTRY_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.REWARDS_GENERATOR_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.POLICY_QUOTE_NAME());
-
+    await contractsRegistry.injectDependencies(await contractsRegistry.CLAIMING_REGISTRY_NAME());
+    await contractsRegistry.injectDependencies(await contractsRegistry.LIQUIDITY_REGISTRY_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.REINSURANCE_POOL_NAME());
-
+    await contractsRegistry.injectDependencies(await contractsRegistry.POLICY_REGISTRY_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.POLICY_BOOK_FABRIC_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.POLICY_BOOK_ADMIN_NAME());
 
@@ -368,10 +373,57 @@ contract("AbstractLeveragePortfolio", async (accounts) => {
     await policyBookAdmin.setLeveragePortfolioRebalancingThreshold(userLeveragePool.address, PRECISION);
 
     await policyBookAdmin.setPolicyBookFacadeRebalancingThreshold(policyBookFacade.address, PRECISION);
+    withdrawalPeriod = toBN(await capitalPool.getWithdrawPeriod());
     await reverter.snapshot();
   });
 
   afterEach("revert", reverter.revert);
+
+  async function createPolicyBooks(index) {
+    await stbl.approve(policyBookFabric.address, getStableAmount("100"));
+    let insured;
+    if (index < 10) {
+      insured = "0x000000000000000000000000000000000000000" + index;
+    } else if (index >= 10) {
+      insured = "0x00000000000000000000000000000000000000" + index;
+    }
+    let policyBookMock1 = await PolicyBookMock.at(
+      (
+        await policyBookFabric.create(
+          insured,
+          ContractType.CONTRACT,
+          "test description " + index,
+          "TEST" + index,
+          wei("100"),
+          "0x0000000000000000000000000000000000000000"
+        )
+      ).logs[0].args.at
+    );
+
+    let policyBookFacadeAddress1 = await policyBookMock1.policyBookFacade();
+
+    let policyBookFacade1 = await PolicyBookFacade.at(policyBookFacadeAddress1);
+
+    await policyBookMock1.setTotalLiquidity(toBN(toWei("10000")));
+    await policyBookMock1.setTotalCoverTokens(toBN(toWei("6000")));
+
+    await policyBookAdmin.setPolicyBookFacadeMPLs(policyBookFacade1.address, PRECISION.times(80), PRECISION.times(30));
+    return policyBookMock1;
+  }
+
+  async function createLeveragePools(index) {
+    const userLeveragePoolAddress1 = (
+      await policyBookFabric.createLeveragePools(
+        "0x000000000000000000000000000000000000000" + index,
+        ContractType.VARIUOS,
+        "User Leverage Pool",
+        "LevPf2"
+      )
+    ).logs[0].args.at;
+
+    let userLeveragePool1 = await UserLeveragePool.at(userLeveragePoolAddress1);
+    return userLeveragePool1;
+  }
 
   describe("deployLeverageStable - check the formula", async () => {
     const liquidityAmount = toBN(toWei("1000000"));
@@ -636,6 +688,40 @@ contract("AbstractLeveragePortfolio", async (accounts) => {
       );
     });
 
+    it("should not deploye leverage stable by policy book above max leverage pools", async () => {
+      //setup for user leverage pool 2  - 1 MM
+      await userLeveragePool2.setVtotalLiquidity(virtualLiquidityAmount);
+      // add third pool
+      let leverage3 = await createLeveragePools(0);
+      await leverage3.setVtotalLiquidity(virtualLiquidityAmount);
+
+      await policyBookFacade.addLiquidity(liquidityAmount1, { from: USER1 });
+
+      // add fourth pool
+      let leverage4 = await createLeveragePools(1);
+      await leverage4.setVtotalLiquidity(virtualLiquidityAmount);
+
+      await policyBookFacade.addLiquidity(liquidityAmount1, { from: USER1 });
+
+      assert.equal((await policyBookFacade.LUuserLeveragePool(leverage4.address)).toString(), 0);
+      assert.equal((await policyBookFacade.countUserLeveragePools()).toString(), 3);
+
+      assert.equal(
+        (await policyBookFacade.LUuserLeveragePool(userLeveragePool.address)).toString(),
+        toWei("1488571.428571428571428571")
+      );
+
+      assert.equal(
+        (await policyBookFacade.LUuserLeveragePool(userLeveragePool2.address)).toString(),
+        toWei("1488571.428571428571428571")
+      );
+
+      assert.equal(
+        (await policyBookFacade.LUuserLeveragePool(leverage3.address)).toString(),
+        toWei("1488571.428571428571428571")
+      );
+    });
+
     it("should not deploye leverage and virtual stable by policy book - below threshold", async () => {
       await policyBookFacade.addLiquidity(smallLiquidityAmount, { from: USER1 });
 
@@ -652,7 +738,7 @@ contract("AbstractLeveragePortfolio", async (accounts) => {
       assert.equal((await reinsurancePool.poolsVDeployedAmount(policyBookMock.address)).toString(), 0);
     });
 
-    it("should correctly deploye leverage and virtual stable by policy book - above threshold - twise", async () => {
+    it("should correctly deploye leverage and virtual stable by policy book - above threshold - twice", async () => {
       await policyBookFacade.addLiquidity(liquidityAmount1, { from: USER1 });
 
       assert.equal(
@@ -793,6 +879,34 @@ contract("AbstractLeveragePortfolio", async (accounts) => {
       assert.equal((await policyBookFacade.totalLeveragedLiquidity()).toString(), toWei("5450000"));
     });
 
+    it("should not deploy leverage by user leverage pool above max invested pools", async () => {
+      await userLeveragePool.addInvestedPools(policyBookMock.address);
+      await userLeveragePool.addInvestedPools(policyBookMock2.address);
+      await userLeveragePool.addInvestedPools(policyBookMock3.address);
+
+      for (var i = 3; i < 20; i++) {
+        let policyBookMock1 = await createPolicyBooks(i);
+        await userLeveragePool.addInvestedPools(policyBookMock1.address);
+      } // added 20 pools
+      //added the 21 pool
+      let policyBookMockLast = await createPolicyBooks(i);
+
+      let policyBookFacadeAddress = await policyBookMockLast.policyBookFacade();
+
+      let policyBookFacadeLast = await PolicyBookFacade.at(policyBookFacadeAddress);
+
+      await stbl.transfer(USER1, getStableAmount("150000"));
+
+      await stbl.approve(policyBookMockLast.address, getStableAmount("150000"), { from: USER1 });
+
+      await policyBookFacadeLast.addLiquidity(liquidityAmount1, { from: USER1 });
+
+      assert.equal((await userLeveragePool.countleveragedCoveragePools()).toString(), 20);
+      assert.equal((await policyBookFacadeLast.LUuserLeveragePool(userLeveragePool.address)).toString(), 0);
+
+      assert.equal((await policyBookFacadeLast.totalLeveragedLiquidity()).toString(), 0);
+    });
+
     it("should correctly deploye leverage and virtual  by reinsurance pool - above threshold", async () => {
       await reinsurancePool.addInvestedPools(policyBookMock.address);
       await reinsurancePool.addInvestedPools(policyBookMock2.address);
@@ -846,56 +960,190 @@ contract("AbstractLeveragePortfolio", async (accounts) => {
       );
     });
 
-    it.skip("should correctly deploye leverage and virtual stable by policy book - above threshold", async () => {
-      const epochsNumber = toBN(5);
-      const coverTokensAmount = toBN(toWei("1000"));
-      await policyBookFacade.buyPolicy(epochsNumber, coverTokensAmount, { from: USER1 });
+    it("should correctly deploye leverage and virtual  by reinsurance pool - below threshold", async () => {
+      await reinsurancePool.addInvestedPools(policyBookMock.address);
+      await reinsurancePool.addInvestedPools(policyBookMock2.address);
+      await reinsurancePool.addInvestedPools(policyBookMock3.address);
+
+      const partialAmount1 = toBN(toWei("500000"));
+      const partialAmount2 = toBN(toWei("10000"));
+
+      await reinsurancePool.reevaluateProvidedLeverageStable(partialAmount1, { from: USER1 });
+
+      await reinsurancePool.reevaluateProvidedLeverageStable(partialAmount2, { from: USER1 });
+
+      assert.equal((await policyBookFacade.VUreinsurnacePool()).toString(), toWei("952018.278750952018278750"));
+
+      assert.equal((await policyBookFacade.LUreinsurnacePool()).toString(), toWei("547981.72124904798172125"));
+
+      assert.equal((await policyBookFacade.totalLeveragedLiquidity()).toString(), toWei("1500000"));
+
+      assert.equal((await reinsurancePool.poolsLDeployedAmount(policyBookMock.address)).toString(), toWei("1500000"));
+
+      assert.equal(
+        (await reinsurancePool.poolsVDeployedAmount(policyBookMock.address)).toString(),
+        toWei("952018.278750952018278750")
+      );
+      // pool2
+      assert.equal((await policyBookFacade2.VUreinsurnacePool()).toString(), toWei("13709.063214013709063214"));
+      assert.equal((await policyBookFacade2.LUreinsurnacePool()).toString(), toWei("9131.845876895381845876"));
+
+      assert.equal((await policyBookFacade2.totalLeveragedLiquidity()).toString(), toWei("22840.90909090909090909"));
+
+      assert.equal(
+        (await reinsurancePool.poolsLDeployedAmount(policyBookMock2.address)).toString(),
+        toWei("22840.90909090909090909")
+      );
+
+      assert.equal(
+        (await reinsurancePool.poolsVDeployedAmount(policyBookMock2.address)).toString(),
+        toWei("13709.063214013709063214")
+      );
+      // pool3
+
+      assert.equal((await policyBookFacade3.LUreinsurnacePool()).toString(), toWei("107554.265041888804265041"));
+      assert.equal((await policyBookFacade3.VUreinsurnacePool()).toString(), toWei("34272.658035034272658035"));
+
+      assert.equal((await policyBookFacade3.totalLeveragedLiquidity()).toString(), toWei("141826.923076923076923076"));
+      assert.equal(
+        (await reinsurancePool.poolsLDeployedAmount(policyBookMock3.address)).toString(),
+        toWei("141826.923076923076923076")
+      );
+
+      assert.equal(
+        (await reinsurancePool.poolsVDeployedAmount(policyBookMock3.address)).toString(),
+        toWei("34272.658035034272658035")
+      );
     });
 
-    it("should correctly not deploye leverage and virtual stable by policy book - total liq zero", async () => {
-      await userLeveragePool.setVtotalLiquidity(0);
+    it("should correctly deploye leverage and virtual  by reinsurance pool - above threshold - twice", async () => {
+      await reinsurancePool.addInvestedPools(policyBookMock.address);
+      await reinsurancePool.addInvestedPools(policyBookMock2.address);
+      await reinsurancePool.addInvestedPools(policyBookMock3.address);
 
-      await reinsurancePool.setVtotalLiquidity(0);
+      const partialAmount1 = toBN(toWei("500000"));
+      const partialAmount2 = toBN(toWei("500000"));
 
-      await policyBookFacade.addLiquidity(liquidityAmount1, { from: USER1 });
+      await reinsurancePool.reevaluateProvidedLeverageStable(partialAmount1, { from: USER1 });
 
-      assert.equal((await policyBookFacade.LUuserLeveragePool(userLeveragePool.address)).toString(), 0);
+      assert.equal((await policyBookFacade.VUreinsurnacePool()).toString(), toWei("952018.278750952018278750"));
 
-      assert.equal((await policyBookFacade.LUreinsurnacePool()).toString(), 0);
-      assert.equal((await policyBookFacade.VUreinsurnacePool()).toString(), 0);
+      assert.equal((await policyBookFacade.LUreinsurnacePool()).toString(), toWei("547981.72124904798172125"));
 
-      assert.equal((await policyBookFacade.totalLeveragedLiquidity()).toString(), 0);
+      assert.equal((await policyBookFacade.totalLeveragedLiquidity()).toString(), toWei("1500000"));
 
-      assert.equal((await userLeveragePool.poolsLDeployedAmount(policyBookMock.address)).toString(), 0);
+      assert.equal((await reinsurancePool.poolsLDeployedAmount(policyBookMock.address)).toString(), toWei("1500000"));
 
-      assert.equal((await reinsurancePool.poolsLDeployedAmount(policyBookMock.address)).toString(), 0);
-      assert.equal((await reinsurancePool.poolsVDeployedAmount(policyBookMock.address)).toString(), 0);
+      assert.equal(
+        (await reinsurancePool.poolsVDeployedAmount(policyBookMock.address)).toString(),
+        toWei("952018.278750952018278750")
+      );
+      // pool2
+      assert.equal((await policyBookFacade2.VUreinsurnacePool()).toString(), toWei("13709.063214013709063214"));
+      assert.equal((await policyBookFacade2.LUreinsurnacePool()).toString(), toWei("9131.845876895381845876"));
+
+      assert.equal((await policyBookFacade2.totalLeveragedLiquidity()).toString(), toWei("22840.90909090909090909"));
+
+      assert.equal(
+        (await reinsurancePool.poolsLDeployedAmount(policyBookMock2.address)).toString(),
+        toWei("22840.90909090909090909")
+      );
+
+      assert.equal(
+        (await reinsurancePool.poolsVDeployedAmount(policyBookMock2.address)).toString(),
+        toWei("13709.063214013709063214")
+      );
+      // pool3
+
+      assert.equal((await policyBookFacade3.LUreinsurnacePool()).toString(), toWei("107554.265041888804265041"));
+      assert.equal((await policyBookFacade3.VUreinsurnacePool()).toString(), toWei("34272.658035034272658035"));
+
+      assert.equal((await policyBookFacade3.totalLeveragedLiquidity()).toString(), toWei("141826.923076923076923076"));
+      assert.equal(
+        (await reinsurancePool.poolsLDeployedAmount(policyBookMock3.address)).toString(),
+        toWei("141826.923076923076923076")
+      );
+
+      assert.equal(
+        (await reinsurancePool.poolsVDeployedAmount(policyBookMock3.address)).toString(),
+        toWei("34272.658035034272658035")
+      );
+
+      // second time
+      await reinsurancePool.setVtotalLiquidity(toBN(virtualLiquidityAmount).times(2));
+      await reinsurancePool.reevaluateProvidedLeverageStable(toBN(partialAmount2).times(2), { from: USER1 });
+
+      assert.equal((await policyBookFacade.VUreinsurnacePool()).toString(), toWei("1904036.557501904036557501"));
+
+      assert.equal((await policyBookFacade.LUreinsurnacePool()).toString(), toWei("1015606.299640953106299641"));
+
+      assert.equal((await policyBookFacade.totalLeveragedLiquidity()).toString(), toWei("2919642.857142857142857142"));
+
+      assert.equal(
+        (await reinsurancePool.poolsLDeployedAmount(policyBookMock.address)).toString(),
+        toWei("2919642.857142857142857142")
+      );
+
+      assert.equal(
+        (await reinsurancePool.poolsVDeployedAmount(policyBookMock.address)).toString(),
+        toWei("1904036.557501904036557501")
+      );
+      // pool2
+      assert.equal((await policyBookFacade2.VUreinsurnacePool()).toString(), toWei("27418.126428027418126428"));
+      assert.equal((await policyBookFacade2.LUreinsurnacePool()).toString(), toWei("8474.730714829724730714"));
+
+      assert.equal((await policyBookFacade2.totalLeveragedLiquidity()).toString(), toWei("35892.857142857142857142"));
+
+      assert.equal(
+        (await reinsurancePool.poolsLDeployedAmount(policyBookMock2.address)).toString(),
+        toWei("35892.857142857142857142")
+      );
+
+      assert.equal(
+        (await reinsurancePool.poolsVDeployedAmount(policyBookMock2.address)).toString(),
+        toWei("27418.126428027418126428")
+      );
+      // pool3
+
+      assert.equal((await policyBookFacade3.LUreinsurnacePool()).toString(), toWei("136315.795041042565795041"));
+      assert.equal((await policyBookFacade3.VUreinsurnacePool()).toString(), toWei("68545.31607006854531607"));
+
+      assert.equal((await policyBookFacade3.totalLeveragedLiquidity()).toString(), toWei("204861.111111111111111111"));
+      assert.equal(
+        (await reinsurancePool.poolsLDeployedAmount(policyBookMock3.address)).toString(),
+        toWei("204861.111111111111111111")
+      );
+
+      assert.equal(
+        (await reinsurancePool.poolsVDeployedAmount(policyBookMock3.address)).toString(),
+        toWei("68545.31607006854531607")
+      );
     });
 
-    it("should correctly not deploye leverage and virtual stable by policy book - total liq zero & mpl zero", async () => {
-      await userLeveragePool.setVtotalLiquidity(0);
-
-      await reinsurancePool.setVtotalLiquidity(0);
-      await policyBookAdmin.setPolicyBookFacadeMPLs(policyBookFacade.address, 0, 0);
-      await policyBookFacade.addLiquidity(liquidityAmount1, { from: USER1 });
-
-      assert.equal((await policyBookFacade.LUuserLeveragePool(userLeveragePool.address)).toString(), 0);
-
-      assert.equal((await policyBookFacade.LUreinsurnacePool()).toString(), 0);
-      assert.equal((await policyBookFacade.VUreinsurnacePool()).toString(), 0);
-
-      assert.equal((await policyBookFacade.totalLeveragedLiquidity()).toString(), 0);
-
-      assert.equal((await userLeveragePool.poolsLDeployedAmount(policyBookMock.address)).toString(), 0);
-
-      assert.equal((await reinsurancePool.poolsLDeployedAmount(policyBookMock.address)).toString(), 0);
-      assert.equal((await reinsurancePool.poolsVDeployedAmount(policyBookMock.address)).toString(), 0);
-    });
-
-    it("should correctly not deploye leverage and virtual stable by policy book - total liq zero & mpl zero & cover zero", async () => {
-      await policyBookAdmin.setPolicyBookFacadeMPLs(policyBookFacade.address, 0, 0);
-
+    it("should correctly not deploye leverage and virtual stable by policy book - policy total liq zero", async () => {
+      await policyBookMock.setTotalLiquidity(0);
       await policyBookMock.setTotalCoverTokens(0);
+      const stblPartialAmount = getStableAmount("150000");
+      await stbl.approve(userLeveragePool.address, stblPartialAmount, { from: USER1 });
+      await userLeveragePool.addLiquidity(liquidityAmount1, { from: USER1 });
+
+      assert.equal((await policyBookFacade.LUuserLeveragePool(userLeveragePool.address)).toString(), 0);
+
+      assert.equal((await policyBookFacade.LUreinsurnacePool()).toString(), 0);
+      assert.equal((await policyBookFacade.VUreinsurnacePool()).toString(), 0);
+
+      assert.equal((await policyBookFacade.totalLeveragedLiquidity()).toString(), 0);
+
+      assert.equal((await userLeveragePool.poolsLDeployedAmount(policyBookMock.address)).toString(), 0);
+
+      assert.equal((await reinsurancePool.poolsLDeployedAmount(policyBookMock.address)).toString(), 0);
+      assert.equal((await reinsurancePool.poolsVDeployedAmount(policyBookMock.address)).toString(), 0);
+    });
+
+    it("should correctly not deploye leverage and virtual stable by policy book - leverage total liq zero", async () => {
+      await userLeveragePool.setVtotalLiquidity(0);
+
+      await reinsurancePool.setVtotalLiquidity(0);
 
       await policyBookFacade.addLiquidity(liquidityAmount1, { from: USER1 });
 
@@ -912,7 +1160,24 @@ contract("AbstractLeveragePortfolio", async (accounts) => {
       assert.equal((await reinsurancePool.poolsVDeployedAmount(policyBookMock.address)).toString(), 0);
     });
 
-    it("should correctly not deploye leverage and virtual stable by policy book - total liq zero & cover zero", async () => {
+    it("should correctly not deploye leverage and virtual stable by policy book - mpl zero", async () => {
+      await policyBookAdmin.setPolicyBookFacadeMPLs(policyBookFacade.address, 0, 0);
+      await policyBookFacade.addLiquidity(liquidityAmount1, { from: USER1 });
+
+      assert.equal((await policyBookFacade.LUuserLeveragePool(userLeveragePool.address)).toString(), 0);
+
+      assert.equal((await policyBookFacade.LUreinsurnacePool()).toString(), 0);
+      assert.equal((await policyBookFacade.VUreinsurnacePool()).toString(), 0);
+
+      assert.equal((await policyBookFacade.totalLeveragedLiquidity()).toString(), 0);
+
+      assert.equal((await userLeveragePool.poolsLDeployedAmount(policyBookMock.address)).toString(), 0);
+
+      assert.equal((await reinsurancePool.poolsLDeployedAmount(policyBookMock.address)).toString(), 0);
+      assert.equal((await reinsurancePool.poolsVDeployedAmount(policyBookMock.address)).toString(), 0);
+    });
+
+    it("should correctly not deploye leverage and virtual stable by policy book - cover zero", async () => {
       await policyBookMock.setTotalCoverTokens(0);
 
       await policyBookFacade.addLiquidity(liquidityAmount1, { from: USER1 });
@@ -931,8 +1196,407 @@ contract("AbstractLeveragePortfolio", async (accounts) => {
     });
   });
 
+  describe("deployeLeverageAndVirtualStable - rebalancing", async () => {
+    const totalLiquidityAmount1 = toBN(toWei("1000000"));
+    const coverTokensAmount1 = toBN(toWei("500000"));
+    const totalLiquidityAmount2 = toBN(toWei("10000"));
+    const coverTokensAmount2 = toBN(toWei("6000"));
+    const totalLiquidityAmount3 = toBN(toWei("100000"));
+    const coverTokensAmount3 = toBN(toWei("30000"));
+
+    const liquidityAmount1 = toBN(toWei("150000"));
+    const liquidityAmount2 = toBN(toWei("2000"));
+    const liquidityAmount3 = toBN(toWei("15000"));
+    const smallLiquidityAmount = toBN(toWei("10000"));
+
+    const virtualLiquidityAmount = toBN(toWei("1000000"));
+
+    const epochPeriod = toBN(604800); // 7 days
+
+    const epochsNumber = toBN(5);
+
+    beforeEach("setup", async () => {
+      const stblLiquidityAmount2 = getStableAmount("2000");
+      const stblLiquidityAmount3 = getStableAmount("15000");
+      const stblLiquidityAmount1 = getStableAmount("150000");
+
+      //setup for user leverage pool - 1 MM
+      await userLeveragePool.setVtotalLiquidity(virtualLiquidityAmount);
+      // setup fot reinsurance pool - 1 MM
+      await reinsurancePool.setVtotalLiquidity(virtualLiquidityAmount);
+      // setup for policy book - liq 1 MM and cover 500,000
+      await policyBookMock.setTotalLiquidity(totalLiquidityAmount1);
+      await policyBookMock.setTotalCoverTokens(coverTokensAmount1);
+      // set MPL for policy book for both pools RP and UserLP
+      await policyBookAdmin.setPolicyBookFacadeMPLs(policyBookFacade.address, PRECISION.times(80), PRECISION.times(30));
+
+      // setup pool2
+      // setup for policy book - liq 10 KK and cover 6000
+      await policyBookMock2.setTotalLiquidity(totalLiquidityAmount2);
+      await policyBookMock2.setTotalCoverTokens(coverTokensAmount2);
+      // set MPL for policy book for both pools RP and UserLP
+      await policyBookAdmin.setPolicyBookFacadeMPLs(
+        policyBookFacade2.address,
+        PRECISION.times(80),
+        PRECISION.times(30)
+      );
+
+      // setup pool3
+      // setup for policy book - liq 100 KK and cover 30000
+      await policyBookMock3.setTotalLiquidity(totalLiquidityAmount3);
+      await policyBookMock3.setTotalCoverTokens(coverTokensAmount3);
+      // set MPL for policy book for both pools RP and UserLP
+      await policyBookAdmin.setPolicyBookFacadeMPLs(
+        policyBookFacade3.address,
+        PRECISION.times(80),
+        PRECISION.times(50)
+      );
+
+      await stbl.transfer(USER1, stblLiquidityAmount1.times(2));
+
+      await stbl.approve(policyBookMock.address, stblLiquidityAmount1.times(2), { from: USER1 });
+
+      await stbl.transfer(USER2, stblLiquidityAmount2);
+
+      await stbl.approve(policyBookMock2.address, stblLiquidityAmount2, { from: USER2 });
+
+      await stbl.transfer(USER3, stblLiquidityAmount3);
+
+      await stbl.approve(policyBookMock3.address, stblLiquidityAmount3, { from: USER3 });
+    });
+
+    it("should correctly deleverage deployed funds by policy book", async () => {
+      await policyBookFacade.addLiquidity(liquidityAmount1, { from: USER1 });
+
+      await policyBookMock.approve(policyBookMock.address, liquidityAmount1, { from: USER1 });
+
+      await policyBookFacade.requestWithdrawal((await policyBookMock.balanceOf(USER1)).toString(), { from: USER1 });
+
+      await time.increaseTo(
+        toBN(await time.latest())
+          .plus(withdrawalPeriod.plus(10))
+          .toString()
+      );
+      await time.advanceBlock();
+
+      // withdraw liq - rebalance
+      await policyBookFacade.withdrawLiquidity({ from: USER1 });
+
+      assert.equal(
+        (await policyBookFacade.LUuserLeveragePool(userLeveragePool.address)).toString(),
+        toWei("4954545.454545454545454545")
+      );
+
+      assert.equal((await policyBookFacade.VUreinsurnacePool()).toString(), toWei("952018.27875095201827875"));
+      assert.equal((await policyBookFacade.LUreinsurnacePool()).toString(), toWei("547981.72124904798172125"));
+
+      assert.equal((await policyBookFacade.totalLeveragedLiquidity()).toString(), toWei("6454545.454545454545454545"));
+
+      assert.equal(
+        (await userLeveragePool.poolsLDeployedAmount(policyBookMock.address)).toString(),
+        toWei("4954545.454545454545454545")
+      );
+
+      assert.equal((await reinsurancePool.poolsLDeployedAmount(policyBookMock.address)).toString(), toWei("1500000"));
+      assert.equal(
+        (await reinsurancePool.poolsVDeployedAmount(policyBookMock.address)).toString(),
+        toWei("952018.27875095201827875")
+      );
+    });
+
+    it("should correctly rebalance deployed funds by policy book - buy policy", async () => {
+      await policyBookFacade.buyPolicy(toBN(5), toBN(toWei("100000")), { from: USER1 });
+
+      assert.closeTo(
+        toBN(await policyBookFacade.LUuserLeveragePool(userLeveragePool.address)).toNumber(),
+        toBN(toWei("6090311.822929883736960438")).toNumber(),
+        toBN(toWei("0.9")).toNumber()
+      );
+
+      assert.closeTo(
+        toBN(await policyBookFacade.VUreinsurnacePool()).toNumber(),
+        toBN(toWei("966530.999538164251207729")).toNumber(),
+        toBN(toWei("0.9")).toNumber()
+      );
+      assert.closeTo(
+        toBN(await policyBookFacade.LUreinsurnacePool()).toNumber(),
+        toBN(toWei("34188.428200915419296309")).toNumber(),
+        toBN(toWei("0.9")).toNumber()
+      );
+
+      assert.closeTo(
+        toBN(await policyBookFacade.totalLeveragedLiquidity()).toNumber(),
+        toBN(toWei("7091031.250668963407464476")).toNumber(),
+        toBN(toWei("0.9")).toNumber()
+      );
+
+      assert.closeTo(
+        toBN(await userLeveragePool.poolsLDeployedAmount(policyBookMock.address)).toNumber(),
+        toBN(toWei("6090311.822929883736960438")).toNumber(),
+        toBN(toWei("0.9")).toNumber()
+      );
+
+      assert.closeTo(
+        toBN(await reinsurancePool.poolsLDeployedAmount(policyBookMock.address)).toNumber(),
+        toBN(toWei("1000719.427739079670504038")).toNumber(),
+        toBN(toWei("0.9")).toNumber()
+      );
+      assert.closeTo(
+        toBN(await reinsurancePool.poolsVDeployedAmount(policyBookMock.address)).toNumber(),
+        toBN(toWei("966530.999538164251207729")).toNumber(),
+        toBN(toWei("0.9")).toNumber()
+      );
+    });
+
+    it("should correctly deleverage deployed funds  by user leverage pool", async () => {
+      await userLeveragePool.addInvestedPools(policyBookMock.address);
+      await userLeveragePool.addInvestedPools(policyBookMock2.address);
+      await userLeveragePool.addInvestedPools(policyBookMock3.address);
+
+      const partialAmount = toBN(toWei("500000"));
+      const stblPartialAmount = getStableAmount("500000");
+
+      userLeveragePool.setVtotalLiquidity(partialAmount);
+
+      await stbl.transfer(USER1, stblPartialAmount.times(2));
+
+      await stbl.approve(userLeveragePool.address, stblPartialAmount.times(2), { from: USER1 });
+
+      await userLeveragePool.addLiquidity(partialAmount, { from: USER1 });
+
+      await userLeveragePool.approve(userLeveragePool.address, partialAmount, { from: USER1 });
+
+      await userLeveragePool.requestWithdrawal(toBN(toWei("250000")), { from: USER1 });
+
+      await time.increaseTo(
+        toBN(await time.latest())
+          .plus(withdrawalPeriod.plus(10))
+          .toString()
+      );
+      await time.advanceBlock();
+
+      // withdraw liq - rebalance
+      await userLeveragePool.withdrawLiquidity({ from: USER1 });
+
+      assert.equal(
+        (await policyBookFacade.LUuserLeveragePool(userLeveragePool.address)).toString(),
+        toWei("3892857.142857142857142857")
+      );
+
+      assert.equal((await policyBookFacade.totalLeveragedLiquidity()).toString(), toWei("3892857.142857142857142857"));
+    });
+
+    it("should correctly deleverage deployed funds  by reinsurance pool", async () => {
+      await reinsurancePool.addInvestedPools(policyBookMock.address);
+      await reinsurancePool.addInvestedPools(policyBookMock2.address);
+      await reinsurancePool.addInvestedPools(policyBookMock3.address);
+
+      const partialAmount1 = toBN(toWei("500000"));
+
+      await reinsurancePool.setVtotalLiquidity(toBN(virtualLiquidityAmount).times(2));
+      await reinsurancePool.reevaluateProvidedLeverageStable(toBN(partialAmount1).times(2), { from: USER1 });
+
+      assert.equal((await policyBookFacade.VUreinsurnacePool()).toString(), toWei("1904036.557501904036557501"));
+
+      assert.equal((await policyBookFacade.LUreinsurnacePool()).toString(), toWei("1015606.299640953106299641"));
+
+      assert.equal((await policyBookFacade.totalLeveragedLiquidity()).toString(), toWei("2919642.857142857142857142"));
+
+      assert.equal(
+        (await reinsurancePool.poolsLDeployedAmount(policyBookMock.address)).toString(),
+        toWei("2919642.857142857142857142")
+      );
+
+      assert.equal(
+        (await reinsurancePool.poolsVDeployedAmount(policyBookMock.address)).toString(),
+        toWei("1904036.557501904036557501")
+      );
+      // pool2
+      assert.equal((await policyBookFacade2.VUreinsurnacePool()).toString(), toWei("27418.126428027418126428"));
+      assert.equal((await policyBookFacade2.LUreinsurnacePool()).toString(), toWei("8474.730714829724730714"));
+
+      assert.equal((await policyBookFacade2.totalLeveragedLiquidity()).toString(), toWei("35892.857142857142857142"));
+
+      assert.equal(
+        (await reinsurancePool.poolsLDeployedAmount(policyBookMock2.address)).toString(),
+        toWei("35892.857142857142857142")
+      );
+
+      assert.equal(
+        (await reinsurancePool.poolsVDeployedAmount(policyBookMock2.address)).toString(),
+        toWei("27418.126428027418126428")
+      );
+      // pool3
+
+      assert.equal((await policyBookFacade3.LUreinsurnacePool()).toString(), toWei("136315.795041042565795041"));
+      assert.equal((await policyBookFacade3.VUreinsurnacePool()).toString(), toWei("68545.31607006854531607"));
+
+      assert.equal((await policyBookFacade3.totalLeveragedLiquidity()).toString(), toWei("204861.111111111111111111"));
+      assert.equal(
+        (await reinsurancePool.poolsLDeployedAmount(policyBookMock3.address)).toString(),
+        toWei("204861.111111111111111111")
+      );
+
+      assert.equal(
+        (await reinsurancePool.poolsVDeployedAmount(policyBookMock3.address)).toString(),
+        toWei("68545.31607006854531607")
+      );
+
+      //deleverage
+      await reinsurancePool.setVtotalLiquidity(virtualLiquidityAmount);
+
+      await reinsurancePool.reevaluateProvidedLeverageStable(partialAmount1, { from: USER1 });
+
+      assert.equal((await policyBookFacade.VUreinsurnacePool()).toString(), toWei("952018.278750952018278750"));
+
+      assert.equal((await policyBookFacade.LUreinsurnacePool()).toString(), toWei("547981.72124904798172125"));
+
+      assert.equal((await policyBookFacade.totalLeveragedLiquidity()).toString(), toWei("1500000"));
+
+      assert.equal((await reinsurancePool.poolsLDeployedAmount(policyBookMock.address)).toString(), toWei("1500000"));
+
+      assert.equal(
+        (await reinsurancePool.poolsVDeployedAmount(policyBookMock.address)).toString(),
+        toWei("952018.278750952018278750")
+      );
+      // pool2
+      assert.equal((await policyBookFacade2.VUreinsurnacePool()).toString(), toWei("13709.063214013709063214"));
+      assert.equal((await policyBookFacade2.LUreinsurnacePool()).toString(), toWei("9131.845876895381845876"));
+
+      assert.equal((await policyBookFacade2.totalLeveragedLiquidity()).toString(), toWei("22840.90909090909090909"));
+
+      assert.equal(
+        (await reinsurancePool.poolsLDeployedAmount(policyBookMock2.address)).toString(),
+        toWei("22840.90909090909090909")
+      );
+
+      assert.equal(
+        (await reinsurancePool.poolsVDeployedAmount(policyBookMock2.address)).toString(),
+        toWei("13709.063214013709063214")
+      );
+      // pool3
+
+      assert.equal((await policyBookFacade3.LUreinsurnacePool()).toString(), toWei("107554.265041888804265041"));
+      assert.equal((await policyBookFacade3.VUreinsurnacePool()).toString(), toWei("34272.658035034272658035"));
+
+      assert.equal((await policyBookFacade3.totalLeveragedLiquidity()).toString(), toWei("141826.923076923076923076"));
+      assert.equal(
+        (await reinsurancePool.poolsLDeployedAmount(policyBookMock3.address)).toString(),
+        toWei("141826.923076923076923076")
+      );
+
+      assert.equal(
+        (await reinsurancePool.poolsVDeployedAmount(policyBookMock3.address)).toString(),
+        toWei("34272.658035034272658035")
+      );
+    });
+
+    it("should correctly deleverage deployed funds by policy book - total liq zero", async () => {
+      await policyBookMock.setTotalCoverTokens(toBN(toWei("75000")));
+      await policyBookFacade.addLiquidity(liquidityAmount1, { from: USER1 });
+      assert.isTrue(toBN(await policyBookFacade.totalLeveragedLiquidity()).gt(0));
+      await policyBookMock.setTotalCoverTokens(0);
+      await policyBookMock.approve(policyBookMock.address, liquidityAmount1, { from: USER1 });
+
+      await policyBookFacade.requestWithdrawal((await policyBookMock.balanceOf(USER1)).toString(), { from: USER1 });
+
+      await time.increaseTo(
+        toBN(await time.latest())
+          .plus(withdrawalPeriod.plus(10))
+          .toString()
+      );
+      await time.advanceBlock();
+
+      // withdraw liq - rebalance
+      await policyBookFacade.withdrawLiquidity({ from: USER1 });
+
+      assert.equal((await policyBookFacade.LUuserLeveragePool(userLeveragePool.address)).toString(), 0);
+
+      assert.equal((await policyBookFacade.LUreinsurnacePool()).toString(), 0);
+      assert.equal((await policyBookFacade.VUreinsurnacePool()).toString(), 0);
+
+      assert.equal((await policyBookFacade.totalLeveragedLiquidity()).toString(), 0);
+
+      assert.equal((await userLeveragePool.poolsLDeployedAmount(policyBookMock.address)).toString(), 0);
+
+      assert.equal((await reinsurancePool.poolsLDeployedAmount(policyBookMock.address)).toString(), 0);
+      assert.equal((await reinsurancePool.poolsVDeployedAmount(policyBookMock.address)).toString(), 0);
+    });
+
+    it("should correctly deleverage deployed funds by policy book - total cover zero", async () => {
+      await policyBookMock.setTotalCoverTokens(toBN(toWei("75000")));
+      await policyBookFacade.addLiquidity(liquidityAmount1, { from: USER1 });
+      assert.isTrue(toBN(await policyBookFacade.totalLeveragedLiquidity()).gt(0));
+      await policyBookMock.setTotalCoverTokens(0);
+      await policyBookMock.approve(policyBookMock.address, liquidityAmount1, { from: USER1 });
+
+      await policyBookFacade.requestWithdrawal(toWei("100"), { from: USER1 });
+
+      await time.increaseTo(
+        toBN(await time.latest())
+          .plus(withdrawalPeriod.plus(10))
+          .toString()
+      );
+      await time.advanceBlock();
+
+      // withdraw liq - rebalance
+      await policyBookFacade.withdrawLiquidity({ from: USER1 });
+
+      assert.equal((await policyBookFacade.LUuserLeveragePool(userLeveragePool.address)).toString(), 0);
+
+      assert.equal((await policyBookFacade.LUreinsurnacePool()).toString(), 0);
+      assert.equal((await policyBookFacade.VUreinsurnacePool()).toString(), 0);
+
+      assert.equal((await policyBookFacade.totalLeveragedLiquidity()).toString(), 0);
+
+      assert.equal((await userLeveragePool.poolsLDeployedAmount(policyBookMock.address)).toString(), 0);
+
+      assert.equal((await reinsurancePool.poolsLDeployedAmount(policyBookMock.address)).toString(), 0);
+      assert.equal((await reinsurancePool.poolsVDeployedAmount(policyBookMock.address)).toString(), 0);
+    });
+
+    it("should correctly deleverage deployed funds by policy book - mpl zero", async () => {
+      await policyBookFacade.addLiquidity(liquidityAmount1, { from: USER1 });
+      assert.isTrue(toBN(await policyBookFacade.totalLeveragedLiquidity()).gt(0));
+      await policyBookAdmin.setPolicyBookFacadeMPLs(policyBookFacade.address, 0, 0);
+      await policyBookFacade.addLiquidity(liquidityAmount1, { from: USER1 });
+      assert.equal((await policyBookFacade.LUuserLeveragePool(userLeveragePool.address)).toString(), 0);
+
+      assert.equal((await policyBookFacade.LUreinsurnacePool()).toString(), 0);
+      assert.equal((await policyBookFacade.VUreinsurnacePool()).toString(), 0);
+
+      assert.equal((await policyBookFacade.totalLeveragedLiquidity()).toString(), 0);
+
+      assert.equal((await userLeveragePool.poolsLDeployedAmount(policyBookMock.address)).toString(), 0);
+
+      assert.equal((await reinsurancePool.poolsLDeployedAmount(policyBookMock.address)).toString(), 0);
+      assert.equal((await reinsurancePool.poolsVDeployedAmount(policyBookMock.address)).toString(), 0);
+    });
+
+    it("should correctly deleverage deployed funds by leverage pool - leverage liq zero", async () => {
+      await policyBookFacade.addLiquidity(liquidityAmount1, { from: USER1 });
+      assert.isTrue(toBN(await policyBookFacade.totalLeveragedLiquidity()).gt(0));
+      await userLeveragePool.setVtotalLiquidity(0);
+      await reinsurancePool.setVtotalLiquidity(0);
+
+      await policyBookFacade.addLiquidity(liquidityAmount1, { from: USER1 });
+
+      assert.equal((await policyBookFacade.LUuserLeveragePool(userLeveragePool.address)).toString(), 0);
+
+      assert.equal((await policyBookFacade.LUreinsurnacePool()).toString(), 0);
+      assert.equal((await policyBookFacade.VUreinsurnacePool()).toString(), 0);
+
+      assert.equal((await policyBookFacade.totalLeveragedLiquidity()).toString(), 0);
+
+      assert.equal((await userLeveragePool.poolsLDeployedAmount(policyBookMock.address)).toString(), 0);
+
+      assert.equal((await reinsurancePool.poolsLDeployedAmount(policyBookMock.address)).toString(), 0);
+      assert.equal((await reinsurancePool.poolsVDeployedAmount(policyBookMock.address)).toString(), 0);
+    });
+  });
+
   describe("userLeverageMuliplier", async () => {
-    it.skip("should correctly calculate multiplier", async () => {
+    it("should correctly calculate multiplier", async () => {
       // setup protocol constant
       await policyBookAdmin.setLeveragePortfolioProtocolConstant(
         userLeveragePool.address,
@@ -942,26 +1606,27 @@ contract("AbstractLeveragePortfolio", async (accounts) => {
         PRECISION.times(100)
       );
 
+      const M1 = "4.5454545454545454545454545";
+      const M2 = "14.2857142857142857142857142";
+      const M3 = "6.4516129032258064516129032";
+
       let poolUR = PRECISION.times(1);
-      console.log((await leveragePortfolioView.calcM(poolUR, userLeveragePool.address)).toString());
-      // assert.equal(
-      //   (await leveragePortfolioView.calcM(poolUR, userLeveragePool.address)).toString(),
-      //   PRECISION.times(toBN(4.5454545454545454545454545)).toString()
-      // );
+      assert.equal(
+        toBN(await leveragePortfolioView.calcM(poolUR, userLeveragePool.address)).toString(),
+        PRECISION.times(M1).toString()
+      );
 
       poolUR = PRECISION.times(31);
-      console.log((await leveragePortfolioView.calcM(poolUR, userLeveragePool.address)).toString());
-      // assert.equal(
-      //   toBN(await leveragePortfolioView.calcM(poolUR, userLeveragePool.address)).toNumber(),
-      //   toBN(10).pow(25).times(14.2857142857142857142857142).toNumber()
-      // );
+      assert.equal(
+        toBN(await leveragePortfolioView.calcM(poolUR, userLeveragePool.address)).toString(),
+        PRECISION.times(M2).toString()
+      );
 
       poolUR = PRECISION.times(76);
-      console.log((await leveragePortfolioView.calcM(poolUR, userLeveragePool.address)).toString());
-      // assert.equal(
-      //   (await leveragePortfolioView.calcM(poolUR, userLeveragePool.address)).toString(),
-      //   PRECISION.times(6.4516129032258064516129032).toString()
-      // );
+      assert.equal(
+        toBN(await leveragePortfolioView.calcM(poolUR, userLeveragePool.address)).toString(),
+        PRECISION.times(M3).toString()
+      );
     });
   });
 });

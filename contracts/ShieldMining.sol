@@ -58,6 +58,8 @@ contract ShieldMining is IShieldMining, OwnableUpgradeable, ReentrancyGuard, Abs
     address public bmiCoverStakingAddress;
     mapping(address => uint256) public userleveragepoolsTotalSupply;
 
+    Networks private _currentNetwork;
+
     event ShieldMiningAssociated(address indexed policyBook, address indexed shieldToken);
     event ShieldMiningFilled(
         address indexed policyBook,
@@ -94,8 +96,13 @@ contract ShieldMining is IShieldMining, OwnableUpgradeable, ReentrancyGuard, Abs
         _;
     }
 
-    function __ShieldMining_init() external initializer {
+    function __ShieldMining_init(Networks _network) external initializer {
         __Ownable_init();
+        _currentNetwork = _network;
+    }
+
+    function configureNetwork(Networks _network) public onlyOwner {
+        _currentNetwork = _network;
     }
 
     function setDependencies(IContractsRegistry _contractsRegistry)
@@ -115,9 +122,13 @@ contract ShieldMining is IShieldMining, OwnableUpgradeable, ReentrancyGuard, Abs
 
     function blocksWithRewardsPassed(address _policyBook) public view override returns (uint256) {
         uint256 from = shieldMiningInfo[_policyBook].lastUpdateBlock;
+        uint256 to;
 
-        uint256 to =
-            Math.min(block.number, shieldMiningInfo[_policyBook].nearestLastBlocksWithReward);
+        if (shieldMiningInfo[_policyBook].nearestLastBlocksWithReward > 0) {
+            to = Math.min(block.number, shieldMiningInfo[_policyBook].nearestLastBlocksWithReward);
+        } else {
+            to = block.number;
+        }
 
         return from >= to ? 0 : to.sub(from);
     }
@@ -153,9 +164,9 @@ contract ShieldMining is IShieldMining, OwnableUpgradeable, ReentrancyGuard, Abs
             userLiquidity = IPolicyBookFacade(IPolicyBook(_policyBook).policyBookFacade())
                 .userLiquidity(_account);
         } else {
-            userLiquidity = IUserLeveragePool(_userLeveragePool).userLiquidity(_account);
             uint256 totalSupply = userleveragepoolsTotalSupply[_userLeveragePool];
             if (totalSupply > 0) {
+                userLiquidity = IUserLeveragePool(_userLeveragePool).userLiquidity(_account);
                 userLiquidity = userLiquidity
                     .mul(userleveragepoolsParticipatedAmounts[_userLeveragePool])
                     .div(totalSupply);
@@ -265,7 +276,7 @@ contract ShieldMining is IShieldMining, OwnableUpgradeable, ReentrancyGuard, Abs
 
         require(tokenLiquidity > 0, "SM: amount is zero");
 
-        uint256 _blocksAmount = _duration.mul(BLOCKS_PER_DAY).sub(1);
+        uint256 _blocksAmount = _duration.mul(_getBlocksPerDay()).sub(1);
 
         uint256 _rewardPerBlock = _amount.div(_blocksAmount);
 
@@ -440,7 +451,7 @@ contract ShieldMining is IShieldMining, OwnableUpgradeable, ReentrancyGuard, Abs
         _nearestLastBlocksWithReward = shieldMiningInfo[_policyBook].nearestLastBlocksWithReward;
         _rewardPerTokenStored = shieldMiningInfo[_policyBook].rewardPerTokenStored;
         _rewardPerBlock = getCurrentRewardPerBlock(_policyBook);
-        _tokenPerDay = _rewardPerBlock.mul(BLOCKS_PER_DAY);
+        _tokenPerDay = _rewardPerBlock.mul(_getBlocksPerDay());
         _totalSupply = shieldMiningInfo[_policyBook].totalSupply;
         _rewardTokensLocked = shieldMiningInfo[_policyBook].rewardTokensLocked;
     }
@@ -596,5 +607,15 @@ contract ShieldMining is IShieldMining, OwnableUpgradeable, ReentrancyGuard, Abs
         if (block.number < _from) return _to.sub(_from).add(1);
 
         return _to.sub(block.number);
+    }
+
+    function _getBlocksPerDay() internal view returns (uint256 _blockPerDays) {
+        if (_currentNetwork == Networks.ETH) {
+            _blockPerDays = BLOCKS_PER_DAY;
+        } else if (_currentNetwork == Networks.BSC) {
+            _blockPerDays = BLOCKS_PER_DAY_BSC;
+        } else if (_currentNetwork == Networks.POL) {
+            _blockPerDays = BLOCKS_PER_DAY_POLYGON;
+        }
     }
 }

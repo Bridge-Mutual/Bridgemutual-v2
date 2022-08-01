@@ -25,6 +25,7 @@ const YearnProtocol = artifacts.require("YearnProtocol");
 const YieldGenerator = artifacts.require("YieldGenerator");
 const NFTStaking = artifacts.require("NFTStaking");
 const ShieldMining = artifacts.require("ShieldMining");
+const StkBMIStaking = artifacts.require("StkBMIStaking");
 
 // TODO validate finality of data below
 const ownerAddress = "0xc97773E1Df2cC54e51a005DFF7cBBb6480aE2767"; // Mike's address
@@ -61,6 +62,8 @@ module.exports = async (deployer, network, accounts) => {
 
   const bmiUtilityNFT = await BMIUtilityNFT.at(await contractsRegistry.getBMIUtilityNFTContract());
 
+  const stkBMIStaking = await StkBMIStaking.at(await contractsRegistry.getStkBMIStakingContract());
+
   const reinsurancePool = await ReinsurancePool.at(await contractsRegistry.getReinsurancePoolContract());
 
   const policyBookAdmin = await PolicyBookAdmin.at(await contractsRegistry.getPolicyBookAdminContract());
@@ -79,6 +82,9 @@ module.exports = async (deployer, network, accounts) => {
   console.log();
 
   logTransaction(await bmiCoverStaking.transferOwnership(ownerAddress), "Ownership BMICoverStaking");
+
+  logTransaction(await stkBMIStaking.transferOwnership(ownerAddress), "Ownership StkBMIStaking");
+
   logTransaction(await rewardsGenerator.transferOwnership(ownerAddress), "Ownership RewardsGenerator");
   if (["ropsten", "rinkeby", "development", "mainnet"].includes(network)) {
     logTransaction(await bmiStaking.transferOwnership(ownerAddress), "Ownership BMIStaking");

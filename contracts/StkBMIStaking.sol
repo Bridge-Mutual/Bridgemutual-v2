@@ -28,6 +28,7 @@ contract StkBMIStaking is IStkBMIStaking, OwnableUpgradeable, AbstractDependant 
     address public bmiStakingAddress;
 
     bool public enableBMIStakingAccess;
+    address public bmiTreasury;
 
     event UserSlashed(address user, uint256 amount);
     event Locked(address user, uint256 amount);
@@ -51,7 +52,7 @@ contract StkBMIStaking is IStkBMIStaking, OwnableUpgradeable, AbstractDependant 
     {
         stkBMIToken = IERC20(_contractsRegistry.getSTKBMIContract());
         claimVoting = IClaimVoting(_contractsRegistry.getClaimVotingContract());
-        reinsurancePoolAddress = _contractsRegistry.getReinsurancePoolContract();
+        bmiTreasury = _contractsRegistry.getBMITreasury();
         if (enableBMIStakingAccess) {
             bmiStakingAddress = _contractsRegistry.getBMIStakingContract();
         }
@@ -73,17 +74,6 @@ contract StkBMIStaking is IStkBMIStaking, OwnableUpgradeable, AbstractDependant 
 
     function totalStakedStkBMI() external view override onlyClaimVoting returns (uint256) {
         return _totalStakedStkBMI;
-    }
-
-    /// @dev a temporary function for migration stkBMI from vBMI to this contract
-    function lockStkBMIFor(address user, uint256 amount) external override {
-        // vbmi
-        require(_msgSender() == 0x9DD9e2B26F75d42437582FCB354d567556343dAe);
-
-        _totalStakedStkBMI = _totalStakedStkBMI.add(amount);
-        _stakedStkBMI[user] = _stakedStkBMI[user].add(amount);
-
-        emit Locked(user, amount);
     }
 
     function lockStkBMI(uint256 amount) external override {
@@ -114,7 +104,7 @@ contract StkBMIStaking is IStkBMIStaking, OwnableUpgradeable, AbstractDependant 
         amount = Math.min(_stakedStkBMI[user], amount);
         _totalStakedStkBMI = _totalStakedStkBMI.sub(amount);
         _stakedStkBMI[user] = _stakedStkBMI[user].sub(amount);
-        stkBMIToken.transfer(reinsurancePoolAddress, amount);
+        stkBMIToken.transfer(bmiTreasury, amount);
 
         emit UserSlashed(user, amount);
     }

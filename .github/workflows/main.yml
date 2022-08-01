@@ -1,7 +1,9 @@
-name: 'CI'
+name: "CI"
 
 on:
-  push:    
+  pull_request:
+    types:
+      - ready_for_review
 
 jobs:
   test:
@@ -14,16 +16,37 @@ jobs:
       - name: Setup node
         uses: actions/setup-node@v1
         with:
-          node-version: '14.x'
+          node-version: "16.x"
 
       - name: Install packages
         run: npm install
 
-      # - name: Run private network
-      #   run: npm run private-network-quiet > /dev/null &
+      - name: Run private network - ETH
+        run: npm run private-network-no-limit > /dev/null &
 
-      - name: Run tests
-        run: bash scripts/testUntilFailure.sh 9
+      - name: Run migrations - ETH
+        run: npm run deploy-dev
+
+      - name: Run tests - ETH
+        run: npm run test-no-deploy
+
+      - name: Run private network - BSC
+        run: npm run private-network-no-limit-bsc > /dev/null &
+
+      - name: Run migrations - BSC
+        run: npm run deploy-dev-bsc
+
+      - name: Run tests - BSC
+        run: npm run test-no-deploy
+
+      - name: Run private network - POLYGON
+        run: npm run private-network-no-limit-pol > /dev/null &
+
+      - name: Run migrations - POLYGON
+        run: npm run deploy-dev-pol
+
+      - name: Run tests - POLYGON
+        run: npm run test-no-deploy
 
       # - name: Stop private network
       #   run: kill $(lsof -t -i:8545)

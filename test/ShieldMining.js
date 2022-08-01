@@ -12,10 +12,10 @@ const ContractsRegistry = artifacts.require("ContractsRegistry");
 const LiquidityMiningStakingMock = artifacts.require("LiquidityMiningStakingMock");
 const LiquidityRegistry = artifacts.require("LiquidityRegistry");
 const NFTStaking = artifacts.require("NFTStaking");
-const PolicyBook = artifacts.require("PolicyBook");
+const PolicyBook = artifacts.require("PolicyBookMock");
 const PolicyBookAdmin = artifacts.require("PolicyBookAdmin");
 const PolicyBookFabric = artifacts.require("PolicyBookFabric");
-const PolicyBookFacade = artifacts.require("PolicyBookFacade");
+const PolicyBookFacade = artifacts.require("PolicyBookFacadeMock");
 const PolicyBookMock = artifacts.require("PolicyBookMock");
 const PolicyBookRegistry = artifacts.require("PolicyBookRegistry");
 const PolicyQuote = artifacts.require("PolicyQuote");
@@ -332,9 +332,10 @@ contract("ShieldMining", async (accounts) => {
     );
     await policyBookFabric.__PolicyBookFabric_init();
     await reinsurancePool.__ReinsurancePool_init();
-    await rewardsGenerator.__RewardsGenerator_init();
+    await rewardsGenerator.__RewardsGenerator_init(network);
     await yieldGenerator.__YieldGenerator_init(network);
-    await shieldMining.__ShieldMining_init();
+    // we test it against EHT block per days as it doesn't matter the difference in blocks per day for other chain
+    await shieldMining.__ShieldMining_init(Networks.ETH);
 
     await contractsRegistry.injectDependencies(await contractsRegistry.BMI_COVER_STAKING_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.BMI_COVER_STAKING_VIEW_NAME());
@@ -797,6 +798,35 @@ contract("ShieldMining", async (accounts) => {
       );
     });
 
+    it("add liquidity - added liquidity before fill shield mining", async () => {
+      let tx = await policyBookFacade1.addLiquidity(liquidityAmount1.div(2), { from: USER3 });
+
+      // refill1
+      tx = await shieldMining.mockFillShieldMining(policyBook1.address, amount1, duration1, { from: USER1 });
+
+      await advanceBlocks(10);
+
+      tx = await policyBookFacade1.addLiquidity(liquidityAmount1.div(2), { from: USER3 });
+
+      await advanceBlocks(10);
+
+      tx = await shieldMining.getReward(policyBook1.address, ADDRESS_ZERO, { from: USER2 });
+
+      tx = await shieldMining.getReward(policyBook1.address, ADDRESS_ZERO, { from: USER3 });
+
+      let info = await shieldMining.getShieldMiningInfo(policyBook1.address);
+
+      assert.equal(info._totalSupply.toString(), toBN(initialDeposit).plus(liquidityAmount1).toFixed().toString());
+      // 22 block passed * 2 reward per bolck
+      assert.equal(toBN(await SMToken.balanceOf(USER3)).toString(), toWei("35.714285", "mwei"));
+      assert.equal(toBN(await SMToken.balanceOf(USER2)).toString(), toWei("9.95238", "mwei"));
+
+      assert.equal(
+        toBN(await SMToken.balanceOf(shieldMining.address)).toString(),
+        convert(amount1).minus(toWei("45.666665", "mwei"))
+      );
+    });
+
     it("withdraw liquidity", async () => {
       // refill1
       let tx = await shieldMining.mockFillShieldMining(policyBook1.address, amount1, duration1, { from: USER1 });
@@ -904,6 +934,7 @@ contract("ShieldMining", async (accounts) => {
       await policyBookFacade1.addLiquidity(liquidityAmount1, { from: USER3 });
 
       await advanceBlocks(9);
+
       await userLeveragePool.addInvestedPools(policyBook1.address);
       await userLeveragePool.addLiquidity(liquidityAmount1, { from: USER4 });
 
@@ -911,6 +942,51 @@ contract("ShieldMining", async (accounts) => {
 
       tx = await shieldMining.getReward(policyBook1.address, ADDRESS_ZERO, { from: USER2 });
       tx = await shieldMining.getReward(policyBook1.address, ADDRESS_ZERO, { from: USER3 });
+      tx = await shieldMining.getReward(policyBook1.address, userLeveragePool.address, { from: USER4 });
+
+      info = await shieldMining.getShieldMiningInfo(policyBook1.address);
+
+      const multiplier = await leveragePortfolioView.calcM(poolUR, userLeveragePool.address);
+
+      const leveragedAmount = await policyBookFacade1.LUuserLeveragePool(userLeveragePool.address);
+
+      const participatedLeveragedAmount = toBN(leveragedAmount).times(multiplier).idiv(PERCENTAGE_100).toFixed();
+
+      assert.equal(
+        info._totalSupply.toString(),
+        toBN(initialDeposit).plus(liquidityAmount1).plus(participatedLeveragedAmount).toFixed().toString()
+      );
+      // 35 block passed * 2 reward per bolck
+
+      assert.equal(toBN(await SMToken.balanceOf(USER2)).toString(), toWei("26.651006", "mwei"));
+      assert.equal(toBN(await SMToken.balanceOf(USER3)).toString(), toWei("23.702460", "mwei"));
+
+      assert.equal(toBN(await SMToken.balanceOf(USER4)).toString(), toWei("19.020134", "mwei"));
+
+      assert.equal(
+        toBN(await SMToken.balanceOf(shieldMining.address)).toString(),
+        convert(amount1).minus(toWei("69.3736", "mwei")).toString()
+      );
+    });
+
+    it("add liquidity - added liquidity before leverage", async () => {
+      // refill1
+      let tx = await shieldMining.mockFillShieldMining(policyBook1.address, amount1, duration1, { from: USER1 });
+      await advanceBlocks(10);
+
+      await policyBookFacade1.addLiquidity(liquidityAmount1, { from: USER3 });
+
+      await advanceBlocks(8);
+      await userLeveragePool.addLiquidity(liquidityAmount1.div(2), { from: USER4 });
+
+      await userLeveragePool.addInvestedPools(policyBook1.address);
+      await userLeveragePool.addLiquidity(liquidityAmount1.div(2), { from: USER4 });
+
+      await advanceBlocks(10);
+
+      tx = await shieldMining.getReward(policyBook1.address, ADDRESS_ZERO, { from: USER2 });
+      tx = await shieldMining.getReward(policyBook1.address, ADDRESS_ZERO, { from: USER3 });
+
       tx = await shieldMining.getReward(policyBook1.address, userLeveragePool.address, { from: USER4 });
 
       info = await shieldMining.getShieldMiningInfo(policyBook1.address);

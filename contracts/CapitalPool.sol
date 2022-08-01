@@ -293,11 +293,19 @@ contract CapitalPool is ICapitalPool, OwnableUpgradeable, AbstractDependant {
             return;
         }
 
-        uint256 _pendingClaimAmount = claimingRegistry.getAllPendingClaimsAmount();
-        uint256 _pendingRewardAmount = claimingRegistry.getAllPendingRewardsAmount();
+        uint256 _pendingClaimAmount =
+            claimingRegistry.getAllPendingClaimsAmount(
+                claimingRegistry.getWithdrawClaimRequestIndexListCount()
+            );
+        uint256 _pendingRewardAmount =
+            claimingRegistry.getAllPendingRewardsAmount(
+                claimingRegistry.getWithdrawRewardRequestVoterListCount()
+            );
 
         uint256 _pendingWithdrawlAmount =
-            liquidityRegistry.getAllPendingWithdrawalRequestsAmount();
+            liquidityRegistry.getAllPendingWithdrawalRequestsAmount(
+                liquidityRegistry.getWithdrawlRequestUsersListCount()
+            );
 
         uint256 _requiredLiquidity =
             _pendingWithdrawlAmount.add(_pendingClaimAmount).add(_pendingRewardAmount);

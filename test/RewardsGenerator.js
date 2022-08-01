@@ -41,11 +41,12 @@ const wei = web3.utils.toWei;
 contract("RewardsGenerator", async (accounts) => {
   const reverter = new Reverter(web3);
 
-  const LEGACY_REWARDS_GENERATOR = accounts[3];
-  const BMI_STAKING = accounts[4];
-  const BMI_STBL_STAKING = accounts[5];
-  const POLICY_BOOK1 = accounts[6];
-  const POLICY_BOOK2 = accounts[7];
+  const LEGACY_REWARDS_GENERATOR = accounts[2];
+  const BMI_STAKING = accounts[3];
+  const BMI_STBL_STAKING = accounts[4];
+  const POLICY_BOOK1 = accounts[5];
+  const POLICY_BOOK2 = accounts[6];
+  const POLICY_BOOK3 = accounts[7];
   const POLICY_BOOK_FABRIC = accounts[8];
   const POLICY_BOOK_FACADE = accounts[9];
 
@@ -60,6 +61,8 @@ contract("RewardsGenerator", async (accounts) => {
   let bmiMock;
   let rewardsGenerator;
   let bmiCoverStaking;
+  let priceFeed;
+  let bmiPriceInUSDT;
 
   let network;
 
@@ -67,6 +70,7 @@ contract("RewardsGenerator", async (accounts) => {
     network = await getNetwork();
     const mockInsuranceContractAddress1 = "0x0000000000000000000000000000000000000001";
     const mockInsuranceContractAddress2 = "0x0000000000000000000000000000000000000002";
+    const mockInsuranceContractAddress3 = "0x0000000000000000000000000000000000000003";
 
     const contractsRegistry = await ContractsRegistry.new();
     const wethMock = await WETHMock.new("weth", "weth");
@@ -116,8 +120,9 @@ contract("RewardsGenerator", async (accounts) => {
 
     const policyBookRegistry = await PolicyBookRegistry.at(await contractsRegistry.getPolicyBookRegistryContract());
     rewardsGenerator = await RewardsGeneratorMock.at(await contractsRegistry.getRewardsGeneratorContract());
-
-    await rewardsGenerator.__RewardsGenerator_init();
+    priceFeed = await PriceFeed.at(await contractsRegistry.getPriceFeedContract());
+    // we test it against EHT block per days as it doesn't matter the difference in blocks per day for other chain
+    await rewardsGenerator.__RewardsGenerator_init(Networks.ETH);
 
     await contractsRegistry.injectDependencies(await contractsRegistry.PRICE_FEED_NAME());
     await contractsRegistry.injectDependencies(await contractsRegistry.POLICY_BOOK_REGISTRY_NAME());
@@ -132,16 +137,26 @@ contract("RewardsGenerator", async (accounts) => {
         from: POLICY_BOOK_FABRIC,
       }
     );
-    POLICY_BOOK_FACADE,
-      await policyBookRegistry.add(
-        mockInsuranceContractAddress2,
-        ContractType.CONTRACT,
-        POLICY_BOOK2,
-        POLICY_BOOK_FACADE,
-        {
-          from: POLICY_BOOK_FABRIC,
-        }
-      );
+
+    await policyBookRegistry.add(
+      mockInsuranceContractAddress2,
+      ContractType.CONTRACT,
+      POLICY_BOOK2,
+      POLICY_BOOK_FACADE,
+      {
+        from: POLICY_BOOK_FABRIC,
+      }
+    );
+
+    await policyBookRegistry.add(
+      mockInsuranceContractAddress3,
+      ContractType.STABLECOIN,
+      POLICY_BOOK3,
+      POLICY_BOOK_FACADE,
+      {
+        from: POLICY_BOOK_FABRIC,
+      }
+    );
 
     if (network == Networks.ETH || network == Networks.POL) {
       await sushiswapRouterMock.setReserve(stblMock.address, wei(toBN(10 ** 3).toString()));
@@ -153,7 +168,8 @@ contract("RewardsGenerator", async (accounts) => {
     await sushiswapRouterMock.setReserve(bmiMock.address, wei(toBN(10 ** 15).toString()));
 
     await rewardsGenerator.setRewardPerBlock(wei("100"));
-
+    await rewardsGenerator.setPolicyBookStableRatio(PRECISION.times(50)); // 50%
+    bmiPriceInUSDT = (await priceFeed.howManyUSDTsInBMI(wei("1"))).toString();
     await reverter.snapshot();
   });
 
@@ -189,8 +205,8 @@ contract("RewardsGenerator", async (accounts) => {
       assert.equal(toBN(await rewardsGenerator.rewardPerBlock()).toString(), toBN(wei("10")).toString());
     });
 
-    it("should correctly update policybooks", async () => {
-      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, { from: POLICY_BOOK1 });
+    it("should correctly update policybooks (rewardPerBlock)", async () => {
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, false, { from: POLICY_BOOK1 });
 
       await rewardsGenerator.stake(POLICY_BOOK1, 1, wei("1000"), { from: BMI_STBL_STAKING });
 
@@ -210,11 +226,86 @@ contract("RewardsGenerator", async (accounts) => {
         toBN(wei("10")).toString()
       );
     });
+
+    it("should correctly update policybooks (rewardPerBlock) when one is STABLECOIN", async () => {
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, false, { from: POLICY_BOOK1 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK3, true, { from: POLICY_BOOK3 });
+
+      await rewardsGenerator.stake(POLICY_BOOK1, 1, wei("2000"), { from: BMI_STBL_STAKING });
+      await rewardsGenerator.stake(POLICY_BOOK3, 2, wei("1000"), { from: BMI_STBL_STAKING });
+
+      assert.equal(
+        toBN(await rewardsGenerator.getPolicyBookRewardPerBlock(POLICY_BOOK1))
+          .idiv(PRECISION)
+          .toString(),
+        toBN(wei("80")).toString()
+      );
+      assert.equal(
+        toBN(await rewardsGenerator.getPolicyBookRewardPerBlock(POLICY_BOOK3))
+          .idiv(PRECISION)
+          .toString(),
+        toBN(wei("20")).toString()
+      );
+
+      await rewardsGenerator.setRewardPerBlock(wei("10"));
+
+      assert.equal(
+        toBN(await rewardsGenerator.getPolicyBookRewardPerBlock(POLICY_BOOK1))
+          .idiv(PRECISION)
+          .toString(),
+        toBN(wei("8")).toString()
+      );
+      assert.equal(
+        toBN(await rewardsGenerator.getPolicyBookRewardPerBlock(POLICY_BOOK3))
+          .idiv(PRECISION)
+          .toString(),
+        toBN(wei("2")).toString()
+      );
+    });
+
+    it("should set new factor", async () => {
+      assert.equal(toBN(await rewardsGenerator.policyBookStableRatio()).toString(), PRECISION.times(50).toString());
+
+      await rewardsGenerator.setPolicyBookStableRatio(PRECISION.times(25));
+
+      assert.equal(toBN(await rewardsGenerator.policyBookStableRatio()).toString(), PRECISION.times(25).toString());
+    });
+
+    it("should correctly update policybooks (rewardMultiplier)", async () => {
+      await rewardsGenerator.updatePolicyBookShare(4 * REWARDS_PRECISION, POLICY_BOOK1, false, { from: POLICY_BOOK1 });
+      await rewardsGenerator.updatePolicyBookShare(4 * REWARDS_PRECISION, POLICY_BOOK3, true, { from: POLICY_BOOK3 });
+
+      await rewardsGenerator.stake(POLICY_BOOK1, 1, wei("1000"), { from: BMI_STBL_STAKING });
+      await rewardsGenerator.stake(POLICY_BOOK3, 2, wei("1000"), { from: BMI_STBL_STAKING });
+
+      assert.equal(
+        toBN(await rewardsGenerator.getPolicyBookRewardMultiplier(POLICY_BOOK1, { from: POLICY_BOOK1 })).toString(),
+        toBN(REWARDS_PRECISION).times(4).toString()
+      );
+      assert.equal(
+        toBN(await rewardsGenerator.getPolicyBookRewardMultiplier(POLICY_BOOK3, { from: POLICY_BOOK3 })).toString(),
+        toBN(REWARDS_PRECISION).times(2).toString()
+      );
+
+      await rewardsGenerator.setPolicyBookStableRatio(PRECISION.times(25));
+
+      await rewardsGenerator.updatePolicyBookShare(4 * REWARDS_PRECISION, POLICY_BOOK1, false, { from: POLICY_BOOK1 });
+      await rewardsGenerator.updatePolicyBookShare(4 * REWARDS_PRECISION, POLICY_BOOK3, true, { from: POLICY_BOOK3 });
+
+      assert.equal(
+        toBN(await rewardsGenerator.getPolicyBookRewardMultiplier(POLICY_BOOK1, { from: POLICY_BOOK1 })).toString(),
+        toBN(REWARDS_PRECISION).times(4).toString()
+      );
+      assert.equal(
+        toBN(await rewardsGenerator.getPolicyBookRewardMultiplier(POLICY_BOOK3, { from: POLICY_BOOK3 })).toString(),
+        toBN(REWARDS_PRECISION).toString()
+      );
+    });
   });
 
   describe("stake & withdraw", async () => {
     it("should successfully calculate stake average (1)", async () => {
-      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, { from: POLICY_BOOK1 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, false, { from: POLICY_BOOK1 });
 
       await rewardsGenerator.stake(POLICY_BOOK1, 1, wei("1000"), { from: BMI_STBL_STAKING });
 
@@ -226,7 +317,7 @@ contract("RewardsGenerator", async (accounts) => {
     });
 
     it("should successfully calculate stake average (2)", async () => {
-      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, { from: POLICY_BOOK1 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, false, { from: POLICY_BOOK1 });
 
       await rewardsGenerator.stake(POLICY_BOOK1, 1, wei("1000"), { from: BMI_STBL_STAKING });
 
@@ -240,7 +331,7 @@ contract("RewardsGenerator", async (accounts) => {
     });
 
     it("should successfully calculate stake average (3)", async () => {
-      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, { from: POLICY_BOOK1 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, false, { from: POLICY_BOOK1 });
 
       await rewardsGenerator.stake(POLICY_BOOK1, 1, wei("1000"), { from: BMI_STBL_STAKING });
 
@@ -258,7 +349,7 @@ contract("RewardsGenerator", async (accounts) => {
     });
 
     it("should successfully calculate correct withdrawal amount (1)", async () => {
-      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, { from: POLICY_BOOK1 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, false, { from: POLICY_BOOK1 });
 
       await rewardsGenerator.stake(POLICY_BOOK1, 1, wei("1000"), { from: BMI_STBL_STAKING });
 
@@ -270,7 +361,7 @@ contract("RewardsGenerator", async (accounts) => {
     });
 
     it("should successfully calculate correct withdrawal amount (2)", async () => {
-      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, { from: POLICY_BOOK1 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, false, { from: POLICY_BOOK1 });
 
       await rewardsGenerator.stake(POLICY_BOOK1, 1, wei("1000"), { from: BMI_STBL_STAKING });
 
@@ -302,7 +393,7 @@ contract("RewardsGenerator", async (accounts) => {
     });
 
     it("should successfully calculate correct withdrawal amount (3)", async () => {
-      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, { from: POLICY_BOOK1 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, false, { from: POLICY_BOOK1 });
 
       await rewardsGenerator.stake(POLICY_BOOK1, 1, wei("1000"), { from: BMI_STBL_STAKING });
 
@@ -330,7 +421,7 @@ contract("RewardsGenerator", async (accounts) => {
     });
 
     it("should successfully calculate correct withdrawal amount (4)", async () => {
-      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, { from: POLICY_BOOK1 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, false, { from: POLICY_BOOK1 });
 
       await rewardsGenerator.stake(POLICY_BOOK1, 1, wei("1000"), { from: BMI_STBL_STAKING });
 
@@ -351,7 +442,7 @@ contract("RewardsGenerator", async (accounts) => {
     });
 
     it("should successfully calculate correct withdrawal amount (5)", async () => {
-      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, { from: POLICY_BOOK1 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, false, { from: POLICY_BOOK1 });
 
       await rewardsGenerator.stake(POLICY_BOOK1, 1, wei("1000"), { from: BMI_STBL_STAKING });
 
@@ -372,8 +463,8 @@ contract("RewardsGenerator", async (accounts) => {
     });
 
     it("should successfully calculate correct withdrawal amount (6)", async () => {
-      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, { from: POLICY_BOOK1 });
-      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK2, { from: POLICY_BOOK2 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, false, { from: POLICY_BOOK1 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK2, false, { from: POLICY_BOOK2 });
 
       await rewardsGenerator.stake(POLICY_BOOK2, 2, wei("1000"), { from: BMI_STBL_STAKING });
       await rewardsGenerator.stake(POLICY_BOOK1, 1, wei("1000"), { from: BMI_STBL_STAKING });
@@ -400,7 +491,7 @@ contract("RewardsGenerator", async (accounts) => {
 
   describe("withdraw rewards", async () => {
     it("should withdraw rewards", async () => {
-      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, { from: POLICY_BOOK1 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, false, { from: POLICY_BOOK1 });
 
       await rewardsGenerator.stake(POLICY_BOOK1, 1, wei("1000"), { from: BMI_STBL_STAKING });
 
@@ -418,7 +509,7 @@ contract("RewardsGenerator", async (accounts) => {
     });
 
     it("should withdraw rewards twice", async () => {
-      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, { from: POLICY_BOOK1 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, false, { from: POLICY_BOOK1 });
 
       await rewardsGenerator.stake(POLICY_BOOK1, 1, wei("1000"), { from: BMI_STBL_STAKING });
 
@@ -438,7 +529,7 @@ contract("RewardsGenerator", async (accounts) => {
     });
 
     it("should withdraw rewards and stake smoothly", async () => {
-      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, { from: POLICY_BOOK1 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, false, { from: POLICY_BOOK1 });
 
       await rewardsGenerator.stake(POLICY_BOOK1, 1, wei("1000"), { from: BMI_STBL_STAKING });
 
@@ -455,84 +546,170 @@ contract("RewardsGenerator", async (accounts) => {
 
   describe("policybook APY", async () => {
     it("should calculate correct APY (1)", async () => {
-      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, { from: POLICY_BOOK1 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, false, { from: POLICY_BOOK1 });
 
       await rewardsGenerator.stake(POLICY_BOOK1, 1, wei("10"), { from: BMI_STBL_STAKING });
+      console.log(bmiPriceInUSDT);
 
-      const APY = toBN(await rewardsGenerator.getPolicyBookAPY(POLICY_BOOK1, { from: BMI_STBL_STAKING }));
+      const APY = toBN(
+        await rewardsGenerator.getPolicyBookAPY(POLICY_BOOK1, toBN(bmiPriceInUSDT), { from: BMI_STBL_STAKING })
+      );
 
       assert.equal(APY.div(APY_PRECISION).toString(), "2140227272.72727");
     });
 
     it("should calculate correct APY (2)", async () => {
-      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, { from: POLICY_BOOK1 });
-      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK2, { from: POLICY_BOOK2 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, false, { from: POLICY_BOOK1 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK2, false, { from: POLICY_BOOK2 });
 
       await rewardsGenerator.stake(POLICY_BOOK1, 1, wei("10"), { from: BMI_STBL_STAKING });
       await rewardsGenerator.stake(POLICY_BOOK2, 2, wei("99990"), { from: BMI_STBL_STAKING });
 
-      const APY = toBN(await rewardsGenerator.getPolicyBookAPY(POLICY_BOOK1, { from: BMI_STBL_STAKING }));
+      const APY = toBN(
+        await rewardsGenerator.getPolicyBookAPY(POLICY_BOOK1, toBN(bmiPriceInUSDT), { from: BMI_STBL_STAKING })
+      );
 
-      assert.equal(APY.div(APY_PRECISION).dp(4).toString(), "235403.5977");
+      assert.equal(APY.div(APY_PRECISION).dp(4).toString(), "235422.6458");
     });
 
     it("should calculate correct APY (3)", async () => {
       await rewardsGenerator.setRewardPerBlock(wei("3"));
 
-      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, { from: POLICY_BOOK1 });
-      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK2, { from: POLICY_BOOK2 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, false, { from: POLICY_BOOK1 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK2, false, { from: POLICY_BOOK2 });
 
       await rewardsGenerator.stake(POLICY_BOOK1, 1, wei("1000"), { from: BMI_STBL_STAKING });
       await rewardsGenerator.stake(POLICY_BOOK2, 2, wei("99000"), { from: BMI_STBL_STAKING });
 
-      const APY1 = toBN(await rewardsGenerator.getPolicyBookAPY(POLICY_BOOK1, { from: BMI_STBL_STAKING }));
-      const APY2 = toBN(await rewardsGenerator.getPolicyBookAPY(POLICY_BOOK2, { from: BMI_STBL_STAKING }));
+      const APY1 = toBN(
+        await rewardsGenerator.getPolicyBookAPY(POLICY_BOOK1, toBN(bmiPriceInUSDT), { from: BMI_STBL_STAKING })
+      );
+      const APY2 = toBN(
+        await rewardsGenerator.getPolicyBookAPY(POLICY_BOOK2, toBN(bmiPriceInUSDT), { from: BMI_STBL_STAKING })
+      );
 
-      assert.equal(APY1.div(APY_PRECISION).dp(4).toString(), "7062.5148");
-      assert.equal(APY2.div(APY_PRECISION).dp(4).toString(), "7062.6787");
+      assert.equal(APY1.div(APY_PRECISION).dp(4).toString(), "7062.6794");
+      assert.equal(APY2.div(APY_PRECISION).dp(4).toString(), "7062.6794");
     });
 
     it("should calculate correct APY (4)", async () => {
       await rewardsGenerator.setRewardPerBlock(wei("3"));
 
-      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, { from: POLICY_BOOK1 });
-      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK2, { from: POLICY_BOOK2 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, false, { from: POLICY_BOOK1 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK2, false, { from: POLICY_BOOK2 });
 
       await rewardsGenerator.stake(POLICY_BOOK1, 1, wei("10"), { from: BMI_STBL_STAKING });
       await rewardsGenerator.stake(POLICY_BOOK2, 2, wei("1000"), { from: BMI_STBL_STAKING });
 
-      const APY1 = toBN(await rewardsGenerator.getPolicyBookAPY(POLICY_BOOK1, { from: BMI_STBL_STAKING }));
-      const APY2 = toBN(await rewardsGenerator.getPolicyBookAPY(POLICY_BOOK2, { from: BMI_STBL_STAKING }));
+      const APY1 = toBN(
+        await rewardsGenerator.getPolicyBookAPY(POLICY_BOOK1, toBN(bmiPriceInUSDT), { from: BMI_STBL_STAKING })
+      );
+      const APY2 = toBN(
+        await rewardsGenerator.getPolicyBookAPY(POLICY_BOOK2, toBN(bmiPriceInUSDT), { from: BMI_STBL_STAKING })
+      );
 
-      assert.equal(APY1.div(APY_PRECISION).dp(4).toString(), "698570.1818");
-      assert.equal(APY2.div(APY_PRECISION).dp(4).toString(), "698590.4081");
+      assert.equal(APY1.div(APY_PRECISION).dp(4).toString(), "698590.5045");
+      assert.equal(APY2.div(APY_PRECISION).dp(4).toString(), "698590.5045");
     });
 
     it("should calculate correct APY (5)", async () => {
-      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, { from: POLICY_BOOK1 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, false, { from: POLICY_BOOK1 });
 
-      const APY = toBN(await rewardsGenerator.getPolicyBookAPY(POLICY_BOOK1, { from: BMI_STBL_STAKING }));
+      const APY = toBN(
+        await rewardsGenerator.getPolicyBookAPY(POLICY_BOOK1, toBN(bmiPriceInUSDT), { from: BMI_STBL_STAKING })
+      );
 
       // empty PB, but what if I stake 1 token
       assert.equal(APY.div(APY_PRECISION).toString(), "23542500000");
     });
 
     it("should calculate correct APY (6)", async () => {
-      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, { from: POLICY_BOOK1 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, false, { from: POLICY_BOOK1 });
 
       await rewardsGenerator.stake(POLICY_BOOK1, 1, wei("10"), { from: BMI_STBL_STAKING });
 
       await rewardsGenerator.setRewardPerBlock(0);
 
-      const APY = toBN(await rewardsGenerator.getPolicyBookAPY(POLICY_BOOK1, { from: BMI_STBL_STAKING }));
+      const APY = toBN(
+        await rewardsGenerator.getPolicyBookAPY(POLICY_BOOK1, toBN(bmiPriceInUSDT), { from: BMI_STBL_STAKING })
+      );
 
       assert.equal(APY.toString(), "0");
+    });
+
+    it("should calculate correct APY (7)", async () => {
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK3, true, { from: POLICY_BOOK3 });
+
+      await rewardsGenerator.stake(POLICY_BOOK3, 1, wei("10"), { from: BMI_STBL_STAKING });
+
+      assert.equal(
+        toBN(await rewardsGenerator.getPolicyBookRewardMultiplier(POLICY_BOOK3, { from: POLICY_BOOK3 })).toString(),
+        toBN(REWARDS_PRECISION).div(2).toString()
+      );
+
+      const APY = toBN(
+        await rewardsGenerator.getPolicyBookAPY(POLICY_BOOK3, toBN(bmiPriceInUSDT), { from: BMI_STBL_STAKING })
+      );
+
+      assert.equal(APY.div(APY_PRECISION).toString(), toBN("2140227272.72727").toString()); // 100% APY
+    });
+
+    it("should calculate correct APY (8)", async () => {
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, false, { from: POLICY_BOOK1 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK3, true, { from: POLICY_BOOK3 });
+
+      await rewardsGenerator.stake(POLICY_BOOK1, 1, wei("2000"), { from: BMI_STBL_STAKING });
+      await rewardsGenerator.stake(POLICY_BOOK3, 2, wei("1000"), { from: BMI_STBL_STAKING });
+
+      const APY1 = toBN(
+        await rewardsGenerator.getPolicyBookAPY(POLICY_BOOK1, toBN(bmiPriceInUSDT), { from: BMI_STBL_STAKING })
+      );
+      const APY3 = toBN(
+        await rewardsGenerator.getPolicyBookAPY(POLICY_BOOK3, toBN(bmiPriceInUSDT), { from: BMI_STBL_STAKING })
+      );
+
+      const policyBookRewardMultiplier1 = (await rewardsGenerator.getPolicyBookReward(POLICY_BOOK1)).rewardMultiplier;
+      const policyBookRewardMultiplier3 = (await rewardsGenerator.getPolicyBookReward(POLICY_BOOK3)).rewardMultiplier;
+
+      const APY_TOKEN = toBN(10).pow(18);
+      const totalStakedPolicyBook1 = (await rewardsGenerator.getPolicyBookReward(POLICY_BOOK1)).totalStaked;
+      const totalStakedPolicyBook3 = (await rewardsGenerator.getPolicyBookReward(POLICY_BOOK3)).totalStaked;
+
+      const rewardPerBlock = await rewardsGenerator.rewardPerBlock();
+      const totalPoolStaked = await rewardsGenerator.totalPoolStaked();
+      const rewardPerBlockPolicyBook1 = toBN(policyBookRewardMultiplier1)
+        .times(totalStakedPolicyBook1)
+        .times(rewardPerBlock)
+        .div(toBN(totalPoolStaked).plus(toBN(policyBookRewardMultiplier1).times(APY_TOKEN)));
+      const rewardPerBlockPolicyBook3 = toBN(policyBookRewardMultiplier3)
+        .times(totalStakedPolicyBook3)
+        .times(rewardPerBlock)
+        .div(toBN(totalPoolStaked).plus(toBN(policyBookRewardMultiplier3).times(APY_TOKEN)));
+
+      const inUSDT1 = await priceFeed.howManyUSDTsInBMI(rewardPerBlockPolicyBook1.dp(0).toString());
+      const inUSDT3 = await priceFeed.howManyUSDTsInBMI(rewardPerBlockPolicyBook3.dp(0).toString());
+      const rewardPerBlockPolicyBookSTBL1 = toBN(inUSDT1).times(10 ** 12);
+      const rewardPerBlockPolicyBookSTBL3 = toBN(inUSDT3).times(10 ** 12);
+
+      const APYcalc1 = toBN(rewardPerBlockPolicyBookSTBL1)
+        .times(6450)
+        .times(365)
+        .times(100)
+        .div(totalStakedPolicyBook1);
+      const APYcalc3 = toBN(rewardPerBlockPolicyBookSTBL3)
+        .times(6450)
+        .times(365)
+        .times(100)
+        .div(totalStakedPolicyBook3);
+
+      assert.equal(APY1.div(APY_PRECISION).dp(4).toString(), "9413234.7061");
+      assert.equal(APY3.div(APY_PRECISION).dp(4).toString(), "4707558.4883");
     });
   });
 
   describe("policybook rewards multiplier", async () => {
     it("should just update a rewards multiplier", async () => {
-      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, { from: POLICY_BOOK1 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, false, { from: POLICY_BOOK1 });
 
       await rewardsGenerator.stake(POLICY_BOOK1, 1, wei("1000"), { from: BMI_STBL_STAKING });
 
@@ -541,7 +718,9 @@ contract("RewardsGenerator", async (accounts) => {
         REWARDS_PRECISION.toString()
       );
 
-      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION.times(2), POLICY_BOOK1, { from: POLICY_BOOK1 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION.times(2), POLICY_BOOK1, false, {
+        from: POLICY_BOOK1,
+      });
 
       assert.equal(
         toBN((await rewardsGenerator.getPolicyBookReward(POLICY_BOOK1)).rewardMultiplier).toString(),
@@ -550,8 +729,8 @@ contract("RewardsGenerator", async (accounts) => {
     });
 
     it("should calculate correct reward with new rewards multiplier (1)", async () => {
-      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, { from: POLICY_BOOK1 });
-      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK2, { from: POLICY_BOOK2 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, false, { from: POLICY_BOOK1 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK2, false, { from: POLICY_BOOK2 });
 
       await rewardsGenerator.stake(POLICY_BOOK2, 2, wei("1000"), { from: BMI_STBL_STAKING });
       await rewardsGenerator.stake(POLICY_BOOK1, 1, wei("1000"), { from: BMI_STBL_STAKING });
@@ -566,8 +745,10 @@ contract("RewardsGenerator", async (accounts) => {
     });
 
     it("should calculate correct reward with new rewards multiplier (2)", async () => {
-      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION.times(2), POLICY_BOOK1, { from: POLICY_BOOK1 });
-      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK2, { from: POLICY_BOOK2 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION.times(2), POLICY_BOOK1, false, {
+        from: POLICY_BOOK1,
+      });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK2, false, { from: POLICY_BOOK2 });
 
       await rewardsGenerator.stake(POLICY_BOOK2, 2, wei("1000"), { from: BMI_STBL_STAKING });
       await rewardsGenerator.stake(POLICY_BOOK1, 1, wei("1000"), { from: BMI_STBL_STAKING });
@@ -590,15 +771,17 @@ contract("RewardsGenerator", async (accounts) => {
     });
 
     it("should calculate correct reward with new rewards multiplier (3)", async () => {
-      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, { from: POLICY_BOOK1 });
-      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK2, { from: POLICY_BOOK2 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, false, { from: POLICY_BOOK1 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK2, false, { from: POLICY_BOOK2 });
 
       await rewardsGenerator.stake(POLICY_BOOK2, 2, wei("1000"), { from: BMI_STBL_STAKING });
       await rewardsGenerator.stake(POLICY_BOOK1, 1, wei("1000"), { from: BMI_STBL_STAKING });
 
       await advanceBlocks(9);
 
-      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION.times(2), POLICY_BOOK1, { from: POLICY_BOOK1 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION.times(2), POLICY_BOOK1, false, {
+        from: POLICY_BOOK1,
+      });
 
       await advanceBlocks(10);
 
@@ -609,9 +792,31 @@ contract("RewardsGenerator", async (accounts) => {
       assert.closeTo(toBN(reward2).toNumber(), toBN(wei("933.33333")).toNumber(), toBN(wei("0.00001")).toNumber());
     });
 
+    it("should calculate correct reward with new rewards multiplier (4)", async () => {
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, false, { from: POLICY_BOOK1 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK3, true, { from: POLICY_BOOK3 });
+
+      await rewardsGenerator.stake(POLICY_BOOK1, 1, wei("2000"), { from: BMI_STBL_STAKING });
+      await rewardsGenerator.stake(POLICY_BOOK3, 2, wei("1000"), { from: BMI_STBL_STAKING });
+
+      await advanceBlocks(9);
+
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION.times(2), POLICY_BOOK3, true, {
+        from: POLICY_BOOK3,
+      });
+
+      await advanceBlocks(10);
+
+      const reward1 = await rewardsGenerator.getRewardNoCheck(POLICY_BOOK1, 1);
+      const reward2 = await rewardsGenerator.getRewardNoCheck(POLICY_BOOK3, 2);
+
+      assert.closeTo(toBN(reward1).toNumber(), toBN(wei("1566.66666")).toNumber(), toBN(wei("0.00001")).toNumber());
+      assert.closeTo(toBN(reward2).toNumber(), toBN(wei("533.33333")).toNumber(), toBN(wei("0.00001")).toNumber());
+    });
+
     it("the reward should not change when PolicyBook gets blacklisted", async () => {
-      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, { from: POLICY_BOOK1 });
-      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK2, { from: POLICY_BOOK2 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, false, { from: POLICY_BOOK1 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK2, false, { from: POLICY_BOOK2 });
 
       await rewardsGenerator.stake(POLICY_BOOK2, 2, wei("1000"), { from: BMI_STBL_STAKING });
       await rewardsGenerator.stake(POLICY_BOOK1, 1, wei("1000"), { from: BMI_STBL_STAKING });
@@ -625,7 +830,7 @@ contract("RewardsGenerator", async (accounts) => {
       assert.equal(toBN(reward2).toString(), toBN(wei("600")).toString());
 
       // same as blacklisting
-      await rewardsGenerator.updatePolicyBookShare(0, POLICY_BOOK1, { from: POLICY_BOOK1 });
+      await rewardsGenerator.updatePolicyBookShare(0, POLICY_BOOK1, false, { from: POLICY_BOOK1 });
 
       await advanceBlocks(10);
 
@@ -638,8 +843,8 @@ contract("RewardsGenerator", async (accounts) => {
     });
 
     it("should correctly track rewards when PolicyBook gets blacklisted and whitelisted again", async () => {
-      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, { from: POLICY_BOOK1 });
-      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK2, { from: POLICY_BOOK2 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, false, { from: POLICY_BOOK1 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK2, false, { from: POLICY_BOOK2 });
 
       await rewardsGenerator.stake(POLICY_BOOK2, 2, wei("1000"), { from: BMI_STBL_STAKING });
       await rewardsGenerator.stake(POLICY_BOOK1, 1, wei("1000"), { from: BMI_STBL_STAKING });
@@ -647,12 +852,12 @@ contract("RewardsGenerator", async (accounts) => {
       await advanceBlocks(10);
 
       // same as blacklisting
-      await rewardsGenerator.updatePolicyBookShare(0, POLICY_BOOK1, { from: POLICY_BOOK1 });
+      await rewardsGenerator.updatePolicyBookShare(0, POLICY_BOOK1, false, { from: POLICY_BOOK1 });
 
       await advanceBlocks(10);
 
       // same as whitelisting
-      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, { from: POLICY_BOOK1 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, false, { from: POLICY_BOOK1 });
 
       await advanceBlocks(10);
 
@@ -666,7 +871,7 @@ contract("RewardsGenerator", async (accounts) => {
 
   describe("aggregate", async () => {
     it("should successfully aggregate", async () => {
-      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, { from: POLICY_BOOK1 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, false, { from: POLICY_BOOK1 });
 
       await rewardsGenerator.stake(POLICY_BOOK1, 1, wei("1000"), { from: BMI_STBL_STAKING });
 
@@ -693,7 +898,7 @@ contract("RewardsGenerator", async (accounts) => {
     });
 
     it("should successfully aggregate already aggregated", async () => {
-      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, { from: POLICY_BOOK1 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, false, { from: POLICY_BOOK1 });
 
       await rewardsGenerator.stake(POLICY_BOOK1, 1, wei("1000"), { from: BMI_STBL_STAKING });
 
@@ -728,7 +933,7 @@ contract("RewardsGenerator", async (accounts) => {
 
   describe("rewards convergence tests", async () => {
     it("should sustain the rewards", async () => {
-      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, { from: POLICY_BOOK1 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, false, { from: POLICY_BOOK1 });
 
       await rewardsGenerator.stake(POLICY_BOOK1, 1, wei("1000"), { from: BMI_STBL_STAKING });
 
@@ -762,7 +967,7 @@ contract("RewardsGenerator", async (accounts) => {
     });
 
     it("the reward of an oldcomer should not decrease", async () => {
-      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, { from: POLICY_BOOK1 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, false, { from: POLICY_BOOK1 });
 
       await rewardsGenerator.stake(POLICY_BOOK1, 1, wei("1000"), { from: BMI_STBL_STAKING });
 
@@ -808,7 +1013,7 @@ contract("RewardsGenerator", async (accounts) => {
     });
 
     it("reward withdrawal should not affect others reward gain speed", async () => {
-      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, { from: POLICY_BOOK1 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, false, { from: POLICY_BOOK1 });
 
       await rewardsGenerator.stake(POLICY_BOOK1, 1, wei("1000"), { from: BMI_STBL_STAKING });
 
@@ -849,7 +1054,7 @@ contract("RewardsGenerator", async (accounts) => {
 
   describe("extreme tests", async () => {
     it("should calculate correct reward", async () => {
-      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, { from: POLICY_BOOK1 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, false, { from: POLICY_BOOK1 });
 
       await rewardsGenerator.stake(POLICY_BOOK1, 1, wei("1000"), { from: BMI_STBL_STAKING });
 
@@ -860,7 +1065,7 @@ contract("RewardsGenerator", async (accounts) => {
         toBN(wei("10000")).toString()
       );
 
-      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK2, { from: POLICY_BOOK2 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK2, false, { from: POLICY_BOOK2 });
 
       await rewardsGenerator.stake(POLICY_BOOK2, 2, wei("1000"), { from: BMI_STBL_STAKING });
 
@@ -875,7 +1080,9 @@ contract("RewardsGenerator", async (accounts) => {
         toBN(wei("5000")).toString()
       );
 
-      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION.idiv(2), POLICY_BOOK2, { from: POLICY_BOOK2 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION.idiv(2), POLICY_BOOK2, false, {
+        from: POLICY_BOOK2,
+      });
 
       await advanceBlocks(100);
 
@@ -910,7 +1117,9 @@ contract("RewardsGenerator", async (accounts) => {
         toBN(wei("0.0001")).toNumber()
       );
 
-      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION.times(2), POLICY_BOOK2, { from: POLICY_BOOK2 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION.times(2), POLICY_BOOK2, false, {
+        from: POLICY_BOOK2,
+      });
 
       await advanceBlocks(100);
 
@@ -934,8 +1143,8 @@ contract("RewardsGenerator", async (accounts) => {
 
   describe.skip("migrate", async () => {
     it("rewards should be identical if migrated with 0 rewards", async () => {
-      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, { from: POLICY_BOOK1 });
-      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK2, { from: POLICY_BOOK2 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, false, { from: POLICY_BOOK1 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK2, false, { from: POLICY_BOOK2 });
 
       await rewardsGenerator.migrationStake(POLICY_BOOK1, 1, wei("1000"), 0, { from: LEGACY_REWARDS_GENERATOR });
       await rewardsGenerator.stake(POLICY_BOOK2, 2, wei("1000"), { from: BMI_STBL_STAKING });
@@ -953,8 +1162,8 @@ contract("RewardsGenerator", async (accounts) => {
     });
 
     it("rewards should differ only by the given reward amount", async () => {
-      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, { from: POLICY_BOOK1 });
-      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK2, { from: POLICY_BOOK2 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, false, { from: POLICY_BOOK1 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK2, false, { from: POLICY_BOOK2 });
 
       await rewardsGenerator.migrationStake(POLICY_BOOK1, 1, wei("1000"), wei("1500"), {
         from: LEGACY_REWARDS_GENERATOR,
@@ -974,7 +1183,7 @@ contract("RewardsGenerator", async (accounts) => {
     });
 
     it("should aggregate migrated NFT correctly", async () => {
-      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, { from: POLICY_BOOK1 });
+      await rewardsGenerator.updatePolicyBookShare(REWARDS_PRECISION, POLICY_BOOK1, false, { from: POLICY_BOOK1 });
 
       await rewardsGenerator.migrationStake(POLICY_BOOK1, 1, wei("1000"), wei("1500"), {
         from: LEGACY_REWARDS_GENERATOR,

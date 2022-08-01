@@ -20,7 +20,7 @@ const ShieldMining = artifacts.require("ShieldMining");
 const LeveragePortfolioView = artifacts.require("LeveragePortfolioView");
 const YieldGenerator = artifacts.require("YieldGenerator");
 
-const PolicyBook = artifacts.require("PolicyBook");
+const PolicyBook = artifacts.require("PolicyBookMock");
 const PolicyBookFacade = artifacts.require("PolicyBookFacade");
 const UserLeveragePool = artifacts.require("UserLeveragePool");
 
@@ -180,7 +180,7 @@ contract("PolicyRegistry", async (accounts) => {
     const shieldMining = await ShieldMining.at(await contractsRegistry.getShieldMiningContract());
 
     await claimingRegistry.__ClaimingRegistry_init();
-    await rewardsGenerator.__RewardsGenerator_init();
+    await rewardsGenerator.__RewardsGenerator_init(network);
     await capitalPool.__CapitalPool_init();
     await reinsurancePool.__ReinsurancePool_init();
     await bmiCoverStaking.__BMICoverStaking_init();

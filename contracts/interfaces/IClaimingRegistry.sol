@@ -62,6 +62,8 @@ interface IClaimingRegistry {
     /// @notice returns how many time should pass before anyone could calculate a claim result
     function anyoneCanCalculateClaimResultAfter(uint256 index) external view returns (uint256);
 
+    function canCalculateClaim(uint256 index, address calculator) external view returns (bool);
+
     /// @notice check if a user can buy new policy of specified PolicyBook and end the active one if there is
     function canBuyNewPolicy(address buyer, address policyBookAddress) external;
 
@@ -155,11 +157,19 @@ interface IClaimingRegistry {
     /// @notice returns claim info by its index
     function claimInfo(uint256 index) external view returns (ClaimInfo memory _claimInfo);
 
-    function getAllPendingClaimsAmount() external view returns (uint256 _totalClaimsAmount);
+    function getAllPendingClaimsAmount(uint256 _limit)
+        external
+        view
+        returns (uint256 _totalClaimsAmount);
 
-    function getAllPendingRewardsAmount() external view returns (uint256 _totalRewardsAmount);
+    function getAllPendingRewardsAmount(uint256 _limit)
+        external
+        view
+        returns (uint256 _totalRewardsAmount);
 
     function getClaimableAmounts(uint256[] memory _claimIndexes) external view returns (uint256);
+
+    function getBMIRewardForCalculation(uint256 index) external view returns (uint256);
 
     /// @notice marks the user's claim as Accepted
     function acceptClaim(uint256 index, uint256 amount) external;
@@ -180,4 +190,8 @@ interface IClaimingRegistry {
     function requestClaimWithdrawal(uint256 index) external;
 
     function requestRewardWithdrawal(address voter, uint256 rewardAmount) external;
+
+    function getWithdrawClaimRequestIndexListCount() external view returns (uint256);
+
+    function getWithdrawRewardRequestVoterListCount() external view returns (uint256);
 }

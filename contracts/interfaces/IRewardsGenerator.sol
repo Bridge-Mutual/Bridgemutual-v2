@@ -18,7 +18,11 @@ interface IRewardsGenerator {
     }
 
     /// @notice this function is called every time policybook's STBL to bmiX rate changes
-    function updatePolicyBookShare(uint256 newRewardMultiplier, address policyBook) external;
+    function updatePolicyBookShare(
+        uint256 newRewardMultiplier,
+        address policyBook,
+        bool isStablecoin
+    ) external;
 
     /// @notice aggregates specified nfts into a single one
     function aggregate(
@@ -35,7 +39,10 @@ interface IRewardsGenerator {
     ) external;
 
     /// @notice returns policybook's APY multiplied by 10**5
-    function getPolicyBookAPY(address policyBookAddress) external view returns (uint256);
+    function getPolicyBookAPY(address policyBookAddress, uint256 bmiPriceInUSDT)
+        external
+        view
+        returns (uint256);
 
     /// @notice returns policybook's RewardMultiplier multiplied by 10**5
     function getPolicyBookRewardMultiplier(address policyBookAddress)

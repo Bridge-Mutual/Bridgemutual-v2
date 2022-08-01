@@ -32,9 +32,11 @@ contract ClaimVotingMock is ClaimVoting {
         );
     }
 
-    function voteBatch(uint256[] calldata claimIndexes, uint256[] calldata suggestedClaimAmounts)
-        external
-    {
+    function voteBatch(
+        uint256[] calldata claimIndexes,
+        uint256[] calldata suggestedClaimAmounts,
+        bool[] calldata isConfirmed
+    ) external {
         uint256 stakedStkBMI = stkBMIStaking.stakedStkBMI(msg.sender);
 
         for (uint256 i = 0; i < claimIndexes.length; i++) {
@@ -44,15 +46,23 @@ contract ClaimVotingMock is ClaimVoting {
 
             _addAnonymousVote(msg.sender, claimIndex, 0, "", stakedStkBMI);
 
-            _calculateAverages(
-                claimIndex,
-                stakedStkBMI,
-                suggestedClaimAmount,
-                reputationSystem.reputation(msg.sender),
-                voteFor
-            );
+            if (isConfirmed[i]) {
+                _calculateAverages(
+                    claimIndex,
+                    stakedStkBMI,
+                    suggestedClaimAmount,
+                    reputationSystem.reputation(msg.sender),
+                    voteFor
+                );
+            }
 
-            _modifyExposedVote(msg.sender, claimIndex, suggestedClaimAmount, voteFor);
+            _modifyExposedVote(
+                msg.sender,
+                claimIndex,
+                suggestedClaimAmount,
+                voteFor,
+                isConfirmed[i]
+            );
         }
     }
 }

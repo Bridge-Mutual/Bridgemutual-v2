@@ -263,7 +263,7 @@ contract("ClaimingRegistry", async (accounts) => {
     const stkBMIStaking = await StkBMIStaking.at(await contractsRegistry.getStkBMIStakingContract());
     const yieldGenerator = await YieldGenerator.at(await contractsRegistry.getYieldGeneratorContract());
 
-    await rewardsGenerator.__RewardsGenerator_init();
+    await rewardsGenerator.__RewardsGenerator_init(network);
     await claimingRegistryMock.__ClaimingRegistry_init();
     await policyBookAdmin.__PolicyBookAdmin_init(
       _policyBookImpl.address,
@@ -1236,6 +1236,101 @@ contract("ClaimingRegistry", async (accounts) => {
     });
   });
 
+  describe("getAllPendingClaimsAmount()", async () => {
+    const coverTokensAmount = wei("1000");
+    let stblAmount;
+    let id;
+    let timestamp;
+
+    beforeEach("initializeVoting", async () => {
+      stblAmount = getStableAmount("10000");
+      await capitalPool.setliquidityCushionBalance(wei("1000"));
+
+      id = (
+        await claimingRegistryMock.submitClaim(USER1, policyBook1.address, "", coverTokensAmount, false, {
+          from: CLAIM_VOTING,
+        })
+      ).logs[0].args.claimIndex;
+
+      timestamp = await getBlockTimestamp();
+      await setCurrentTime(
+        toBN(timestamp)
+          .plus(await claimingRegistryMock.votingDuration(id))
+          .plus(10)
+      );
+
+      await claimingRegistryMock.acceptClaim(id, coverTokensAmount, { from: CLAIM_VOTING });
+
+      assert.equal(await claimingRegistryMock.countPendingClaims(), 0);
+      assert.equal(await claimingRegistryMock.isClaimPending(id), false);
+
+      assert.equal(await claimingRegistryMock.claimStatus(id), ClaimStatus.ACCEPTED);
+
+      timestamp = await getBlockTimestamp();
+      await setCurrentTime(toBN(timestamp).plus(WITHDRAWAL_PERIOD).plus(READY_TO_WITHDRAW_PERIOD).plus(10));
+    });
+    it("should return the right amount of pending withdrawal (none)", async () => {
+      const _limit = await claimingRegistryMock.getWithdrawClaimRequestIndexListCount();
+      const pendingClaimsAmount = await claimingRegistryMock.getAllPendingClaimsAmount(_limit);
+      assert.equal(pendingClaimsAmount, 0);
+    });
+    it("should return the right amount of pending withdrawal (pending)", async () => {
+      await claimingRegistryMock.requestClaimWithdrawal(id, { from: USER1 });
+      timestamp = await getBlockTimestamp();
+
+      assert.equal(
+        (await claimingRegistryMock.claimWithdrawalInfo(1)).readyToWithdrawDate.toString(),
+        toBN(timestamp).plus(WITHDRAWAL_PERIOD).toString()
+      );
+      assert.equal((await claimingRegistryMock.claimWithdrawalInfo(1)).committed.toString(), "false");
+      let _limit = await claimingRegistryMock.getWithdrawClaimRequestIndexListCount();
+      let pendingClaimsAmount = await claimingRegistryMock.getAllPendingClaimsAmount(_limit);
+      assert.equal(pendingClaimsAmount, 0);
+
+      timestamp = await getBlockTimestamp();
+      await setCurrentTime(
+        toBN(timestamp)
+          .plus(WITHDRAWAL_PERIOD)
+          .minus(60 * 60)
+      );
+      _limit = await claimingRegistryMock.getWithdrawClaimRequestIndexListCount();
+      pendingClaimsAmount = await claimingRegistryMock.getAllPendingClaimsAmount(_limit);
+      assert.equal(pendingClaimsAmount, coverTokensAmount);
+    });
+    it("should return the right amount of pending withdrawal (ready)", async () => {
+      await claimingRegistryMock.requestClaimWithdrawal(id, { from: USER1 });
+      timestamp = await getBlockTimestamp();
+
+      assert.equal(
+        (await claimingRegistryMock.claimWithdrawalInfo(1)).readyToWithdrawDate.toString(),
+        toBN(timestamp).plus(WITHDRAWAL_PERIOD).toString()
+      );
+      assert.equal((await claimingRegistryMock.claimWithdrawalInfo(1)).committed.toString(), "false");
+
+      timestamp = await getBlockTimestamp();
+      await setCurrentTime(toBN(timestamp).plus(WITHDRAWAL_PERIOD).plus(10));
+      let _limit = await claimingRegistryMock.getWithdrawClaimRequestIndexListCount();
+      pendingClaimsAmount = await claimingRegistryMock.getAllPendingClaimsAmount(_limit);
+      assert.equal(pendingClaimsAmount, coverTokensAmount);
+    });
+    it("should return the right amount of pending withdrawal (expired)", async () => {
+      await claimingRegistryMock.requestClaimWithdrawal(id, { from: USER1 });
+      timestamp = await getBlockTimestamp();
+
+      assert.equal(
+        (await claimingRegistryMock.claimWithdrawalInfo(1)).readyToWithdrawDate.toString(),
+        toBN(timestamp).plus(WITHDRAWAL_PERIOD).toString()
+      );
+      assert.equal((await claimingRegistryMock.claimWithdrawalInfo(1)).committed.toString(), "false");
+
+      timestamp = await getBlockTimestamp();
+      await setCurrentTime(toBN(timestamp).plus(WITHDRAWAL_PERIOD).plus(READY_TO_WITHDRAW_PERIOD).plus(10));
+      let _limit = await claimingRegistryMock.getWithdrawClaimRequestIndexListCount();
+      pendingClaimsAmount = await claimingRegistryMock.getAllPendingClaimsAmount(_limit);
+      assert.equal(pendingClaimsAmount, 0);
+    });
+  });
+
   describe("withdrawClaim()", async () => {
     const epochsNumber = toBN(5);
     const coverTokensAmount = wei("1000");
@@ -1422,6 +1517,108 @@ contract("ClaimingRegistry", async (accounts) => {
         (await claimingRegistryMock.rewardWithdrawalInfo(USER1)).readyToWithdrawDate.toString(),
         toBN(timestamp).plus(WITHDRAWAL_PERIOD).toString()
       );
+    });
+  });
+
+  describe("getAllPendingRewardsAmount()", async () => {
+    const coverTokensAmount = wei("1000");
+    const rewardAmount = wei("100");
+    let stblAmount;
+    let id;
+    let timestamp;
+
+    beforeEach("initializeVoting", async () => {
+      stblAmount = getStableAmount("10000");
+      await capitalPool.setliquidityCushionBalance(wei("1000"));
+
+      id = (
+        await claimingRegistryMock.submitClaim(USER1, policyBook1.address, "", coverTokensAmount, false, {
+          from: CLAIM_VOTING,
+        })
+      ).logs[0].args.claimIndex;
+
+      timestamp = await getBlockTimestamp();
+      await setCurrentTime(
+        toBN(timestamp)
+          .plus(await claimingRegistryMock.votingDuration(id))
+          .plus(10)
+      );
+
+      await claimingRegistryMock.acceptClaim(id, coverTokensAmount, { from: CLAIM_VOTING });
+
+      assert.equal(await claimingRegistryMock.countPendingClaims(), 0);
+      assert.equal(await claimingRegistryMock.isClaimPending(id), false);
+
+      assert.equal(await claimingRegistryMock.claimStatus(id), ClaimStatus.ACCEPTED);
+    });
+    it("should return the right amount of pending withdrawal (none)", async () => {
+      const _limit = await claimingRegistryMock.getWithdrawRewardRequestVoterListCount();
+      const pendingRewardsAmount = await claimingRegistryMock.getAllPendingRewardsAmount(_limit);
+      assert.equal(pendingRewardsAmount, 0);
+    });
+    it("should return the right amount of pending withdrawal (pending)", async () => {
+      await claimingRegistryMock.requestRewardWithdrawal(USER1, rewardAmount, { from: CLAIM_VOTING });
+
+      let timestamp = await getBlockTimestamp();
+      assert.equal(
+        (await claimingRegistryMock.rewardWithdrawalInfo(USER1)).rewardAmount.toString(),
+        rewardAmount.toString()
+      );
+      assert.equal(
+        (await claimingRegistryMock.rewardWithdrawalInfo(USER1)).readyToWithdrawDate.toString(),
+        toBN(timestamp).plus(WITHDRAWAL_PERIOD).toString()
+      );
+      let _limit = await claimingRegistryMock.getWithdrawRewardRequestVoterListCount();
+      let pendingRewardsAmount = await claimingRegistryMock.getAllPendingRewardsAmount(_limit);
+      assert.equal(pendingRewardsAmount, 0);
+
+      timestamp = await getBlockTimestamp();
+      await setCurrentTime(
+        toBN(timestamp)
+          .plus(WITHDRAWAL_PERIOD)
+          .minus(60 * 60)
+      );
+      _limit = await claimingRegistryMock.getWithdrawRewardRequestVoterListCount();
+      pendingRewardsAmount = await claimingRegistryMock.getAllPendingRewardsAmount(_limit);
+      assert.equal(pendingRewardsAmount, rewardAmount);
+    });
+    it("should return the right amount of pending withdrawal (ready)", async () => {
+      await claimingRegistryMock.requestRewardWithdrawal(USER1, rewardAmount, { from: CLAIM_VOTING });
+
+      let timestamp = await getBlockTimestamp();
+      assert.equal(
+        (await claimingRegistryMock.rewardWithdrawalInfo(USER1)).rewardAmount.toString(),
+        rewardAmount.toString()
+      );
+      assert.equal(
+        (await claimingRegistryMock.rewardWithdrawalInfo(USER1)).readyToWithdrawDate.toString(),
+        toBN(timestamp).plus(WITHDRAWAL_PERIOD).toString()
+      );
+
+      timestamp = await getBlockTimestamp();
+      await setCurrentTime(toBN(timestamp).plus(WITHDRAWAL_PERIOD).plus(10));
+      const _limit = await claimingRegistryMock.getWithdrawRewardRequestVoterListCount();
+      pendingRewardsAmount = await claimingRegistryMock.getAllPendingRewardsAmount(_limit);
+      assert.equal(pendingRewardsAmount, rewardAmount);
+    });
+    it("should return the right amount of pending withdrawal (expired)", async () => {
+      await claimingRegistryMock.requestRewardWithdrawal(USER1, rewardAmount, { from: CLAIM_VOTING });
+
+      let timestamp = await getBlockTimestamp();
+      assert.equal(
+        (await claimingRegistryMock.rewardWithdrawalInfo(USER1)).rewardAmount.toString(),
+        rewardAmount.toString()
+      );
+      assert.equal(
+        (await claimingRegistryMock.rewardWithdrawalInfo(USER1)).readyToWithdrawDate.toString(),
+        toBN(timestamp).plus(WITHDRAWAL_PERIOD).toString()
+      );
+
+      timestamp = await getBlockTimestamp();
+      await setCurrentTime(toBN(timestamp).plus(WITHDRAWAL_PERIOD).plus(READY_TO_WITHDRAW_PERIOD).plus(10));
+      const _limit = await claimingRegistryMock.getWithdrawRewardRequestVoterListCount();
+      pendingRewardsAmount = await claimingRegistryMock.getAllPendingRewardsAmount(_limit);
+      assert.equal(pendingRewardsAmount, 0);
     });
   });
 
